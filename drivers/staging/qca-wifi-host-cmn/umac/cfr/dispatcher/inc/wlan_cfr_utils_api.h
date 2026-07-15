@@ -23,6 +23,7 @@
 #include <wlan_objmgr_cmn.h>
 #include <qdf_streamfs.h>
 #ifdef WLAN_ENH_CFR_ENABLE
+#include <qdf_delayed_work.h>
 #include <qdf_timer.h>
 #endif
 
@@ -320,6 +321,25 @@ struct whal_cfir_dma_hdr {
 };
 
 #define MAX_LUT_ENTRIES 140 /* For HKv2 136 is max */
+#define CFR_RX_HISTORY_DEPTH 16
+
+/**
+ * struct cfr_rx_history_entry - Recent RX PPDU metadata for one DBR cookie
+ * @valid: Entry contains copied RX metadata
+ * @ppdu_id: PPDU id from the RX PPDU status event
+ * @tstamp_ms: Host timestamp when RX metadata was received
+ * @tx_address1: Low CFR buffer address bits from the RX PPDU status event
+ * @tx_address2: High CFR buffer address bits from the RX PPDU status event
+ * @header: Metadata-only host CFR header copied from the RX PPDU path
+ */
+struct cfr_rx_history_entry {
+	bool valid;
+	uint16_t ppdu_id;
+	uint64_t tstamp_ms;
+	uint32_t tx_address1;
+	uint32_t tx_address2;
+	struct csi_cfr_header header;
+};
 
 /**
  * struct look_up_table - Placeholder for 2 asynchronous events (DBR and
@@ -342,14 +362,22 @@ struct whal_cfir_dma_hdr {
  * dbr_tstamp: Timestamp when DBR completion event was received
  * header_length: Length of header DMAed by ucode in words
  * payload_length: Length of CFR payload
+ * rx_seen: Diagnostic marker showing RX metadata was seen for this cookie
+ * rx_seen_ppdu_id: Last RX metadata PPDU id seen for this cookie
+ * rx_seen_tstamp: Timestamp when RX metadata was last seen for this cookie
+ * rx_hist: Metadata-only RX history ring for this cookie
+ * rx_hist_head: Next RX history ring insertion index
+ * rx_hist_count: Number of currently valid RX history entries
  */
 struct look_up_table {
 	bool dbr_recv;
 	bool tx_recv;
+	bool rx_seen;
 	uint8_t *data; /* capture payload */
 	uint32_t data_len; /* capture len */
 	uint16_t dbr_ppdu_id; /* ppdu id from dbr */
 	uint16_t tx_ppdu_id; /* ppdu id from TX event */
+	uint16_t rx_seen_ppdu_id;
 	qdf_dma_addr_t dbr_address; /* capture len */
 	uint32_t tx_address1; /* capture len */
 	uint32_t tx_address2; /* capture len */
@@ -357,8 +385,12 @@ struct look_up_table {
 	struct whal_cfir_dma_hdr dma_hdr;
 	uint64_t txrx_tstamp;
 	uint64_t dbr_tstamp;
+	uint64_t rx_seen_tstamp;
 	uint32_t header_length;
 	uint32_t payload_length;
+	struct cfr_rx_history_entry rx_hist[CFR_RX_HISTORY_DEPTH];
+	uint8_t rx_hist_head;
+	uint8_t rx_hist_count;
 };
 
 struct unassoc_pool_entry {
@@ -592,8 +624,109 @@ struct pdev_cfr {
 	uint64_t tx_peer_status_cfr_fail;
 	uint64_t tx_evt_status_cfr_fail;
 	uint64_t tx_dbr_cookie_lookup_fail;
+	/* CFRR relay transport, session lifecycle, and complete-frame counters. */
+	uint32_t streamfs_record_seq;
+	uint8_t streamfs_record_enabled;
+	uint8_t streamfs_session_state;
+	uint8_t streamfs_last_stop_reason;
+	uint32_t streamfs_record_last_type;
+	uint32_t streamfs_record_last_len;
+	int32_t streamfs_record_last_status;
+	qdf_spinlock_t streamfs_record_lock;
+	qdf_mutex_t streamfs_lifecycle_lock;
+	uint8_t streamfs_user_disabled;
+	uint8_t streamfs_capture_active;
+	uint8_t streamfs_teardown;
+	uint64_t streamfs_session_id;
+	uint64_t streamfs_session_start_ns;
+	uint64_t streamfs_session_end_ns;
+	uint64_t streamfs_session_count;
+	uint64_t streamfs_session_reset_cnt;
+	uint64_t streamfs_record_attempt_cnt;
+	uint64_t streamfs_record_write_cnt;
+	uint64_t streamfs_record_fail_cnt;
+	uint64_t streamfs_record_drop_cnt;
+	uint64_t streamfs_record_drop_bytes;
+	uint64_t streamfs_record_reserve_fail_cnt;
+	uint64_t streamfs_record_invalid_len_cnt;
+	uint64_t streamfs_sequence_gap_cnt;
+	uint64_t streamfs_record_disabled_cnt;
+	uint64_t streamfs_record_disabled_user_cnt;
+	uint64_t streamfs_record_disabled_not_ready_cnt;
+	uint64_t streamfs_record_disabled_teardown_cnt;
+	uint64_t streamfs_record_bytes;
+	uint64_t streamfs_record_final_cnt;
+	uint64_t streamfs_record_raw_dbr_cnt;
+	uint64_t streamfs_record_rx_ppdu_cnt;
+	uint64_t streamfs_record_dbr_meta_cnt;
+	uint64_t streamfs_record_session_start_cnt;
+	uint64_t streamfs_record_session_end_cnt;
+	uint64_t streamfs_record_rearm_cnt;
+	uint64_t streamfs_drop_final_cnt;
+	uint64_t streamfs_drop_raw_dbr_cnt;
+	uint64_t streamfs_drop_rx_ppdu_cnt;
+	uint64_t streamfs_drop_dbr_meta_cnt;
+	uint64_t streamfs_drop_session_cnt;
+	uint64_t streamfs_drop_rearm_cnt;
+	uint64_t streamfs_session_records_attempted;
+	uint64_t streamfs_session_records_committed;
+	uint64_t streamfs_session_records_dropped;
+	uint64_t streamfs_session_bytes_committed;
+	uint64_t streamfs_session_bytes_dropped;
+	uint64_t streamfs_reader_sequence_gaps;
+	uint64_t streamfs_reader_resync_bytes;
+	uint64_t streamfs_reader_invalid_frames;
+	/* Fixed staging avoids allocation and partial publication in hot paths. */
+	void *streamfs_record_buf;
+	/* Optional legacy netlink transport remains independent from relayfs. */
+	qdf_spinlock_t netlink_lock;
+	void *netlink_buf;
+	uint32_t netlink_buf_size;
+	uint8_t netlink_enabled;
+	uint64_t netlink_send_cnt;
+	uint64_t netlink_drop_cnt;
+	qdf_mutex_t ppdu_sub_lock;
+	void *ppdu_subscribe_ctx;
 #ifdef WLAN_ENH_CFR_ENABLE
 	struct cfr_rcc_param rcc_param;
+	/* Bounded process-context recovery; RX/DBR callbacks only add evidence. */
+	struct cfr_rcc_param continuous_rcc_snapshot;
+	qdf_mutex_t continuous_config_lock;
+	qdf_mutex_t continuous_lifecycle_lock;
+	qdf_mutex_t continuous_fw_lock;
+	struct qdf_delayed_work continuous_rearm_work;
+	uint8_t continuous_work_initialized;
+	uint8_t continuous_enabled;
+	uint8_t continuous_capture_active;
+	uint8_t continuous_snapshot_valid;
+	uint8_t continuous_rearm_stage;
+	uint32_t continuous_poll_ms;
+	uint32_t continuous_stall_ms;
+	uint32_t continuous_drain_ms;
+	uint32_t continuous_backoff_ms;
+	uint64_t continuous_last_ppdu_ns;
+	uint64_t continuous_last_dbr_ns;
+	uint64_t continuous_last_rearm_ns;
+	uint64_t continuous_hard_complete_ns;
+	uint64_t continuous_last_rearm_dbr_ns;
+	uint64_t continuous_stall_cnt;
+	uint64_t continuous_generation;
+	uint64_t continuous_rearm_epoch;
+	uint64_t continuous_soft_rearm_cnt;
+	uint64_t continuous_hard_rearm_cnt;
+	uint64_t continuous_blind_rearm_cnt;
+	uint64_t continuous_lut_reset_cnt;
+	uint64_t continuous_lut_reset_fail_cnt;
+	uint64_t continuous_dp_cycle_cnt;
+	uint64_t continuous_dp_cycle_fail_cnt;
+	uint64_t continuous_rearm_fail_cnt;
+	int32_t continuous_last_status;
+	int32_t continuous_last_disable_status;
+	int32_t continuous_last_dp_disable_status;
+	int32_t continuous_last_lut_reset_status;
+	int32_t continuous_last_dp_enable_status;
+	int32_t continuous_last_enable_status;
+	uint8_t continuous_blind_retry_pending;
 	struct ta_ra_cfr_cfg global[MAX_TA_RA_ENTRIES];
 	uint64_t rx_tlv_evt_cnt;
 	qdf_timer_t lut_age_timer;
@@ -608,6 +741,87 @@ struct pdev_cfr {
 	uint8_t is_cap_interval_mode_sel_support;
 	uint8_t is_mo_marking_support;
 	uint8_t is_aoa_for_rcc_support;
+	uint8_t ppdu_subscribed;
+	/* PPDU/DBR ownership and validation telemetry for teardown diagnostics. */
+	uint32_t ppdu_sub_dp_pdev_id;
+	int32_t ppdu_sub_status;
+	uint64_t ppdu_sub_fail_cnt;
+	uint64_t ppdu_cb_cnt;
+	uint64_t ppdu_clone_fail_cnt;
+	uint8_t dbr_registered;
+	int32_t dbr_register_status;
+	uint64_t dbr_register_fail_cnt;
+	uint64_t dbr_cb_cnt;
+	uint64_t dbr_cb_invalid_payload_cnt;
+	uint64_t dbr_cb_invalid_length_cnt;
+	uint64_t dbr_cb_short_freeze_cnt;
+	uint64_t dbr_cb_short_mu_cnt;
+	uint32_t dbr_cb_last_cookie;
+	uint32_t dbr_cb_last_len;
+	uint32_t dbr_cb_last_parsed_len;
+	uint32_t dbr_cb_last_hdr_words;
+	uint32_t dbr_cb_last_total_bytes;
+	uint32_t dbr_cb_last_freeze_incl;
+	uint32_t dbr_cb_last_mu_incl;
+	uint64_t dbr_cb_last_paddr;
+	uint64_t rx_no_bb_capture_cnt;
+	uint64_t rx_cookie_lookup_fail_cnt;
+	uint64_t rx_vdev_lookup_fail_cnt;
+	uint64_t rx_lut_lookup_fail_cnt;
+	uint64_t dbr_lut_lookup_fail_cnt;
+	uint64_t dbr_overwrite_cnt;
+	uint64_t tx_overwrite_cnt;
+	uint64_t ppdu_match_cnt;
+	uint64_t ppdu_mismatch_cnt;
+	uint64_t hold_tx_only_cnt;
+	uint64_t hold_dbr_only_cnt;
+	uint64_t release_dbr_after_tx_cnt;
+	uint64_t release_tx_after_dbr_cnt;
+	uint64_t rx_seen_cookie_cnt;
+	uint64_t dbr_seen_cookie_cnt;
+	uint64_t dbr_with_rx_seen_cnt;
+	uint64_t dbr_without_rx_seen_cnt;
+	uint64_t reset_dbr_release_ok_cnt;
+	uint64_t reset_dbr_release_fail_cnt;
+	int32_t reset_dbr_last_status;
+	uint32_t reset_dbr_last_cookie;
+	uint32_t reset_dbr_last_srng_id;
+	uint32_t last_rx_cookie;
+	uint32_t last_rx_ppdu_id;
+	uint32_t last_dbr_cookie;
+	uint32_t last_dbr_ppdu_id;
+	uint64_t flush_dbr_release_ok_cnt;
+	uint64_t flush_dbr_release_fail_cnt;
+	int32_t flush_dbr_last_status;
+	uint32_t flush_dbr_last_cookie;
+	uint32_t flush_dbr_last_srng_id;
+	uint64_t cfr_info_send_missing_cnt;
+	uint64_t cfr_info_send_success_cnt;
+	uint64_t cfr_info_send_fail_cnt;
+	uint64_t rx_history_insert_cnt;
+	uint64_t rx_history_overwrite_cnt;
+	uint64_t rx_history_match_cnt;
+	uint64_t rx_history_miss_cnt;
+	uint64_t rx_history_find_cnt;
+	uint64_t rx_history_miss_empty_cnt;
+	uint64_t rx_history_miss_no_ppdu_cnt;
+	uint64_t rx_history_miss_paddr_mismatch_cnt;
+	uint64_t rx_history_miss_ppdu_mismatch_cnt;
+	uint64_t rx_history_miss_stale_cnt;
+	uint64_t rx_history_stale_cnt;
+	uint64_t rx_history_invalidated_cnt;
+	uint64_t release_from_rx_history_cnt;
+	uint32_t rx_history_last_cookie;
+	uint32_t rx_history_last_insert_ppdu_id;
+	uint32_t rx_history_last_match_ppdu_id;
+	uint32_t rx_history_last_match_age_ms;
+	uint32_t rx_history_last_lookup_cookie;
+	uint32_t rx_history_last_lookup_ppdu_id;
+	uint64_t rx_history_last_lookup_paddr;
+	uint32_t rx_history_last_candidate_ppdu_id;
+	uint64_t rx_history_last_candidate_paddr;
+	uint32_t rx_history_last_candidate_age_ms;
+	uint32_t rx_history_last_hist_count;
 #endif
 	struct unassoc_pool_entry unassoc_pool[MAX_CFR_ENABLED_CLIENTS];
 	struct nl_event_cb nl_cb;

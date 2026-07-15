@@ -330,12 +330,94 @@ QDF_STATUS ucfg_cfr_rcc_dump_dbg_counters(struct wlan_objmgr_vdev *vdev);
 QDF_STATUS ucfg_cfr_rcc_clr_dbg_counters(struct wlan_objmgr_vdev *vdev);
 
 /**
+ * ucfg_cfr_rcc_reset_lut() - release held DBR buffers and clear CFR LUT state
+ * @vdev: pointer to vdev object
+ *
+ * Return: status
+ */
+QDF_STATUS ucfg_cfr_rcc_reset_lut(struct wlan_objmgr_vdev *vdev);
+
+/**
  * ucfg_cfr_rcc_dump_lut() - function to display lookup table
  * @vdev: pointer to vdev object
  *
  * Return: status
  */
 QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev);
+
+/* Framed relay transport and bounded continuous-capture control contracts. */
+
+/**
+ * ucfg_cfr_streamfs_init() - initialize CFR relayfs data plane
+ * @pdev: pointer to pdev object
+ *
+ * Return: status
+ */
+QDF_STATUS ucfg_cfr_streamfs_init(struct wlan_objmgr_pdev *pdev);
+
+QDF_STATUS ucfg_cfr_streamfs_begin_session(struct wlan_objmgr_pdev *pdev);
+
+QDF_STATUS
+ucfg_cfr_streamfs_set_capture_active(struct wlan_objmgr_pdev *pdev,
+				     bool active);
+
+/**
+ * ucfg_cfr_streamfs_set_enabled() - enable or disable CFR relay writes
+ * @pdev: pointer to pdev object
+ * @enable: true to enable framed relay writes, false to disable
+ *
+ * Enabling also initializes streamfs so future writes have a relay channel.
+ * Disabling keeps CFR capture active and leaves the debugfs relay node present.
+ *
+ * Return: status
+ */
+QDF_STATUS ucfg_cfr_streamfs_set_enabled(struct wlan_objmgr_pdev *pdev,
+						 bool enable);
+
+/**
+ * ucfg_cfr_streamfs_reset() - discard buffered CFR relay data
+ * @pdev: pointer to pdev object
+ *
+ * Reset discards buffered bytes. An active transport starts a new session with
+ * a new session ID and a sequence beginning at its session_start record.
+ *
+ * Return: status
+ */
+QDF_STATUS ucfg_cfr_streamfs_reset(struct wlan_objmgr_pdev *pdev);
+
+QDF_STATUS
+ucfg_cfr_streamfs_report_reader_stats(struct wlan_objmgr_pdev *pdev,
+				      uint64_t sequence_gaps,
+				      uint64_t resync_bytes,
+				      uint64_t invalid_frames);
+
+QDF_STATUS ucfg_cfr_streamfs_clear_counters(struct wlan_objmgr_pdev *pdev);
+
+#ifdef WLAN_ENH_CFR_ENABLE
+QDF_STATUS
+ucfg_cfr_continuous_configure(struct wlan_objmgr_pdev *pdev, bool enabled,
+			      uint32_t poll_ms, uint32_t stall_ms,
+			      uint32_t drain_ms);
+QDF_STATUS ucfg_cfr_continuous_start(struct wlan_objmgr_pdev *pdev);
+void ucfg_cfr_continuous_stop(struct wlan_objmgr_pdev *pdev);
+#else
+static inline QDF_STATUS
+ucfg_cfr_continuous_configure(struct wlan_objmgr_pdev *pdev, bool enabled,
+			      uint32_t poll_ms, uint32_t stall_ms,
+			      uint32_t drain_ms)
+{
+	return QDF_STATUS_E_NOSUPPORT;
+}
+static inline QDF_STATUS
+ucfg_cfr_continuous_start(struct wlan_objmgr_pdev *pdev)
+{
+	return QDF_STATUS_E_NOSUPPORT;
+}
+static inline void
+ucfg_cfr_continuous_stop(struct wlan_objmgr_pdev *pdev)
+{
+}
+#endif
 
 /**
  * ucfg_cfr_subscribe_ppdu_desc() - User space interface to

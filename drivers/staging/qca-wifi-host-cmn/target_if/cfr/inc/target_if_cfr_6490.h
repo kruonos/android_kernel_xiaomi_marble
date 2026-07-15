@@ -45,4 +45,17 @@ QDF_STATUS
 target_if_cfr_subscribe_ppdu_desc(struct wlan_objmgr_pdev *pdev,
 				  bool is_subscribe);
 
+/**
+ * target_if_cfr_set_dp_pipeline() - toggle CFR datapath processing in place
+ * @pdev: pointer to pdev object
+ * @enable: enable or disable DP CFR and monitor reap processing
+ *
+ * The existing WDI subscription and its callback context remain installed.
+ * This is intended for bounded process-context RCC recovery only.
+ *
+ * Return: QDF status
+ */
+QDF_STATUS target_if_cfr_set_dp_pipeline(struct wlan_objmgr_pdev *pdev,
+					 bool enable);
+
 #endif /* _TARGET_IF_CFR_6490_H */
