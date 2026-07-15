@@ -24,6 +24,8 @@
 #if !defined(_WLAN_HDD_CFR_H)
 #define _WLAN_HDD_CFR_H
 
+struct kobject;
+
 #ifdef WLAN_CFR_ENABLE
 
 #include "wlan_cfr_utils_api.h"
@@ -71,6 +73,9 @@ hdd_cfr_disconnect(struct wlan_objmgr_vdev *vdev)
 extern const struct nla_policy cfr_config_policy[
 			QCA_WLAN_VENDOR_ATTR_PEER_CFR_MAX + 1];
 
+void hdd_cfr_sysfs_create(struct kobject *parent);
+void hdd_cfr_sysfs_destroy(struct kobject *parent);
+
 #define FEATURE_CFR_VENDOR_COMMANDS \
 { \
 	.info.vendor_id = QCA_NL80211_VENDOR_ID, \
@@ -88,6 +93,13 @@ hdd_cfr_disconnect(struct wlan_objmgr_vdev *vdev)
 {
 	return QDF_STATUS_SUCCESS;
 }
+
+static inline void hdd_cfr_sysfs_create(struct kobject *parent)
+{
+}
+
+static inline void hdd_cfr_sysfs_destroy(struct kobject *parent)
+{
+}
 #endif /* WLAN_CFR_ENABLE */
 #endif /* _WLAN_HDD_CFR_H */
-
