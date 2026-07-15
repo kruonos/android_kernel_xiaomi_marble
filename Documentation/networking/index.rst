@@ -85,6 +85,7 @@ Contents:
    plip
    ppp_generic
    proc_net_tcp
+   qca6490-cfr
    radiotap-headers
    rds
    regulatory
