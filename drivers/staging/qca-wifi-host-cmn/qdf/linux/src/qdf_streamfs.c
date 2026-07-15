@@ -147,3 +147,42 @@ void qdf_streamfs_write(qdf_streamfs_chan_t chan,
 }
 
 qdf_export_symbol(qdf_streamfs_write);
+
+/*
+ * Complete-record relay writer used by framed CFR streams.
+ *
+ * CFR serializes callers across CPUs.  IRQs are disabled here to protect the
+ * current CPU's relay cursor while the full staged record is copied.  The
+ * release store is the only point at which a concurrent reader may treat the
+ * new bytes as available.
+ */
+bool qdf_streamfs_write_atomic(qdf_streamfs_chan_t chan, const void *data,
+			       size_t length)
+{
+	struct rchan_buf *buf;
+	unsigned long flags;
+	size_t offset;
+	bool committed = false;
+
+	if (!chan || !data || !length || length > chan->subbuf_size)
+		return false;
+
+	local_irq_save(flags);
+	buf = *this_cpu_ptr(chan->buf);
+	if (unlikely(buf->offset + length > chan->subbuf_size)) {
+		length = relay_switch_subbuf(buf, length);
+		if (!length)
+			goto out;
+	}
+
+	offset = buf->offset;
+	memcpy(buf->data + offset, data, length);
+	/* Publish readable bytes only after the complete frame is resident. */
+	smp_store_release(&buf->offset, offset + length);
+	committed = true;
+out:
+	local_irq_restore(flags);
+	return committed;
+}
+
+qdf_export_symbol(qdf_streamfs_write_atomic);

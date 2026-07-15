@@ -961,6 +961,13 @@ static int relay_file_release(struct inode *inode, struct file *filp)
 }
 
 /*
+ * A producer may use buf->offset as the publication boundary for a complete
+ * record: it copies the bytes first, then advances offset with a release
+ * store.  Every relay read path that trusts this boundary must therefore use
+ * an acquire load before exposing the corresponding bytes to userspace.
+ */
+
+/*
  *	relay_file_read_consume - update the consumed count for the buffer
  */
 static void relay_file_read_consume(struct rchan_buf *buf,
@@ -969,10 +976,12 @@ static void relay_file_read_consume(struct rchan_buf *buf,
 {
 	size_t subbuf_size = buf->chan->subbuf_size;
 	size_t n_subbufs = buf->chan->n_subbufs;
+	/* Pair with complete-record release publication by CFR writers. */
+	size_t write_offset = smp_load_acquire(&buf->offset);
 	size_t read_subbuf;
 
 	if (buf->subbufs_produced == buf->subbufs_consumed &&
-	    buf->offset == buf->bytes_consumed)
+	    write_offset == buf->bytes_consumed)
 		return;
 
 	if (buf->bytes_consumed + bytes_consumed > subbuf_size) {
@@ -987,7 +996,7 @@ static void relay_file_read_consume(struct rchan_buf *buf,
 		read_subbuf = read_pos / buf->chan->subbuf_size;
 	if (buf->bytes_consumed + buf->padding[read_subbuf] == subbuf_size) {
 		if ((read_subbuf == buf->subbufs_produced % n_subbufs) &&
-		    (buf->offset == subbuf_size))
+		    (write_offset == subbuf_size))
 			return;
 		relay_subbufs_consumed(buf->chan, buf->cpu, 1);
 		buf->bytes_consumed = 0;
@@ -1001,6 +1010,8 @@ static int relay_file_read_avail(struct rchan_buf *buf)
 {
 	size_t subbuf_size = buf->chan->subbuf_size;
 	size_t n_subbufs = buf->chan->n_subbufs;
+	/* Pair with complete-record release publication by CFR writers. */
+	size_t write_offset = smp_load_acquire(&buf->offset);
 	size_t produced = buf->subbufs_produced;
 	size_t consumed;
 
@@ -1008,7 +1019,7 @@ static int relay_file_read_avail(struct rchan_buf *buf)
 
 	consumed = buf->subbufs_consumed;
 
-	if (unlikely(buf->offset > subbuf_size)) {
+	if (unlikely(write_offset > subbuf_size)) {
 		if (produced == consumed)
 			return 0;
 		return 1;
@@ -1020,14 +1031,14 @@ static int relay_file_read_avail(struct rchan_buf *buf)
 		buf->bytes_consumed = 0;
 	}
 
-	produced = (produced % n_subbufs) * subbuf_size + buf->offset;
+	produced = (produced % n_subbufs) * subbuf_size + write_offset;
 	consumed = (consumed % n_subbufs) * subbuf_size + buf->bytes_consumed;
 
 	if (consumed > produced)
 		produced += n_subbufs * subbuf_size;
 
 	if (consumed == produced) {
-		if (buf->offset == subbuf_size &&
+		if (write_offset == subbuf_size &&
 		    buf->subbufs_produced > buf->subbufs_consumed)
 			return 1;
 		return 0;
@@ -1049,7 +1060,9 @@ static size_t relay_file_read_subbuf_avail(size_t read_pos,
 	size_t subbuf_size = buf->chan->subbuf_size;
 
 	write_subbuf = (buf->data - buf->start) / subbuf_size;
-	write_offset = buf->offset > subbuf_size ? subbuf_size : buf->offset;
+	/* Pair with complete-record release publication by CFR writers. */
+	write_offset = smp_load_acquire(&buf->offset);
+	write_offset = write_offset > subbuf_size ? subbuf_size : write_offset;
 	read_subbuf = read_pos / subbuf_size;
 	read_offset = read_pos % subbuf_size;
 	padding = buf->padding[read_subbuf];

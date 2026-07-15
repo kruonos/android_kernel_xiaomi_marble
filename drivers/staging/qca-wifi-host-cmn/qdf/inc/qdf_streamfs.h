@@ -148,6 +148,22 @@ void qdf_streamfs_subbufs_consumed(qdf_streamfs_chan_t chan,
  */
 void qdf_streamfs_write(qdf_streamfs_chan_t chan, const void *data,
 			size_t length);
+
+/**
+ * qdf_streamfs_write_atomic() - copy then publish one complete relay record
+ * @chan: relay channel
+ * @data: complete record bytes
+ * @length: complete record length
+ *
+ * The caller must serialize writers. The relay write offset is published only
+ * after the full record has been copied, so a concurrent reader cannot observe
+ * stale bytes from a reserved but not-yet-filled slot.
+ *
+ * Return: true when the complete record was committed, false when full.
+ */
+bool qdf_streamfs_write_atomic(qdf_streamfs_chan_t chan, const void *data,
+			       size_t length);
+
 #else
 static inline qdf_dentry_t qdf_streamfs_create_dir(
 			const char *name, qdf_dentry_t parent)
@@ -203,5 +219,13 @@ qdf_streamfs_write(qdf_streamfs_chan_t chan, const void *data,
 		   size_t length)
 {
 }
+
+static inline bool
+qdf_streamfs_write_atomic(qdf_streamfs_chan_t chan, const void *data,
+			  size_t length)
+{
+	return false;
+}
+
 #endif /* WLAN_STREAMFS */
 #endif /* _QDF_STREAMFS_H */
