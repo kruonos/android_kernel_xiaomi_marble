@@ -78,6 +78,10 @@ Every high-rate write follows these rules:
 
 * Writers are serialized by the per-pdev CFR record lock.
 * A complete frame is assembled in a fixed 32 KiB staging buffer.
+* The ordered writer pins the current CPU for relay cursor stability but leaves
+  local interrupts enabled during the copy.
+* Hard-IRQ writers are rejected. CFR writers are supported from process,
+  softirq, and NAPI contexts under the per-pdev serializer.
 * The relay writer copies the complete frame before release-publishing the
   new relay offset.
 * The normal relay read path acquire-loads the offset before copying bytes to
@@ -113,8 +117,9 @@ DBR mirror path.
 CFRR framing ABI
 ================
 
-All multibyte CFRR fields are little-endian. Packed structure sizes are
-checked at build time.
+All multibyte CFRR fields are declared ``__le16``, ``__le32``, or ``__le64``
+and are populated with ``cpu_to_le*()`` conversions. Packed structure sizes
+are checked at build time.
 
 The version 2 frame header is 64 bytes:
 
@@ -177,6 +182,11 @@ Session start version 2 retains the complete version 1 prefix and appends
 capture count, interval mode, continuous-recovery state, and watchdog stall
 time. Readers that understand only the version 1 prefix can still inspect the
 base configuration.
+
+The fixed DBR metadata prefix is 112 bytes. Optional validated raw DMA header
+bytes follow that prefix in the same DBR_META payload. The RX PPDU evidence
+payload is a fixed 40-byte structure containing ten little-endian 32-bit
+fields.
 
 Reader requirements
 -------------------
@@ -294,8 +304,9 @@ The firmware capability must be checked before selecting count mode::
   cat /sys/kernel/qca6490/cfr_capture_count_supported
 
 On the tested QCA6490 firmware this value was zero. That firmware requires
-duration mode plus host recovery. ``profile_continuous`` selects count mode,
-so it should not be used when count support is zero.
+duration mode plus host recovery. ``profile_continuous`` reads the firmware
+capability and automatically selects duration mode when count mode is not
+supported.
 
 Example duration-mode experiment
 --------------------------------
@@ -376,6 +387,11 @@ reader that drains the relay continuously and reports any sequence gap.
 Validation evidence
 ===================
 
+The source-linked golden ABI check validates exported field declarations,
+conversion sites, packed sizes, and byte-exact little-endian vectors::
+
+  python3 tools/testing/selftests/net/qca6490_cfr_abi.py
+
 The implementation was exercised on a POCO F5 Marble device with QCA6490 WLAN
 and firmware capture-count support disabled.
 
@@ -450,6 +466,9 @@ Known limitations
 * Optional netlink duplication performs allocation and copying in an atomic
   context and is not recommended for sustained high-rate capture.
 * All-packet capture has measurable latency and CPU impact.
+* The ordered relay copy can span up to 32 KiB with preemption disabled. Local
+  interrupts remain enabled, but scheduler latency should still be measured
+  for workloads that approach the maximum record size.
 * Recovery status zero means the command path succeeded. Userspace should also
   confirm that PPDU or DBR evidence resumed.
 
@@ -469,4 +488,5 @@ DBR, PPDU, and correlation      ``target_if/cfr/src/target_if_cfr_enh.c``
 Sysfs control and health        ``qcacld-3.0/core/hdd/src/wlan_hdd_cfr.c``
 Ordered QDF relay writer        ``qdf/linux/src/qdf_streamfs.c``
 Relay read publication pairing  ``kernel/relay.c``
+CFRR golden ABI check           ``tools/testing/selftests/net/qca6490_cfr_abi.py``
 ==============================  ================================================================

@@ -155,9 +155,10 @@ void qdf_streamfs_write(qdf_streamfs_chan_t chan, const void *data,
  * @data: complete record bytes
  * @length: complete record length
  *
- * The caller must serialize writers. The relay write offset is published only
- * after the full record has been copied, so a concurrent reader cannot observe
- * stale bytes from a reserved but not-yet-filled slot.
+ * The caller must serialize every writer to the channel. The helper pins the
+ * current CPU but leaves local interrupts enabled while copying. The relay
+ * write offset is published only after the full record has been copied, so a
+ * concurrent reader cannot observe stale bytes from an unfilled slot.
  *
  * Return: true when the complete record was committed, false when full.
  */

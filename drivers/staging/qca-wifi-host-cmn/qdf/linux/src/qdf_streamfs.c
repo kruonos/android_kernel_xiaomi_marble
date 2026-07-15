@@ -21,6 +21,7 @@
  * This file provides QDF stream file system APIs
  */
 
+#include <linux/preempt.h>
 #include <i_qdf_streamfs.h>
 #include <qdf_trace.h>
 #include <qdf_streamfs.h>
@@ -151,24 +152,24 @@ qdf_export_symbol(qdf_streamfs_write);
 /*
  * Complete-record relay writer used by framed CFR streams.
  *
- * CFR serializes callers across CPUs.  IRQs are disabled here to protect the
- * current CPU's relay cursor while the full staged record is copied.  The
- * release store is the only point at which a concurrent reader may treat the
- * new bytes as available.
+ * CFR serializes callers across CPUs. Pinning the caller to its current CPU is
+ * sufficient for the per-CPU relay lookup because this channel has no other
+ * writer. Local interrupts remain enabled during the bounded copy. The release
+ * store is the only point at which a reader may treat the new bytes as
+ * available.
  */
 bool qdf_streamfs_write_atomic(qdf_streamfs_chan_t chan, const void *data,
 			       size_t length)
 {
 	struct rchan_buf *buf;
-	unsigned long flags;
 	size_t offset;
 	bool committed = false;
 
-	if (!chan || !data || !length || length > chan->subbuf_size)
+	if (!chan || !data || !length || length > chan->subbuf_size ||
+	    in_irq())
 		return false;
 
-	local_irq_save(flags);
-	buf = *this_cpu_ptr(chan->buf);
+	buf = *get_cpu_ptr(chan->buf);
 	if (unlikely(buf->offset + length > chan->subbuf_size)) {
 		length = relay_switch_subbuf(buf, length);
 		if (!length)
@@ -181,7 +182,7 @@ bool qdf_streamfs_write_atomic(qdf_streamfs_chan_t chan, const void *data,
 	smp_store_release(&buf->offset, offset + length);
 	committed = true;
 out:
-	local_irq_restore(flags);
+	put_cpu_ptr(chan->buf);
 	return committed;
 }
 

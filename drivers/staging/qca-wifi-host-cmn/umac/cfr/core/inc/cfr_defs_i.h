@@ -181,6 +181,7 @@ enum cfr_streamfs_stop_reason {
 
 #define CFR_STREAMFS_DBR_META_MAGIC 0x4d524244U /* "DBRM" little-endian */
 #define CFR_STREAMFS_DBR_META_VERSION 1
+#define CFR_STREAMFS_RX_PPDU_MAGIC 0x50505243U /* "CRPP" little-endian */
 
 #define CFR_STREAMFS_DBR_META_F_RAW_HDR_VALID 0x00000001U
 #define CFR_STREAMFS_DBR_META_F_FREEZE_PRESENT 0x00000002U
@@ -190,23 +191,23 @@ enum cfr_streamfs_stop_reason {
 #define CFR_STREAMFS_DBR_META_F_RAW_HEADER_BYTES 0x00000020U
 
 struct cfr_streamfs_dbr_meta_v1 {
-	uint32_t magic;
-	uint16_t version;
-	uint16_t meta_len;
-	uint32_t flags;
-	uint32_t cookie;
-	uint32_t phy_ppdu_id;
-	uint32_t paddr_low32;
-	uint32_t paddr_high32;
-	uint32_t dbr_len;
-	uint32_t parsed_len;
-	uint16_t dma_hdr_bytes;
-	uint16_t dma_hdr_words;
-	uint16_t freeze_tlv_len;
-	uint16_t mu_rx_user_size;
-	uint16_t mu_rx_num_users;
-	uint16_t sample_offset;
-	uint32_t sample_len;
+	__le32 magic;
+	__le16 version;
+	__le16 meta_len;
+	__le32 flags;
+	__le32 cookie;
+	__le32 phy_ppdu_id;
+	__le32 paddr_low32;
+	__le32 paddr_high32;
+	__le32 dbr_len;
+	__le32 parsed_len;
+	__le16 dma_hdr_bytes;
+	__le16 dma_hdr_words;
+	__le16 freeze_tlv_len;
+	__le16 mu_rx_user_size;
+	__le16 mu_rx_num_users;
+	__le16 sample_offset;
+	__le32 sample_len;
 	uint8_t tag;
 	uint8_t upload_done;
 	uint8_t capture_type;
@@ -215,8 +216,8 @@ struct cfr_streamfs_dbr_meta_v1 {
 	uint8_t num_chains;
 	uint8_t upload_pkt_bw;
 	uint8_t sw_peer_id_valid;
-	uint16_t sw_peer_id;
-	uint16_t total_bytes;
+	__le16 sw_peer_id;
+	__le16 total_bytes;
 	uint8_t header_version;
 	uint8_t target_id;
 	uint8_t cfr_fmt;
@@ -231,22 +232,35 @@ struct cfr_streamfs_dbr_meta_v1 {
 	uint8_t freeze_packet_subtype;
 	uint8_t freeze_directed;
 	uint8_t freeze_sw_peer_id_valid;
-	uint16_t freeze_sw_peer_id;
-	uint16_t freeze_phy_ppdu_id;
-	uint16_t packet_ta_lower_16;
-	uint16_t packet_ta_mid_16;
-	uint16_t packet_ta_upper_16;
-	uint16_t packet_ra_lower_16;
-	uint16_t packet_ra_mid_16;
-	uint16_t packet_ra_upper_16;
-	uint16_t tsf_word0;
-	uint16_t tsf_word1;
-	uint16_t tsf_word2;
-	uint16_t tsf_word3_or_user_mask_36_32;
-	uint16_t user_mask_word0;
-	uint16_t user_mask_word1;
-	uint16_t user_mask_word2;
-	uint32_t raw_header_len;
+	__le16 freeze_sw_peer_id;
+	__le16 freeze_phy_ppdu_id;
+	__le16 packet_ta_lower_16;
+	__le16 packet_ta_mid_16;
+	__le16 packet_ta_upper_16;
+	__le16 packet_ra_lower_16;
+	__le16 packet_ra_mid_16;
+	__le16 packet_ra_upper_16;
+	__le16 tsf_word0;
+	__le16 tsf_word1;
+	__le16 tsf_word2;
+	__le16 tsf_word3_or_user_mask_36_32;
+	__le16 user_mask_word0;
+	__le16 user_mask_word1;
+	__le16 user_mask_word2;
+	__le32 raw_header_len;
+} __packed;
+
+struct cfr_streamfs_rx_ppdu_v1 {
+	__le32 magic;
+	__le32 ppdu_id;
+	__le32 bb_captured_channel;
+	__le32 rx_location_info_valid;
+	__le32 chan_capture_status;
+	__le32 rtt_che_buffer_pointer_low32;
+	__le32 rtt_che_buffer_pointer_high8;
+	__le32 buffer_addr_low32;
+	__le32 buffer_addr_high32;
+	__le32 srng_id;
 } __packed;
 
 struct cfr_streamfs_record_hdr {
