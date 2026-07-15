@@ -66,15 +66,13 @@
 #define LUT_AGE_TIMER 3000
 #define LUT_AGE_THRESHOLD 3000
 
-/* Max size :
- * sizeof(csi_cfr_header) + 64 bytes(cfr header) + 16064 bytes(cfr payload)
+/*
+ * One relay reservation contains the CFRR header and the complete largest
+ * CFR payload. Keep total memory close to the former 4 MiB geometry while
+ * leaving bounded headroom for framing and future metadata.
  */
-#define STREAMFS_MAX_SUBBUF_CYP \
-	(sizeof(struct csi_cfr_header) + \
-	 (CYP_MAX_HEADER_LENGTH_WORDS * 4) + \
-	 CYP_MAX_DATA_LENGTH_BYTES)
-
-#define STREAMFS_NUM_SUBBUF_CYP 255
+#define STREAMFS_MAX_SUBBUF_CYP (32U * 1024U)
+#define STREAMFS_NUM_SUBBUF_CYP 128
 
 /* Max 37 users in MU case for Pine */
 #define PINE_CFR_MU_USERS 37
@@ -630,6 +628,14 @@ void target_if_cfr_stop_lut_age_timer(struct wlan_objmgr_pdev *pdev);
  * Return: none
  */
 void target_if_cfr_dump_lut_enh(struct wlan_objmgr_pdev *pdev);
+
+/**
+ * target_if_cfr_reset_lut_enh() - Release held DBR buffers and clear LUT state
+ * @pdev: objmgr PDEV
+ *
+ * Return: QDF status
+ */
+QDF_STATUS target_if_cfr_reset_lut_enh(struct wlan_objmgr_pdev *pdev);
 
 /**
  * target_if_cfr_config_rcc() - Start repetitive channel capture

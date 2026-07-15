@@ -25,6 +25,7 @@
 #include <wlan_lmac_if_def.h>
 #include <wlan_osif_priv.h>
 #include <init_deinit_lmac.h>
+#include <cfr_defs_i.h>
 #include <wlan_cfr_utils_api.h>
 #include <target_if_direct_buf_rx_api.h>
 #include <target_if_cfr_enh.h>
@@ -34,6 +35,198 @@
 #define NUM_CHAINS_FW_TO_HOST(n) ((1 << ((n) + 1)) - 1)
 
 #define CFR_INVALID_SNR 0x80
+#define CFR_RX_PPDU_SNAPSHOT_MAGIC 0x50505243U
+
+/*
+ * Loss-observable CFR evidence stream
+ *
+ * Raw DBR bytes, parsed DBR metadata, and RX PPDU snapshots are mirrored as
+ * independent CFRR records before correlation mutates the lookup table. The
+ * callback path uses bounded stack/fixed storage only; formatting, allocation,
+ * and recovery commands remain outside RX/DBR context.
+ */
+struct cfr_rx_ppdu_snapshot {
+	uint32_t magic;
+	uint32_t ppdu_id;
+	uint32_t bb_captured_channel;
+	uint32_t rx_location_info_valid;
+	uint32_t chan_capture_status;
+	uint32_t rtt_che_buffer_pointer_low32;
+	uint32_t rtt_che_buffer_pointer_high8;
+	uint32_t buffer_addr_low32;
+	uint32_t buffer_addr_high32;
+	uint32_t srng_id;
+};
+
+static QDF_STATUS target_if_cfr_streamfs_mirror(struct pdev_cfr *pcfr,
+					       uint32_t type, uint32_t meta0,
+					       uint32_t meta1, const void *data,
+					       uint32_t len, bool flush)
+{
+	if (!pcfr || !data || !len)
+		return QDF_STATUS_E_INVAL;
+
+	return cfr_streamfs_write_record(pcfr, type, meta0, meta1,
+					 data, len, NULL, 0, NULL, 0, flush);
+}
+
+static void
+target_if_cfr_meta_fill_freeze_common(struct cfr_streamfs_dbr_meta_v1 *meta,
+					      void *freeze_tlv)
+{
+	struct macrx_freeze_capture_channel *freeze =
+		(struct macrx_freeze_capture_channel *)freeze_tlv;
+
+	meta->freeze = freeze->freeze;
+	meta->freeze_capture_reason = freeze->capture_reason;
+	meta->freeze_packet_type = freeze->packet_type;
+	meta->freeze_packet_subtype = freeze->packet_sub_type;
+	meta->freeze_sw_peer_id_valid = freeze->sw_peer_id_valid;
+	meta->freeze_sw_peer_id = freeze->sw_peer_id;
+	meta->freeze_phy_ppdu_id = freeze->phy_ppdu_id;
+	meta->packet_ta_lower_16 = freeze->packet_ta_lower_16;
+	meta->packet_ta_mid_16 = freeze->packet_ta_mid_16;
+	meta->packet_ta_upper_16 = freeze->packet_ta_upper_16;
+	meta->packet_ra_lower_16 = freeze->packet_ra_lower_16;
+	meta->packet_ra_mid_16 = freeze->packet_ra_mid_16;
+	meta->packet_ra_upper_16 = freeze->packet_ra_upper_16;
+}
+
+static void
+target_if_cfr_meta_fill_freeze_v1(struct cfr_streamfs_dbr_meta_v1 *meta,
+					  void *freeze_tlv)
+{
+	struct macrx_freeze_capture_channel *freeze =
+		(struct macrx_freeze_capture_channel *)freeze_tlv;
+
+	target_if_cfr_meta_fill_freeze_common(meta, freeze_tlv);
+	meta->freeze_directed = freeze->directed;
+	meta->tsf_word0 = freeze->tsf_timestamp_15_0;
+	meta->tsf_word1 = freeze->tsf_timestamp_31_16;
+	meta->tsf_word2 = freeze->tsf_timestamp_47_32;
+	meta->tsf_word3_or_user_mask_36_32 = freeze->tsf_timestamp_63_48;
+	meta->user_mask_word0 = freeze->user_index_or_user_mask_5_0;
+}
+
+static void
+target_if_cfr_meta_fill_freeze_v3(struct cfr_streamfs_dbr_meta_v1 *meta,
+					  void *freeze_tlv)
+{
+	struct macrx_freeze_capture_channel_v3 *freeze =
+		(struct macrx_freeze_capture_channel_v3 *)freeze_tlv;
+
+	target_if_cfr_meta_fill_freeze_common(meta, freeze_tlv);
+	meta->freeze_directed = freeze->directed;
+	meta->tsf_word0 = freeze->tsf_timestamp_15_0;
+	meta->tsf_word1 = freeze->tsf_timestamp_31_16;
+	meta->tsf_word2 = freeze->tsf_timestamp_47_32;
+	meta->tsf_word3_or_user_mask_36_32 =
+		freeze->tsf_63_48_or_user_mask_36_32;
+	meta->user_mask_word0 = freeze->user_index_or_user_mask_15_0;
+	meta->user_mask_word1 = freeze->user_mask_31_16;
+}
+
+static void
+target_if_cfr_meta_fill_freeze_v5(struct cfr_streamfs_dbr_meta_v1 *meta,
+					  void *freeze_tlv)
+{
+	struct macrx_freeze_capture_channel_v5 *freeze =
+		(struct macrx_freeze_capture_channel_v5 *)freeze_tlv;
+
+	target_if_cfr_meta_fill_freeze_common(meta, freeze_tlv);
+	meta->freeze_directed = freeze->directed;
+	meta->tsf_word0 = freeze->tsf_timestamp_15_0;
+	meta->tsf_word1 = freeze->tsf_timestamp_31_16;
+	meta->tsf_word2 = freeze->tsf_timestamp_47_32;
+	meta->tsf_word3_or_user_mask_36_32 = freeze->tsf_timestamp_63_48;
+	meta->user_mask_word0 = freeze->user_index_or_user_mask_5_0;
+	meta->user_mask_word1 = freeze->user_mask_21_6;
+	meta->user_mask_word2 = freeze->user_mask_36_22;
+}
+
+static void
+target_if_cfr_streamfs_write_dbr_meta(struct pdev_cfr *pcfr, uint32_t cookie,
+				      uint64_t paddr, const uint8_t *data,
+				      size_t dbr_len,
+				      struct whal_cfir_enhanced_hdr *dma_hdr,
+				      size_t parsed_len, uint16_t sample_offset,
+				      size_t freeze_tlv_len, size_t mu_rx_user_size,
+				      void *freeze_tlv)
+{
+	struct cfr_streamfs_dbr_meta_v1 meta = {0};
+
+	if (!pcfr || !data || !dma_hdr || !parsed_len)
+		return;
+
+	if (sample_offset > parsed_len || sample_offset > dbr_len)
+		return;
+
+	meta.magic = CFR_STREAMFS_DBR_META_MAGIC;
+	meta.version = CFR_STREAMFS_DBR_META_VERSION;
+	meta.meta_len = sizeof(meta);
+	meta.flags = CFR_STREAMFS_DBR_META_F_RAW_HDR_VALID |
+		CFR_STREAMFS_DBR_META_F_SAMPLE_PRESENT;
+	meta.cookie = cookie;
+	meta.phy_ppdu_id = dma_hdr->phy_ppdu_id;
+	meta.paddr_low32 = (uint32_t)paddr;
+	meta.paddr_high32 = (uint32_t)(paddr >> 32);
+	meta.dbr_len = dbr_len > 0xffffffffU ? 0xffffffffU : (uint32_t)dbr_len;
+	meta.parsed_len = parsed_len > 0xffffffffU ?
+		0xffffffffU : (uint32_t)parsed_len;
+	meta.dma_hdr_bytes = sizeof(*dma_hdr);
+	meta.dma_hdr_words = dma_hdr->length;
+	meta.freeze_tlv_len = freeze_tlv_len > 0xffffU ?
+		0xffffU : (uint16_t)freeze_tlv_len;
+	meta.mu_rx_user_size = mu_rx_user_size > 0xffffU ?
+		0xffffU : (uint16_t)mu_rx_user_size;
+	meta.mu_rx_num_users = dma_hdr->mu_rx_num_users;
+	meta.sample_offset = sample_offset;
+	meta.sample_len = dma_hdr->total_bytes;
+	meta.tag = dma_hdr->tag;
+	meta.upload_done = dma_hdr->upload_done;
+	meta.capture_type = dma_hdr->capture_type;
+	meta.preamble_type = dma_hdr->preamble_type;
+	meta.nss = dma_hdr->nss;
+	meta.num_chains = dma_hdr->num_chains;
+	meta.upload_pkt_bw = dma_hdr->upload_pkt_bw;
+	meta.sw_peer_id_valid = dma_hdr->sw_peer_id_valid;
+	meta.sw_peer_id = dma_hdr->sw_peer_id;
+	meta.total_bytes = dma_hdr->total_bytes;
+	meta.header_version = dma_hdr->header_version;
+	meta.target_id = dma_hdr->target_id;
+	meta.cfr_fmt = dma_hdr->cfr_fmt;
+	meta.mu_rx_data_incl = dma_hdr->mu_rx_data_incl;
+	meta.freeze_data_incl = dma_hdr->freeze_data_incl;
+	meta.freeze_tlv_version = dma_hdr->freeze_tlv_version;
+	meta.decimation_factor = dma_hdr->decimation_factor;
+	meta.raw_header_len = sample_offset;
+
+	if (dma_hdr->freeze_data_incl && freeze_tlv) {
+		meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_PRESENT;
+		if (dma_hdr->freeze_tlv_version == MACRX_FREEZE_TLV_VERSION_3) {
+			target_if_cfr_meta_fill_freeze_v3(&meta, freeze_tlv);
+			meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
+		} else if (dma_hdr->freeze_tlv_version ==
+			   MACRX_FREEZE_TLV_VERSION_5) {
+			target_if_cfr_meta_fill_freeze_v5(&meta, freeze_tlv);
+			meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
+		} else if (dma_hdr->freeze_tlv_version <=
+			   MACRX_FREEZE_TLV_VERSION_2) {
+			target_if_cfr_meta_fill_freeze_v1(&meta, freeze_tlv);
+			meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
+		}
+	}
+
+	if (dma_hdr->mu_rx_data_incl)
+		meta.flags |= CFR_STREAMFS_DBR_META_F_MU_PRESENT;
+	if (sample_offset)
+		meta.flags |= CFR_STREAMFS_DBR_META_F_RAW_HEADER_BYTES;
+
+	(void)cfr_streamfs_write_record(pcfr, CFR_STREAMFS_RECORD_DBR_META,
+					cookie, dma_hdr->phy_ppdu_id,
+					&meta, sizeof(meta), data,
+					sample_offset, NULL, 0, false);
+}
 
 static u_int32_t end_magic = 0xBEAFDEAD;
 
@@ -47,7 +240,7 @@ static u_int32_t end_magic = 0xBEAFDEAD;
 static inline
 u_int32_t snr_to_signal_strength(uint8_t snr)
 {
-	/* target onverts snr to dBm */
+	/* target converts snr to dBm */
 	return snr;
 }
 #else
@@ -92,18 +285,186 @@ static int release_lut_entry_enh(struct wlan_objmgr_pdev *pdev,
 {
 	lut->dbr_recv = false;
 	lut->tx_recv = false;
+	lut->rx_seen = false;
 	lut->data = NULL;
 	lut->data_len = 0;
 	lut->dbr_ppdu_id = 0;
 	lut->tx_ppdu_id = 0;
+	lut->rx_seen_ppdu_id = 0;
 	lut->dbr_tstamp = 0;
 	lut->txrx_tstamp = 0;
+	lut->rx_seen_tstamp = 0;
 	lut->tx_address1 = 0;
 	lut->tx_address2 = 0;
 	lut->dbr_address = 0;
+	lut->header_length = 0;
+	lut->payload_length = 0;
+	qdf_mem_zero(&lut->dma_hdr, sizeof(struct whal_cfir_dma_hdr));
 	qdf_mem_zero(&lut->header, sizeof(struct csi_cfr_header));
 
 	return 0;
+}
+
+static void cfr_rx_history_clear(struct look_up_table *lut)
+{
+	qdf_mem_zero(lut->rx_hist, sizeof(lut->rx_hist));
+	lut->rx_hist_head = 0;
+	lut->rx_hist_count = 0;
+}
+
+static void cfr_rx_history_insert(struct pdev_cfr *pcfr,
+					  struct look_up_table *lut,
+					  uint32_t cookie, uint16_t ppdu_id,
+					  uint64_t tstamp_ms)
+{
+	struct cfr_rx_history_entry *entry;
+
+	entry = &lut->rx_hist[lut->rx_hist_head];
+	if (entry->valid)
+		pcfr->rx_history_overwrite_cnt++;
+	else if (lut->rx_hist_count < CFR_RX_HISTORY_DEPTH)
+		lut->rx_hist_count++;
+
+	entry->valid = true;
+	entry->ppdu_id = ppdu_id;
+	entry->tstamp_ms = tstamp_ms;
+	entry->tx_address1 = lut->tx_address1;
+	entry->tx_address2 = lut->tx_address2;
+	qdf_mem_copy(&entry->header, &lut->header,
+		     sizeof(struct csi_cfr_header));
+
+	lut->rx_hist_head++;
+	if (lut->rx_hist_head >= CFR_RX_HISTORY_DEPTH)
+		lut->rx_hist_head = 0;
+
+	pcfr->rx_history_insert_cnt++;
+	pcfr->rx_history_last_cookie = cookie;
+	pcfr->rx_history_last_insert_ppdu_id = ppdu_id;
+}
+
+static qdf_dma_addr_t
+cfr_rx_history_buf_addr(struct cfr_rx_history_entry *entry)
+{
+	return (qdf_dma_addr_t)entry->tx_address1 |
+		((uint64_t)(entry->tx_address2 & 0xf) << 32);
+}
+
+static struct cfr_rx_history_entry *
+cfr_rx_history_find(struct pdev_cfr *pcfr, struct look_up_table *lut,
+		    uint32_t cookie, uint16_t ppdu_id, qdf_dma_addr_t paddr,
+		    uint64_t now_ms)
+{
+	struct cfr_rx_history_entry *entry;
+	struct cfr_rx_history_entry *best = NULL;
+	uint64_t age_ms;
+	uint64_t best_age_ms = ~0ULL;
+	uint64_t candidate_age_ms;
+	uint64_t best_candidate_age_ms = ~0ULL;
+	qdf_dma_addr_t entry_paddr;
+	bool same_ppdu_seen = false;
+	bool same_paddr_seen = false;
+	bool stale_exact_seen = false;
+	int i;
+
+	pcfr->rx_history_find_cnt++;
+	pcfr->rx_history_last_lookup_cookie = cookie;
+	pcfr->rx_history_last_lookup_ppdu_id = ppdu_id;
+	pcfr->rx_history_last_lookup_paddr = (uint64_t)paddr;
+	pcfr->rx_history_last_hist_count = lut->rx_hist_count;
+	pcfr->rx_history_last_candidate_ppdu_id = 0;
+	pcfr->rx_history_last_candidate_paddr = 0;
+	pcfr->rx_history_last_candidate_age_ms = 0;
+
+	if (!lut->rx_hist_count) {
+		pcfr->rx_history_miss_cnt++;
+		pcfr->rx_history_miss_empty_cnt++;
+		return NULL;
+	}
+
+	for (i = 0; i < CFR_RX_HISTORY_DEPTH; i++) {
+		entry = &lut->rx_hist[i];
+		if (!entry->valid)
+			continue;
+
+		entry_paddr = cfr_rx_history_buf_addr(entry);
+		candidate_age_ms = now_ms >= entry->tstamp_ms ?
+			(now_ms - entry->tstamp_ms) : 0;
+		if (candidate_age_ms < best_candidate_age_ms) {
+			best_candidate_age_ms = candidate_age_ms;
+			pcfr->rx_history_last_candidate_ppdu_id = entry->ppdu_id;
+			pcfr->rx_history_last_candidate_paddr = (uint64_t)entry_paddr;
+			pcfr->rx_history_last_candidate_age_ms =
+				candidate_age_ms > 0xffffffffU ?
+				0xffffffffU : (uint32_t)candidate_age_ms;
+		}
+
+		if (entry->ppdu_id == ppdu_id)
+			same_ppdu_seen = true;
+		if (entry_paddr == paddr)
+			same_paddr_seen = true;
+		if (entry->ppdu_id != ppdu_id || entry_paddr != paddr)
+			continue;
+
+		age_ms = now_ms >= entry->tstamp_ms ?
+			(now_ms - entry->tstamp_ms) : 0;
+		if (age_ms > LUT_AGE_THRESHOLD) {
+			pcfr->rx_history_stale_cnt++;
+			stale_exact_seen = true;
+			continue;
+		}
+
+		if (!best || age_ms < best_age_ms) {
+			best = entry;
+			best_age_ms = age_ms;
+		}
+	}
+
+	if (!best) {
+		pcfr->rx_history_miss_cnt++;
+		if (stale_exact_seen)
+			pcfr->rx_history_miss_stale_cnt++;
+		else if (same_ppdu_seen)
+			pcfr->rx_history_miss_paddr_mismatch_cnt++;
+		else if (same_paddr_seen)
+			pcfr->rx_history_miss_ppdu_mismatch_cnt++;
+		else
+			pcfr->rx_history_miss_no_ppdu_cnt++;
+		return NULL;
+	}
+
+	pcfr->rx_history_match_cnt++;
+	pcfr->rx_history_last_cookie = cookie;
+	pcfr->rx_history_last_match_ppdu_id = ppdu_id;
+	pcfr->rx_history_last_match_age_ms = best_age_ms > 0xffffffffU ?
+		0xffffffffU : (uint32_t)best_age_ms;
+
+	return best;
+}
+
+static void cfr_rx_history_invalidate(struct pdev_cfr *pcfr,
+					      struct look_up_table *lut,
+					      struct cfr_rx_history_entry *entry)
+{
+	if (!entry || !entry->valid)
+		return;
+
+	entry->valid = false;
+	if (lut->rx_hist_count)
+		lut->rx_hist_count--;
+	pcfr->rx_history_invalidated_cnt++;
+}
+
+static void cfr_rx_history_invalidate_ppdu(struct pdev_cfr *pcfr,
+						   struct look_up_table *lut,
+						   uint16_t ppdu_id)
+{
+	int i;
+
+	for (i = 0; i < CFR_RX_HISTORY_DEPTH; i++) {
+		if (!lut->rx_hist[i].valid || lut->rx_hist[i].ppdu_id != ppdu_id)
+			continue;
+		cfr_rx_history_invalidate(pcfr, lut, &lut->rx_hist[i]);
+	}
 }
 
 /**
@@ -153,6 +514,81 @@ void target_if_cfr_dump_lut_enh(struct wlan_objmgr_pdev *pdev)
 }
 
 /**
+ * target_if_cfr_reset_lut_enh() - Release held DBR buffers and clear LUT state
+ * @pdev: objmgr PDEV
+ *
+ * Return: QDF status
+ */
+QDF_STATUS target_if_cfr_reset_lut_enh(struct wlan_objmgr_pdev *pdev)
+{
+	struct pdev_cfr *pcfr;
+	struct look_up_table *lut = NULL;
+	QDF_STATUS retval;
+	QDF_STATUS rel_status;
+	QDF_STATUS first_rel_status = QDF_STATUS_SUCCESS;
+	uint8_t srng_id;
+	int i;
+
+	if (!pdev)
+		return QDF_STATUS_E_NULL_VALUE;
+
+	retval = wlan_objmgr_pdev_try_get_ref(pdev, WLAN_CFR_ID);
+	if (retval != QDF_STATUS_SUCCESS) {
+		cfr_err("failed to get pdev reference");
+		return retval;
+	}
+
+	pcfr = wlan_objmgr_pdev_get_comp_private_obj(pdev,
+						     WLAN_UMAC_COMP_CFR);
+	if (!pcfr) {
+		cfr_err("pdev object for CFR is null");
+		wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
+		return QDF_STATUS_E_NULL_VALUE;
+	}
+
+	if (!pcfr->lut || !pcfr->lut_num) {
+		wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
+		return QDF_STATUS_SUCCESS;
+	}
+
+	srng_id = pcfr->rcc_param.srng_id;
+
+	qdf_spin_lock_bh(&pcfr->lut_lock);
+
+	for (i = 0; i < pcfr->lut_num; i++) {
+		lut = get_lut_entry(pcfr, i);
+		if (!lut)
+			continue;
+
+		if (lut->dbr_recv) {
+			rel_status = target_if_dbr_buf_release(pdev, DBR_MODULE_CFR,
+							     lut->dbr_address, i,
+							     srng_id);
+			pcfr->reset_dbr_last_status = rel_status;
+			pcfr->reset_dbr_last_cookie = i;
+			pcfr->reset_dbr_last_srng_id = srng_id;
+			if (rel_status == QDF_STATUS_SUCCESS)
+				pcfr->reset_dbr_release_ok_cnt++;
+			else {
+				pcfr->reset_dbr_release_fail_cnt++;
+				if (first_rel_status == QDF_STATUS_SUCCESS)
+					first_rel_status = rel_status;
+				continue;
+			}
+		}
+
+		release_lut_entry_enh(pdev, lut);
+		cfr_rx_history_clear(lut);
+	}
+
+	qdf_spin_unlock_bh(&pcfr->lut_lock);
+
+	wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
+
+	return first_rel_status;
+}
+
+/**
  * cfr_free_pending_dbr_events() - Flush all pending DBR events. This is useful
  * in cases where for RXTLV drops in host monitor status ring is huge.
  * @pdev: objmgr pdev
@@ -165,6 +601,8 @@ static void cfr_free_pending_dbr_events(struct wlan_objmgr_pdev *pdev)
 	struct look_up_table *lut = NULL;
 	int i = 0;
 	QDF_STATUS retval = 0;
+	QDF_STATUS rel_status;
+	uint8_t srng_id;
 
 	retval = wlan_objmgr_pdev_try_get_ref(pdev, WLAN_CFR_ID);
 	if (retval != QDF_STATUS_SUCCESS) {
@@ -179,6 +617,7 @@ static void cfr_free_pending_dbr_events(struct wlan_objmgr_pdev *pdev)
 		wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
 		return;
 	}
+	srng_id = pcfr->rcc_param.srng_id;
 
 	for (i = 0; i < pcfr->lut_num; i++) {
 		lut = get_lut_entry(pcfr, i);
@@ -187,11 +626,19 @@ static void cfr_free_pending_dbr_events(struct wlan_objmgr_pdev *pdev)
 
 		if (lut->dbr_recv && !lut->tx_recv &&
 		    (lut->dbr_tstamp < pcfr->last_success_tstamp)) {
-			target_if_dbr_buf_release(pdev, DBR_MODULE_CFR,
-						  lut->dbr_address,
-						  i, 0);
-			pcfr->flush_dbr_cnt++;
-			release_lut_entry_enh(pdev, lut);
+			rel_status = target_if_dbr_buf_release(pdev, DBR_MODULE_CFR,
+							     lut->dbr_address, i,
+							     srng_id);
+			pcfr->flush_dbr_last_status = rel_status;
+			pcfr->flush_dbr_last_cookie = i;
+			pcfr->flush_dbr_last_srng_id = srng_id;
+			if (rel_status == QDF_STATUS_SUCCESS) {
+				pcfr->flush_dbr_release_ok_cnt++;
+				pcfr->flush_dbr_cnt++;
+				release_lut_entry_enh(pdev, lut);
+			} else {
+				pcfr->flush_dbr_release_fail_cnt++;
+			}
 		}
 	}
 	wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
@@ -380,7 +827,7 @@ static void dump_mu_rx_info(void *mu_rx_user_info,
 			  ul_mu_user_info->sta_dcm,
 			  ul_mu_user_info->sta_coding,
 			  ul_mu_user_info->ru_start_index);
-		ul_mu_user_info += sizeof(struct uplink_user_setup_info);
+		ul_mu_user_info++;
 	}
 }
 
@@ -435,7 +882,7 @@ static void dump_mu_rx_info_v2(void *mu_rx_user_info,
 			  ul_mu_user_info->ru_start_index_80_1,
 			  ul_mu_user_info->ru_start_index_80_2,
 			  ul_mu_user_info->ru_start_index_80_3);
-		ul_mu_user_info += sizeof(struct uplink_user_setup_info_v2);
+		ul_mu_user_info++;
 	}
 }
 
@@ -786,27 +1233,36 @@ static int correlate_and_relay_enh(struct wlan_objmgr_pdev *pdev,
 	target_type = target_if_cfr_get_target_type(psoc);
 
 	if (module_id == CORRELATE_TX_EV_MODULE_ID) {
-		if (lut->tx_recv)
+		if (lut->tx_recv) {
+			pcfr->tx_overwrite_cnt++;
 			pcfr->cfr_dma_aborts++;
+		}
 		lut->tx_recv = true;
 	} else if (module_id == CORRELATE_DBR_MODULE_ID) {
 		pcfr->dbr_evt_cnt++;
+		if (lut->dbr_recv)
+			pcfr->dbr_overwrite_cnt++;
 		lut->dbr_recv = true;
 	}
 
 	if ((lut->dbr_recv) && (lut->tx_recv)) {
 		if (lut->dbr_ppdu_id == lut->tx_ppdu_id) {
+			pcfr->ppdu_match_cnt++;
 			pcfr->last_success_tstamp = lut->dbr_tstamp;
 			if (lut->dbr_tstamp > lut->txrx_tstamp) {
+				pcfr->release_dbr_after_tx_cnt++;
 				diff = lut->dbr_tstamp - lut->txrx_tstamp;
 				cfr_debug("<CORRELATE><%u>: "
 					  "TXRX evt -> DBR evt"
 					  "(delay = %llu ms)\n", cookie, diff);
 			} else if (lut->txrx_tstamp > lut->dbr_tstamp) {
+				pcfr->release_tx_after_dbr_cnt++;
 				diff = lut->txrx_tstamp - lut->dbr_tstamp;
 				cfr_debug("<CORRELATE><%u>: "
 					  "DBR evt -> TXRX evt"
 					  "(delay = %llu ms)\n", cookie, diff);
+			} else {
+				pcfr->release_dbr_after_tx_cnt++;
 			}
 
 			/*
@@ -844,6 +1300,7 @@ static int correlate_and_relay_enh(struct wlan_objmgr_pdev *pdev,
 				goto done;
 			}
 		} else {
+			pcfr->ppdu_mismatch_cnt++;
 			/*
 			 * When there is a ppdu id mismatch, discard the TXRX
 			 * event since multiple PPDUs are likely to have same
@@ -859,6 +1316,10 @@ static int correlate_and_relay_enh(struct wlan_objmgr_pdev *pdev,
 			status = STATUS_HOLD;
 		}
 	} else {
+		if (lut->tx_recv)
+			pcfr->hold_tx_only_cnt++;
+		else if (lut->dbr_recv)
+			pcfr->hold_dbr_only_cnt++;
 		status = STATUS_HOLD;
 	}
 done:
@@ -900,6 +1361,8 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 	uint16_t pdelta, gain;
 	uint16_t gain_info[HOST_MAX_CHAINS];
 	bool invalid_gain_table_idx = false;
+	struct cfr_rx_ppdu_snapshot rx_snapshot = {0};
+	uint64_t cur_tstamp;
 
 	if (qdf_unlikely(!pdev)) {
 		cfr_err("pdev is null\n");
@@ -920,12 +1383,37 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 		cfr_err("pdev object for CFR is NULL");
 		goto relref;
 	}
+	cfr_continuous_note_ppdu(pcfr);
 
 	cdp_rx_ppdu = (struct cdp_rx_indication_ppdu *)qdf_nbuf_data(nbuf);
 	cfr_info = &cdp_rx_ppdu->cfr_info;
+	buf_addr_extn = cfr_info->rtt_che_buffer_pointer_high8 & 0xF;
+	buf_addr = (cfr_info->rtt_che_buffer_pointer_low32 |
+		    ((uint64_t)buf_addr_extn << 32));
 
-	if (!cfr_info->bb_captured_channel)
+	rx_snapshot.magic = CFR_RX_PPDU_SNAPSHOT_MAGIC;
+	rx_snapshot.ppdu_id = cdp_rx_ppdu->ppdu_id;
+	rx_snapshot.bb_captured_channel = cfr_info->bb_captured_channel;
+	rx_snapshot.rx_location_info_valid = cfr_info->rx_location_info_valid;
+	rx_snapshot.chan_capture_status = cfr_info->chan_capture_status;
+	rx_snapshot.rtt_che_buffer_pointer_low32 =
+		cfr_info->rtt_che_buffer_pointer_low32;
+	rx_snapshot.rtt_che_buffer_pointer_high8 =
+		cfr_info->rtt_che_buffer_pointer_high8;
+	rx_snapshot.buffer_addr_low32 = (uint32_t)buf_addr;
+	rx_snapshot.buffer_addr_high32 = (uint32_t)(buf_addr >> 32);
+	rx_snapshot.srng_id = pcfr->rcc_param.srng_id;
+	(void)target_if_cfr_streamfs_mirror(pcfr,
+					   CFR_STREAMFS_RECORD_RX_PPDU,
+					   cdp_rx_ppdu->ppdu_id,
+					   pcfr->rcc_param.srng_id,
+					   &rx_snapshot, sizeof(rx_snapshot),
+					   false);
+
+	if (!cfr_info->bb_captured_channel) {
+		pcfr->rx_no_bb_capture_cnt++;
 		goto relref;
+	}
 
 	psoc = wlan_pdev_get_psoc(pdev);
 	if (qdf_unlikely(!psoc)) {
@@ -940,13 +1428,10 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 	}
 	target_type = target_if_cfr_get_target_type(psoc);
 	cfr_rx_ops = &rx_ops->cfr_rx_ops;
-	buf_addr_extn = cfr_info->rtt_che_buffer_pointer_high8 & 0xF;
-	buf_addr = (cfr_info->rtt_che_buffer_pointer_low32 |
-		    ((uint64_t)buf_addr_extn << 32));
-
 	srng_id = pcfr->rcc_param.srng_id;
 	if (target_if_dbr_cookie_lookup(pdev, DBR_MODULE_CFR, buf_addr,
 					&cookie, srng_id)) {
+		pcfr->rx_cookie_lookup_fail_cnt++;
 		cfr_debug("Cookie lookup failure for addr: 0x%pK",
 			  (void *)((uintptr_t)buf_addr));
 		goto relref;
@@ -972,6 +1457,7 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 
 	lut = get_lut_entry(pcfr, cookie);
 	if (qdf_unlikely(!lut)) {
+		pcfr->rx_lut_lookup_fail_cnt++;
 		cfr_err("lut is NULL");
 		goto unlock;
 	}
@@ -982,6 +1468,7 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 		vdev = wlan_objmgr_get_vdev_by_id_from_pdev(
 				pdev, pcfr->rcc_param.vdev_id, WLAN_CFR_ID);
 	if (qdf_unlikely(!vdev)) {
+		pcfr->rx_vdev_lookup_fail_cnt++;
 		cfr_debug("vdev is null\n");
 		goto unlock;
 	}
@@ -994,10 +1481,17 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 	wlan_objmgr_vdev_release_ref(vdev, WLAN_CFR_ID);
 
 	pcfr->rx_tlv_evt_cnt++;
+	cur_tstamp = qdf_ktime_to_ms(qdf_ktime_get());
+	pcfr->rx_seen_cookie_cnt++;
+	pcfr->last_rx_cookie = cookie;
+	pcfr->last_rx_ppdu_id = cdp_rx_ppdu->ppdu_id;
+	lut->rx_seen = true;
+	lut->rx_seen_ppdu_id = cdp_rx_ppdu->ppdu_id;
+	lut->rx_seen_tstamp = cur_tstamp;
 	lut->tx_ppdu_id = cdp_rx_ppdu->ppdu_id;
 	lut->tx_address1 = cfr_info->rtt_che_buffer_pointer_low32;
 	lut->tx_address2 = cfr_info->rtt_che_buffer_pointer_high8;
-	lut->txrx_tstamp = qdf_ktime_to_ms(qdf_ktime_get());
+	lut->txrx_tstamp = cur_tstamp;
 	header = &lut->header;
 	meta = &header->u.meta_enh;
 
@@ -1108,10 +1602,12 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 				     QDF_MAC_ADDR_SIZE);
 		}
 	}
+	cfr_rx_history_insert(pcfr, lut, cookie, cdp_rx_ppdu->ppdu_id,
+			      cur_tstamp);
 	status = correlate_and_relay_enh(pdev, cookie, lut,
 					 CORRELATE_TX_EV_MODULE_ID);
 	if (status == STATUS_STREAM_AND_RELEASE) {
-		if (cfr_rx_ops->cfr_info_send)
+		if (cfr_rx_ops->cfr_info_send) {
 			status = cfr_rx_ops->cfr_info_send(pdev,
 							   &lut->header,
 							   sizeof(struct
@@ -1119,7 +1615,15 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 							   lut->data,
 							   lut->data_len,
 							   &end_magic, 4);
+			if (status)
+				pcfr->cfr_info_send_fail_cnt++;
+			else
+				pcfr->cfr_info_send_success_cnt++;
+		} else {
+			pcfr->cfr_info_send_missing_cnt++;
+		}
 		dump_metadata(header, cookie);
+		cfr_rx_history_invalidate_ppdu(pcfr, lut, lut->tx_ppdu_id);
 		release_lut_entry_enh(pdev, lut);
 		target_if_dbr_buf_release(pdev, DBR_MODULE_CFR, buf_addr,
 					  cookie, srng_id);
@@ -1192,6 +1696,13 @@ static bool enh_cfr_dbr_event_handler(struct wlan_objmgr_pdev *pdev,
 	struct wlan_lmac_if_cfr_rx_ops *cfr_rx_ops = NULL;
 	struct enh_cfr_metadata *meta = NULL;
 	struct wlan_lmac_if_rx_ops *rx_ops;
+	size_t freeze_tlv_len = 0;
+	size_t parsed_len;
+	size_t sample_offset;
+	size_t mu_rx_info_offset = 0;
+	size_t mu_rx_user_size = 0;
+	struct cfr_rx_history_entry *history_match = NULL;
+	bool from_rx_history = false;
 
 	if ((!pdev) || (!payload)) {
 		cfr_err("pdev or payload is null");
@@ -1220,48 +1731,118 @@ static bool enh_cfr_dbr_event_handler(struct wlan_objmgr_pdev *pdev,
 
 	data = payload->vaddr;
 	cookie = payload->cookie;
+	pcfr->dbr_cb_cnt++;
+	pcfr->dbr_cb_last_cookie = cookie;
+	pcfr->dbr_cb_last_len = payload->dbr_len > 0xffffffffU ?
+		0xffffffffU : (uint32_t)payload->dbr_len;
+	pcfr->dbr_cb_last_paddr = (uint64_t)payload->paddr;
+	if (!data || payload->dbr_len < sizeof(struct whal_cfir_enhanced_hdr)) {
+		pcfr->dbr_cb_invalid_payload_cnt++;
+		cfr_err("invalid DBR payload vaddr %pK len %zu", data,
+			payload->dbr_len);
+		return true;
+	}
 
 	cfr_debug("<DBRCOMP><%u>:bufferaddr: 0x%pK cookie: %u\n", cookie,
 		  (void *)((uintptr_t)payload->paddr), cookie);
 
 	qdf_mem_copy(&dma_hdr, &data[0],
 		     sizeof(struct whal_cfir_enhanced_hdr));
+	sample_offset = (size_t)dma_hdr.length * 4;
+	parsed_len = sample_offset + dma_hdr.total_bytes;
+	pcfr->dbr_cb_last_hdr_words = dma_hdr.length;
+	pcfr->dbr_cb_last_total_bytes = dma_hdr.total_bytes;
+	pcfr->dbr_cb_last_freeze_incl = dma_hdr.freeze_data_incl;
+	pcfr->dbr_cb_last_mu_incl = dma_hdr.mu_rx_data_incl;
+	pcfr->dbr_cb_last_parsed_len = parsed_len > 0xffffffffU ?
+		0xffffffffU : (uint32_t)parsed_len;
+	if (!parsed_len || parsed_len > payload->dbr_len ||
+	    parsed_len > 0x7fffffffU) {
+		pcfr->dbr_cb_invalid_length_cnt++;
+		cfr_err("invalid CFR parsed len %zu dbr_len %zu hdr_words %u payload %u",
+			parsed_len, payload->dbr_len, dma_hdr.length,
+			dma_hdr.total_bytes);
+		return true;
+	}
+	if (sample_offset < sizeof(struct whal_cfir_enhanced_hdr) ||
+	    sample_offset > parsed_len) {
+		pcfr->dbr_cb_invalid_length_cnt++;
+		cfr_err("invalid CFR sample offset %zu parsed_len %zu hdr_words %u",
+			sample_offset, parsed_len, dma_hdr.length);
+		return true;
+	}
+	length = (int)parsed_len;
+	cfr_continuous_note_dbr(pcfr);
 
 	if (dma_hdr.freeze_data_incl) {
+		if (dma_hdr.freeze_tlv_version == MACRX_FREEZE_TLV_VERSION_3)
+			freeze_tlv_len =
+				sizeof(struct macrx_freeze_capture_channel_v3);
+		else if (dma_hdr.freeze_tlv_version == MACRX_FREEZE_TLV_VERSION_5)
+			freeze_tlv_len =
+				sizeof(struct macrx_freeze_capture_channel_v5);
+		else
+			freeze_tlv_len =
+				sizeof(struct macrx_freeze_capture_channel);
+
+		if (sizeof(struct whal_cfir_enhanced_hdr) + freeze_tlv_len >
+		    sample_offset) {
+			pcfr->dbr_cb_short_freeze_cnt++;
+			cfr_err("short CFR header for freeze TLV len %zu sample_offset %zu",
+				freeze_tlv_len, sample_offset);
+			return true;
+		}
+
 		freeze_tlv = data + sizeof(struct whal_cfir_enhanced_hdr);
 		capture_type = freeze_reason_to_capture_type(freeze_tlv);
 	}
 
 	if (dma_hdr.mu_rx_data_incl) {
-		uint8_t freeze_tlv_len;
-
-		if (dma_hdr.freeze_tlv_version == MACRX_FREEZE_TLV_VERSION_3) {
-			freeze_tlv_len =
-				sizeof(struct macrx_freeze_capture_channel_v3);
-		} else if (dma_hdr.freeze_tlv_version ==
-				MACRX_FREEZE_TLV_VERSION_5) {
-			freeze_tlv_len =
-				sizeof(struct macrx_freeze_capture_channel_v5);
-		} else {
-			freeze_tlv_len =
-				sizeof(struct macrx_freeze_capture_channel);
-		}
-		mu_rx_user_info = data +
-			sizeof(struct whal_cfir_enhanced_hdr) +
+		mu_rx_info_offset = sizeof(struct whal_cfir_enhanced_hdr) +
 			(dma_hdr.freeze_data_incl ? freeze_tlv_len : 0);
+		mu_rx_user_size =
+			(dma_hdr.freeze_tlv_version == MACRX_FREEZE_TLV_VERSION_5) ?
+			sizeof(struct uplink_user_setup_info_v2) :
+			sizeof(struct uplink_user_setup_info);
+
+		if (mu_rx_info_offset > sample_offset ||
+		    (size_t)dma_hdr.mu_rx_num_users >
+		    ((sample_offset - mu_rx_info_offset) / mu_rx_user_size)) {
+			pcfr->dbr_cb_short_mu_cnt++;
+			cfr_err("short CFR header for %u MU RX users sample_offset %zu offset %zu user_size %zu",
+				dma_hdr.mu_rx_num_users, sample_offset,
+				mu_rx_info_offset, mu_rx_user_size);
+			return true;
+		}
+
+		mu_rx_user_info = data + mu_rx_info_offset;
 	}
 
-	length  = dma_hdr.length * 4;
-	length += dma_hdr.total_bytes; /* size of cfr data */
+	(void)target_if_cfr_streamfs_mirror(pcfr,
+			CFR_STREAMFS_RECORD_RAW_DBR, cookie,
+			(uint32_t)parsed_len, data,
+			(uint32_t)parsed_len, false);
+	target_if_cfr_streamfs_write_dbr_meta(pcfr, cookie,
+			(uint64_t)payload->paddr, data, payload->dbr_len,
+			&dma_hdr, parsed_len, (uint16_t)sample_offset,
+			freeze_tlv_len, mu_rx_user_size, freeze_tlv);
 
 	qdf_spin_lock_bh(&pcfr->lut_lock);
 
 	lut = get_lut_entry(pcfr, cookie);
 	if (!lut) {
+		pcfr->dbr_lut_lookup_fail_cnt++;
 		cfr_err("lut is NULL");
 		qdf_spin_unlock_bh(&pcfr->lut_lock);
 		return true;
 	}
+	pcfr->dbr_seen_cookie_cnt++;
+	pcfr->last_dbr_cookie = cookie;
+	pcfr->last_dbr_ppdu_id = dma_hdr.phy_ppdu_id;
+	if (lut->rx_seen)
+		pcfr->dbr_with_rx_seen_cnt++;
+	else
+		pcfr->dbr_without_rx_seen_cnt++;
 
 	lut->data = data;
 	lut->data_len = length;
@@ -1272,6 +1853,25 @@ static bool enh_cfr_dbr_event_handler(struct wlan_objmgr_pdev *pdev,
 	lut->payload_length = dma_hdr.total_bytes;
 	qdf_mem_copy(&lut->dma_hdr, &dma_hdr,
 		     sizeof(struct whal_cfir_dma_hdr));
+	if (!lut->tx_recv || lut->tx_ppdu_id != dma_hdr.phy_ppdu_id) {
+		history_match = cfr_rx_history_find(pcfr, lut, cookie,
+						       dma_hdr.phy_ppdu_id,
+						       payload->paddr,
+						       lut->dbr_tstamp);
+		if (history_match) {
+			qdf_mem_copy(&lut->header, &history_match->header,
+				     sizeof(struct csi_cfr_header));
+			lut->tx_recv = true;
+			lut->tx_ppdu_id = history_match->ppdu_id;
+			lut->tx_address1 = history_match->tx_address1;
+			lut->tx_address2 = history_match->tx_address2;
+			lut->txrx_tstamp = history_match->tstamp_ms;
+			lut->rx_seen = true;
+			lut->rx_seen_ppdu_id = history_match->ppdu_id;
+			lut->rx_seen_tstamp = history_match->tstamp_ms;
+			from_rx_history = true;
+		}
+	}
 
 	header = &lut->header;
 	header->cmn.chip_type = pcfr->chip_type;
@@ -1301,11 +1901,13 @@ static bool enh_cfr_dbr_event_handler(struct wlan_objmgr_pdev *pdev,
 	status = correlate_and_relay_enh(pdev, cookie, lut,
 					 CORRELATE_DBR_MODULE_ID);
 	if (status == STATUS_STREAM_AND_RELEASE) {
+		if (from_rx_history)
+			pcfr->release_from_rx_history_cnt++;
 		/*
 		 * Message format
 		 *  Meta data Header + actual payload + trailer
 		 */
-		if (cfr_rx_ops->cfr_info_send)
+		if (cfr_rx_ops->cfr_info_send) {
 			status = cfr_rx_ops->cfr_info_send(pdev,
 							   &lut->header,
 							   sizeof(struct
@@ -1313,7 +1915,15 @@ static bool enh_cfr_dbr_event_handler(struct wlan_objmgr_pdev *pdev,
 							   lut->data,
 							   lut->data_len,
 							   &end_magic, 4);
+			if (status)
+				pcfr->cfr_info_send_fail_cnt++;
+			else
+				pcfr->cfr_info_send_success_cnt++;
+		} else {
+			pcfr->cfr_info_send_missing_cnt++;
+		}
 		dump_metadata(header, cookie);
+		cfr_rx_history_invalidate_ppdu(pcfr, lut, lut->tx_ppdu_id);
 		release_lut_entry_enh(pdev, lut);
 		status = true;
 	} else if (status == STATUS_HOLD) {
@@ -1340,20 +1950,43 @@ target_if_register_to_dbr_enh(struct wlan_objmgr_pdev *pdev)
 	struct wlan_lmac_if_direct_buf_rx_tx_ops *dbr_tx_ops = NULL;
 	struct dbr_module_config dbr_config;
 	struct wlan_lmac_if_tx_ops *tx_ops;
+	struct pdev_cfr *pcfr;
+	QDF_STATUS status;
+
+	pcfr = wlan_objmgr_pdev_get_comp_private_obj(pdev,
+						      WLAN_UMAC_COMP_CFR);
 
 	psoc = wlan_pdev_get_psoc(pdev);
 	tx_ops = wlan_psoc_get_lmac_if_txops(psoc);
 	if (!tx_ops) {
 		cfr_err("tx_ops is NULL");
+		if (pcfr) {
+			pcfr->dbr_registered = 0;
+			pcfr->dbr_register_status = QDF_STATUS_E_NULL_VALUE;
+			pcfr->dbr_register_fail_cnt++;
+		}
 		return QDF_STATUS_SUCCESS;
 	}
 	dbr_tx_ops = &tx_ops->dbr_tx_ops;
 	dbr_config.num_resp_per_event = DBR_NUM_RESP_PER_EVENT_CFR;
 	dbr_config.event_timeout_in_ms = DBR_EVENT_TIMEOUT_IN_MS_CFR;
 	if (dbr_tx_ops->direct_buf_rx_module_register) {
-		return dbr_tx_ops->direct_buf_rx_module_register
+		status = dbr_tx_ops->direct_buf_rx_module_register
 			(pdev, DBR_MODULE_CFR, &dbr_config,
 			 enh_cfr_dbr_event_handler);
+		if (pcfr) {
+			pcfr->dbr_register_status = status;
+			pcfr->dbr_registered = status == QDF_STATUS_SUCCESS;
+			if (status != QDF_STATUS_SUCCESS)
+				pcfr->dbr_register_fail_cnt++;
+		}
+		return status;
+	}
+
+	if (pcfr) {
+		pcfr->dbr_registered = 0;
+		pcfr->dbr_register_status = QDF_STATUS_E_NOSUPPORT;
+		pcfr->dbr_register_fail_cnt++;
 	}
 
 	return QDF_STATUS_SUCCESS;
@@ -2249,6 +2882,14 @@ QDF_STATUS cfr_enh_deinit_pdev(struct wlan_objmgr_psoc *psoc,
 		cfr_err("pcfr is NULL");
 		return QDF_STATUS_E_NULL_VALUE;
 	}
+	cfr_continuous_stop(pdev);
+	if (READ_ONCE(pcfr->continuous_work_initialized)) {
+		qdf_mutex_acquire(&pcfr->continuous_config_lock);
+		pcfr->continuous_snapshot_valid = 0;
+		qdf_mem_zero(&pcfr->continuous_rcc_snapshot,
+			     sizeof(pcfr->continuous_rcc_snapshot));
+		qdf_mutex_release(&pcfr->continuous_config_lock);
+	}
 
 	if (pcfr->lut_timer_init) {
 		qdf_timer_stop(&pcfr->lut_age_timer);
@@ -2269,6 +2910,77 @@ QDF_STATUS cfr_enh_deinit_pdev(struct wlan_objmgr_psoc *psoc,
 	pcfr->tx_peer_status_cfr_fail = 0;
 	pcfr->tx_evt_status_cfr_fail = 0;
 	pcfr->tx_dbr_cookie_lookup_fail = 0;
+	pcfr->dbr_cb_cnt = 0;
+	pcfr->dbr_cb_invalid_payload_cnt = 0;
+	pcfr->dbr_cb_invalid_length_cnt = 0;
+	pcfr->dbr_cb_short_freeze_cnt = 0;
+	pcfr->dbr_cb_short_mu_cnt = 0;
+	pcfr->dbr_cb_last_cookie = 0;
+	pcfr->dbr_cb_last_len = 0;
+	pcfr->dbr_cb_last_parsed_len = 0;
+	pcfr->dbr_cb_last_hdr_words = 0;
+	pcfr->dbr_cb_last_total_bytes = 0;
+	pcfr->dbr_cb_last_freeze_incl = 0;
+	pcfr->dbr_cb_last_mu_incl = 0;
+	pcfr->dbr_cb_last_paddr = 0;
+	pcfr->rx_no_bb_capture_cnt = 0;
+	pcfr->rx_cookie_lookup_fail_cnt = 0;
+	pcfr->rx_vdev_lookup_fail_cnt = 0;
+	pcfr->rx_lut_lookup_fail_cnt = 0;
+	pcfr->dbr_lut_lookup_fail_cnt = 0;
+	pcfr->dbr_overwrite_cnt = 0;
+	pcfr->tx_overwrite_cnt = 0;
+	pcfr->ppdu_match_cnt = 0;
+	pcfr->ppdu_mismatch_cnt = 0;
+	pcfr->hold_tx_only_cnt = 0;
+	pcfr->hold_dbr_only_cnt = 0;
+	pcfr->release_dbr_after_tx_cnt = 0;
+	pcfr->release_tx_after_dbr_cnt = 0;
+	pcfr->rx_seen_cookie_cnt = 0;
+	pcfr->dbr_seen_cookie_cnt = 0;
+	pcfr->dbr_with_rx_seen_cnt = 0;
+	pcfr->dbr_without_rx_seen_cnt = 0;
+	pcfr->reset_dbr_release_ok_cnt = 0;
+	pcfr->reset_dbr_release_fail_cnt = 0;
+	pcfr->reset_dbr_last_status = 0;
+	pcfr->reset_dbr_last_cookie = 0;
+	pcfr->reset_dbr_last_srng_id = 0;
+	pcfr->last_rx_cookie = 0;
+	pcfr->last_rx_ppdu_id = 0;
+	pcfr->last_dbr_cookie = 0;
+	pcfr->last_dbr_ppdu_id = 0;
+	pcfr->flush_dbr_release_ok_cnt = 0;
+	pcfr->flush_dbr_release_fail_cnt = 0;
+	pcfr->flush_dbr_last_status = 0;
+	pcfr->flush_dbr_last_cookie = 0;
+	pcfr->flush_dbr_last_srng_id = 0;
+	pcfr->cfr_info_send_missing_cnt = 0;
+	pcfr->cfr_info_send_success_cnt = 0;
+	pcfr->cfr_info_send_fail_cnt = 0;
+	pcfr->rx_history_insert_cnt = 0;
+	pcfr->rx_history_overwrite_cnt = 0;
+	pcfr->rx_history_match_cnt = 0;
+	pcfr->rx_history_miss_cnt = 0;
+	pcfr->rx_history_find_cnt = 0;
+	pcfr->rx_history_miss_empty_cnt = 0;
+	pcfr->rx_history_miss_no_ppdu_cnt = 0;
+	pcfr->rx_history_miss_paddr_mismatch_cnt = 0;
+	pcfr->rx_history_miss_ppdu_mismatch_cnt = 0;
+	pcfr->rx_history_miss_stale_cnt = 0;
+	pcfr->rx_history_stale_cnt = 0;
+	pcfr->rx_history_invalidated_cnt = 0;
+	pcfr->release_from_rx_history_cnt = 0;
+	pcfr->rx_history_last_cookie = 0;
+	pcfr->rx_history_last_insert_ppdu_id = 0;
+	pcfr->rx_history_last_match_ppdu_id = 0;
+	pcfr->rx_history_last_match_age_ms = 0;
+	pcfr->rx_history_last_lookup_cookie = 0;
+	pcfr->rx_history_last_lookup_ppdu_id = 0;
+	pcfr->rx_history_last_lookup_paddr = 0;
+	pcfr->rx_history_last_candidate_ppdu_id = 0;
+	pcfr->rx_history_last_candidate_paddr = 0;
+	pcfr->rx_history_last_candidate_age_ms = 0;
+	pcfr->rx_history_last_hist_count = 0;
 	qdf_mem_zero(&pcfr->rcc_param, sizeof(struct cfr_rcc_param));
 	qdf_mem_zero(&pcfr->global, (sizeof(struct ta_ra_cfr_cfg) *
 				     MAX_TA_RA_ENTRIES));

@@ -25,6 +25,7 @@
 #include <qdf_module.h>
 #ifdef WLAN_ENH_CFR_ENABLE
 #include "cdp_txrx_ctrl.h"
+#include <target_if_cfr_enh.h>
 #endif
 
 #ifdef WLAN_ENH_CFR_ENABLE
@@ -575,7 +576,6 @@ QDF_STATUS ucfg_cfr_set_en_bitmap(struct wlan_objmgr_vdev *vdev,
 
 	return status;
 }
-#endif
 
 /*
  * Copy user provided input for ul_mu_user_mask into cfr_rcc_param.
@@ -1140,13 +1140,105 @@ QDF_STATUS ucfg_cfr_rcc_clr_dbg_counters(struct wlan_objmgr_vdev *vdev)
 	pcfr->flush_timeout_dbr_cnt = 0;
 	pcfr->invalid_dma_length_cnt = 0;
 	pcfr->clear_txrx_event = 0;
+	pcfr->last_success_tstamp = 0;
 	pcfr->cfr_dma_aborts = 0;
 	pcfr->tx_peer_status_cfr_fail = 0;
 	pcfr->tx_evt_status_cfr_fail = 0;
 	pcfr->tx_dbr_cookie_lookup_fail = 0;
+	pcfr->dbr_cb_cnt = 0;
+	pcfr->dbr_cb_invalid_payload_cnt = 0;
+	pcfr->dbr_cb_invalid_length_cnt = 0;
+	pcfr->dbr_cb_short_freeze_cnt = 0;
+	pcfr->dbr_cb_short_mu_cnt = 0;
+	pcfr->dbr_cb_last_cookie = 0;
+	pcfr->dbr_cb_last_len = 0;
+	pcfr->dbr_cb_last_parsed_len = 0;
+	pcfr->dbr_cb_last_hdr_words = 0;
+	pcfr->dbr_cb_last_total_bytes = 0;
+	pcfr->dbr_cb_last_freeze_incl = 0;
+	pcfr->dbr_cb_last_mu_incl = 0;
+	pcfr->dbr_cb_last_paddr = 0;
+	pcfr->rx_no_bb_capture_cnt = 0;
+	pcfr->rx_cookie_lookup_fail_cnt = 0;
+	pcfr->rx_vdev_lookup_fail_cnt = 0;
+	pcfr->rx_lut_lookup_fail_cnt = 0;
+	pcfr->dbr_lut_lookup_fail_cnt = 0;
+	pcfr->dbr_overwrite_cnt = 0;
+	pcfr->tx_overwrite_cnt = 0;
+	pcfr->ppdu_match_cnt = 0;
+	pcfr->ppdu_mismatch_cnt = 0;
+	pcfr->hold_tx_only_cnt = 0;
+	pcfr->hold_dbr_only_cnt = 0;
+	pcfr->release_dbr_after_tx_cnt = 0;
+	pcfr->release_tx_after_dbr_cnt = 0;
+	pcfr->rx_seen_cookie_cnt = 0;
+	pcfr->dbr_seen_cookie_cnt = 0;
+	pcfr->dbr_with_rx_seen_cnt = 0;
+	pcfr->dbr_without_rx_seen_cnt = 0;
+	pcfr->reset_dbr_release_ok_cnt = 0;
+	pcfr->reset_dbr_release_fail_cnt = 0;
+	pcfr->reset_dbr_last_status = 0;
+	pcfr->reset_dbr_last_cookie = 0;
+	pcfr->reset_dbr_last_srng_id = 0;
+	pcfr->last_rx_cookie = 0;
+	pcfr->last_rx_ppdu_id = 0;
+	pcfr->last_dbr_cookie = 0;
+	pcfr->last_dbr_ppdu_id = 0;
+	pcfr->flush_dbr_release_ok_cnt = 0;
+	pcfr->flush_dbr_release_fail_cnt = 0;
+	pcfr->flush_dbr_last_status = 0;
+	pcfr->flush_dbr_last_cookie = 0;
+	pcfr->flush_dbr_last_srng_id = 0;
+	pcfr->cfr_info_send_missing_cnt = 0;
+	pcfr->cfr_info_send_success_cnt = 0;
+	pcfr->cfr_info_send_fail_cnt = 0;
+	pcfr->rx_history_insert_cnt = 0;
+	pcfr->rx_history_overwrite_cnt = 0;
+	pcfr->rx_history_match_cnt = 0;
+	pcfr->rx_history_miss_cnt = 0;
+	pcfr->rx_history_find_cnt = 0;
+	pcfr->rx_history_miss_empty_cnt = 0;
+	pcfr->rx_history_miss_no_ppdu_cnt = 0;
+	pcfr->rx_history_miss_paddr_mismatch_cnt = 0;
+	pcfr->rx_history_miss_ppdu_mismatch_cnt = 0;
+	pcfr->rx_history_miss_stale_cnt = 0;
+	pcfr->rx_history_stale_cnt = 0;
+	pcfr->rx_history_invalidated_cnt = 0;
+	pcfr->release_from_rx_history_cnt = 0;
+	pcfr->rx_history_last_cookie = 0;
+	pcfr->rx_history_last_insert_ppdu_id = 0;
+	pcfr->rx_history_last_match_ppdu_id = 0;
+	pcfr->rx_history_last_match_age_ms = 0;
+	pcfr->rx_history_last_lookup_cookie = 0;
+	pcfr->rx_history_last_lookup_ppdu_id = 0;
+	pcfr->rx_history_last_lookup_paddr = 0;
+	pcfr->rx_history_last_candidate_ppdu_id = 0;
+	pcfr->rx_history_last_candidate_paddr = 0;
+	pcfr->rx_history_last_candidate_age_ms = 0;
+	pcfr->rx_history_last_hist_count = 0;
 	wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
 
 	return status;
+}
+
+QDF_STATUS ucfg_cfr_rcc_reset_lut(struct wlan_objmgr_vdev *vdev)
+{
+#ifdef WLAN_ENH_CFR_ENABLE
+	struct pdev_cfr *pcfr = NULL;
+	struct wlan_objmgr_pdev *pdev = NULL;
+	QDF_STATUS status = QDF_STATUS_SUCCESS;
+
+	status = dev_sanity_check(vdev, &pdev, &pcfr);
+	if (status != QDF_STATUS_SUCCESS)
+		return status;
+
+	status = target_if_cfr_reset_lut_enh(pdev);
+	wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
+
+	return status;
+#else
+	return QDF_STATUS_E_NOSUPPORT;
+#endif
 }
 
 QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev)
@@ -1176,6 +1268,125 @@ QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev)
 
 	return status;
 }
+
+/* Framed relay and continuous-recovery dispatcher boundary. */
+QDF_STATUS ucfg_cfr_streamfs_init(struct wlan_objmgr_pdev *pdev)
+{
+	QDF_STATUS status;
+	struct pdev_cfr *pcfr;
+
+	if (!pdev) {
+		cfr_err("pdev is NULL");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	status = cfr_streamfs_init(pdev);
+	if (status != QDF_STATUS_SUCCESS)
+		return status;
+
+	pcfr = wlan_objmgr_pdev_get_comp_private_obj(pdev, WLAN_UMAC_COMP_CFR);
+	if (!pcfr)
+		return QDF_STATUS_E_FAILURE;
+
+	return QDF_STATUS_SUCCESS;
+}
+
+QDF_STATUS ucfg_cfr_streamfs_begin_session(struct wlan_objmgr_pdev *pdev)
+{
+	return cfr_streamfs_begin_session(pdev);
+}
+
+QDF_STATUS
+ucfg_cfr_streamfs_set_capture_active(struct wlan_objmgr_pdev *pdev, bool active)
+{
+	return cfr_streamfs_set_capture_active(pdev, active);
+}
+
+QDF_STATUS ucfg_cfr_streamfs_set_enabled(struct wlan_objmgr_pdev *pdev,
+						 bool enable)
+{
+	QDF_STATUS status;
+	struct pdev_cfr *pcfr;
+
+	if (!pdev) {
+		cfr_err("pdev is NULL");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	pcfr = wlan_objmgr_pdev_get_comp_private_obj(pdev, WLAN_UMAC_COMP_CFR);
+	if (!pcfr)
+		return QDF_STATUS_E_FAILURE;
+
+	if (!enable) {
+		status = cfr_streamfs_end_session(
+			pdev, CFR_STREAMFS_STOP_RELAY_DISABLED, true);
+		qdf_spin_lock_bh(&pcfr->streamfs_record_lock);
+		pcfr->streamfs_user_disabled = 1;
+		qdf_spin_unlock_bh(&pcfr->streamfs_record_lock);
+		return status;
+	}
+
+	status = cfr_streamfs_init(pdev);
+	if (status != QDF_STATUS_SUCCESS)
+		return status;
+
+	qdf_spin_lock_bh(&pcfr->streamfs_record_lock);
+	if (!pcfr->chan_ptr || pcfr->streamfs_teardown) {
+		qdf_spin_unlock_bh(&pcfr->streamfs_record_lock);
+		return QDF_STATUS_E_FAILURE;
+	}
+	pcfr->streamfs_user_disabled = 0;
+	qdf_spin_unlock_bh(&pcfr->streamfs_record_lock);
+
+	if (READ_ONCE(pcfr->streamfs_capture_active))
+		return cfr_streamfs_begin_session(pdev);
+
+	return QDF_STATUS_SUCCESS;
+}
+
+QDF_STATUS ucfg_cfr_streamfs_reset(struct wlan_objmgr_pdev *pdev)
+{
+	if (!pdev)
+		return QDF_STATUS_E_INVAL;
+
+	return cfr_streamfs_reset(pdev);
+}
+
+QDF_STATUS
+ucfg_cfr_streamfs_report_reader_stats(struct wlan_objmgr_pdev *pdev,
+				      uint64_t sequence_gaps,
+				      uint64_t resync_bytes,
+				      uint64_t invalid_frames)
+{
+	return cfr_streamfs_report_reader_stats(pdev, sequence_gaps,
+						resync_bytes, invalid_frames);
+}
+
+QDF_STATUS ucfg_cfr_streamfs_clear_counters(struct wlan_objmgr_pdev *pdev)
+{
+	return cfr_streamfs_clear_counters(pdev);
+}
+
+#ifdef WLAN_ENH_CFR_ENABLE
+QDF_STATUS
+ucfg_cfr_continuous_configure(struct wlan_objmgr_pdev *pdev, bool enabled,
+			      uint32_t poll_ms, uint32_t stall_ms,
+			      uint32_t drain_ms)
+{
+	return cfr_continuous_configure(pdev, enabled, poll_ms, stall_ms,
+					drain_ms);
+}
+
+QDF_STATUS ucfg_cfr_continuous_start(struct wlan_objmgr_pdev *pdev)
+{
+	return cfr_continuous_start(pdev);
+}
+
+void ucfg_cfr_continuous_stop(struct wlan_objmgr_pdev *pdev)
+{
+	cfr_continuous_stop(pdev);
+}
+#endif
 
 static void cfr_set_filter(struct wlan_objmgr_pdev *pdev, bool enable,
 			   struct cdp_monitor_filter *filter_val)
@@ -1216,13 +1427,15 @@ QDF_STATUS ucfg_cfr_committed_rcc_config(struct wlan_objmgr_vdev *vdev)
 	status = dev_sanity_check(vdev, &pdev, &pcfr);
 	if (status != QDF_STATUS_SUCCESS)
 		return status;
+	qdf_mutex_acquire(&pcfr->continuous_fw_lock);
+	qdf_mutex_acquire(&pcfr->continuous_config_lock);
 
 	psoc = wlan_pdev_get_psoc(pdev);
 
 	if (!psoc) {
 		cfr_err("psoc is null!");
-		wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
-		return QDF_STATUS_E_NULL_VALUE;
+		status = QDF_STATUS_E_NULL_VALUE;
+		goto out;
 	}
 
 	pcfr->rcc_param.vdev_id = wlan_vdev_get_id(vdev);
@@ -1243,8 +1456,8 @@ QDF_STATUS ucfg_cfr_committed_rcc_config(struct wlan_objmgr_vdev *vdev)
 	if (cfr_is_filter_enabled(&pcfr->rcc_param)) {
 		if (pcfr->cfr_timer_enable) {
 			cfr_err("Not allowed: Periodic capture is enabled.\n");
-			wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
-			return QDF_STATUS_E_NOSUPPORT;
+			status = QDF_STATUS_E_NOSUPPORT;
+			goto out;
 		}
 
 		if (pcfr->rcc_param.m_all_ftm_ack) {
@@ -1312,6 +1525,7 @@ QDF_STATUS ucfg_cfr_committed_rcc_config(struct wlan_objmgr_vdev *vdev)
 	status = tgt_cfr_config_rcc(pdev, &pcfr->rcc_param);
 	if (status == QDF_STATUS_SUCCESS) {
 		cfr_info("CFR commit done\n");
+		cfr_continuous_update_snapshot(pcfr, &pcfr->rcc_param);
 		/* Update global config */
 		tgt_cfr_update_global_cfg(pdev);
 
@@ -1324,6 +1538,9 @@ QDF_STATUS ucfg_cfr_committed_rcc_config(struct wlan_objmgr_vdev *vdev)
 
 	pcfr->rcc_param.num_grp_tlvs = 0;
 	pcfr->rcc_param.modified_in_curr_session = 0;
+out:
+	qdf_mutex_release(&pcfr->continuous_config_lock);
+	qdf_mutex_release(&pcfr->continuous_fw_lock);
 	wlan_objmgr_pdev_release_ref(pdev, WLAN_CFR_ID);
 
 	return status;
@@ -1430,6 +1647,7 @@ bool ucfg_cfr_get_rcc_enabled(struct wlan_objmgr_vdev *vdev)
 
 	return rcc_enabled;
 }
+#endif
 
 #ifdef WLAN_ENH_CFR_ENABLE
 QDF_STATUS ucfg_cfr_subscribe_ppdu_desc(struct wlan_objmgr_pdev *pdev,

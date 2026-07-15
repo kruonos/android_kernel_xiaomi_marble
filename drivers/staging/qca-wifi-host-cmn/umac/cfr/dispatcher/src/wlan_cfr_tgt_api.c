@@ -25,14 +25,26 @@
 #include <wlan_cfr_utils_api.h>
 #include <target_type.h>
 #include <cfr_defs_i.h>
+#include <linux/overflow.h>
 
+/*
+ * Final correlated-capture fan-out
+ *
+ * Relayfs is the always-independent, all-or-drop data plane. Optional
+ * netlink duplication uses a fixed per-pdev buffer under its own lock, so a
+ * missing or slow netlink consumer cannot block or fragment the relay stream.
+ */
 uint32_t tgt_cfr_info_send(struct wlan_objmgr_pdev *pdev, void *head,
 			   size_t hlen, void *data, size_t dlen, void *tail,
 			   size_t tlen)
 {
 	struct pdev_cfr *pa;
-	uint32_t status, total_len;
-	uint8_t *nl_data = NULL;
+	void (*netlink_cb)(uint8_t vdev_id, uint32_t pid,
+			   const void *data, uint32_t data_len);
+	uint32_t status = QDF_STATUS_SUCCESS;
+	uint32_t pid;
+	uint8_t vdev_id;
+	size_t total_len;
 
 	pa = wlan_objmgr_pdev_get_comp_private_obj(pdev, WLAN_UMAC_COMP_CFR);
 
@@ -41,45 +53,44 @@ uint32_t tgt_cfr_info_send(struct wlan_objmgr_pdev *pdev, void *head,
 		return -1;
 	}
 
-	/* If CFR data transport mode is NL event then send single event*/
-	if (pa->nl_cb.cfr_nl_cb) {
-		total_len = hlen + dlen + tlen;
+	if (check_add_overflow(hlen, dlen, &total_len) ||
+	    check_add_overflow(total_len, tlen, &total_len) ||
+	    total_len > 0xffffffffU)
+		return QDF_STATUS_E_INVAL;
 
-		nl_data = qdf_mem_malloc(total_len);
-		if (!nl_data) {
-			cfr_err("failed to alloc memory, len %d, vdev_id %d",
-				total_len, pa->nl_cb.vdev_id);
-			return QDF_STATUS_E_FAILURE;
-		}
+	/* Relay is the independent data plane and never waits for netlink. */
+	vdev_id = READ_ONCE(pa->nl_cb.vdev_id);
+	status = cfr_streamfs_write_record(pa, CFR_STREAMFS_RECORD_FINAL,
+					    vdev_id, total_len,
+					    head, hlen, data, dlen, tail, tlen,
+					    false);
 
-		if (hlen)
-			qdf_mem_copy(nl_data, head, hlen);
-
-		if (dlen)
-			qdf_mem_copy(nl_data + hlen, data, dlen);
-
-		if (tlen)
-			qdf_mem_copy(nl_data + hlen + dlen, tail, tlen);
-
-		pa->nl_cb.cfr_nl_cb(pa->nl_cb.vdev_id, pa->nl_cb.pid,
-				    (const void *)nl_data, total_len);
-		qdf_mem_free(nl_data);
-
-		return QDF_STATUS_SUCCESS;
+	/* Full-payload netlink duplication is explicit vendor-command opt-in. */
+	qdf_spin_lock_bh(&pa->netlink_lock);
+	netlink_cb = pa->nl_cb.cfr_nl_cb;
+	if (!pa->netlink_enabled || !netlink_cb) {
+		qdf_spin_unlock_bh(&pa->netlink_lock);
+		return status;
+	}
+	if (!pa->netlink_buf || total_len > pa->netlink_buf_size) {
+		pa->netlink_drop_cnt++;
+		qdf_spin_unlock_bh(&pa->netlink_lock);
+		return status;
 	}
 
-	if (head)
-		status = cfr_streamfs_write(pa, (const void *)head, hlen);
+	vdev_id = pa->nl_cb.vdev_id;
+	pid = pa->nl_cb.pid;
+	if (hlen)
+		qdf_mem_copy(pa->netlink_buf, head, hlen);
+	if (dlen)
+		qdf_mem_copy((uint8_t *)pa->netlink_buf + hlen, data, dlen);
+	if (tlen)
+		qdf_mem_copy((uint8_t *)pa->netlink_buf + hlen + dlen,
+			     tail, tlen);
 
-	if (data)
-		status = cfr_streamfs_write(pa, (const void *)data, dlen);
-
-	if (tail)
-		status = cfr_streamfs_write(pa, (const void *)tail, tlen);
-
-
-	/* finalise the write */
-	status = cfr_streamfs_flush(pa);
+	netlink_cb(vdev_id, pid, pa->netlink_buf, (uint32_t)total_len);
+	pa->netlink_send_cnt++;
+	qdf_spin_unlock_bh(&pa->netlink_lock);
 
 	return status;
 }
