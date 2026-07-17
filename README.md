@@ -1,150 +1,425 @@
-# How do I submit patches to Android Common Kernels
+# Marble QCA6490 CFR and CSI research kernel
 
-1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
-   These patches will be merged automatically in the corresponding common kernels. If the patch is already
-   in upstream Linux, post a backport of the patch that conforms to the patch requirements below.
-   - Do not send patches upstream that contain only symbol exports. To be considered for upstream Linux,
-additions of `EXPORT_SYMBOL_GPL()` require an in-tree modular driver that uses the symbol -- so include
-the new driver or changes to an existing driver in the same patchset as the export.
-   - When sending patches upstream, the commit message must contain a clear case for why the patch
-is needed and beneficial to the community. Enabling out-of-tree drivers or functionality is not
-not a persuasive case.
+[![Device](https://img.shields.io/badge/device-POCO%20F5%20%28marble%29-2563eb)](#tested-platform)
+[![Kernel](https://img.shields.io/badge/kernel-5.10%20Bouquet-334155)](#tested-platform)
+[![Status](https://img.shields.io/badge/status-research%20prototype-f59e0b)](#project-status)
+[![ABI](https://img.shields.io/badge/CFRR-v2-0f766e)](Documentation/networking/qca6490-cfr.rst)
 
-2. LESS GOOD: Develop your patches out-of-tree (from an upstream Linux point-of-view). Unless these are
-   fixing an Android-specific bug, these are very unlikely to be accepted unless they have been
-   coordinated with kernel-team@android.com. If you want to proceed, post a patch that conforms to the
-   patch requirements below.
+This branch adds a bounded, loss-observable Channel Frequency Response
+transport for the Qualcomm QCA6490 WLAN chipset used by the POCO F5. It is a
+kernel research project for reproducible CFR and CSI collection, not a generic
+replacement kernel and not a universal flash package.
 
-# Common Kernel patch requirements
+> [!WARNING]
+> Flashing a custom kernel can prevent boot, break Wi-Fi, or make encrypted
+> data permanently inaccessible. Make a complete off-device backup of user
+> data, then back up the active boot-related partitions and keep a known-good
+> recovery package. This repository does not provide a universal installer.
 
-- All patches must conform to the Linux kernel coding standards and pass `script/checkpatch.pl`
-- Patches shall not break gki_defconfig or allmodconfig builds for arm, arm64, x86, x86_64 architectures
-(see  https://source.android.com/setup/build/building-kernels)
-- If the patch is not merged from an upstream branch, the subject must be tagged with the type of patch:
-`UPSTREAM:`, `BACKPORT:`, `FROMGIT:`, `FROMLIST:`, or `ANDROID:`.
-- All patches must have a `Change-Id:` tag (see https://gerrit-review.googlesource.com/Documentation/user-changeid.html)
-- If an Android bug has been assigned, there must be a `Bug:` tag.
-- All patches must have a `Signed-off-by:` tag by the author and the submitter
+![QCA6490 CFR validation summary](Documentation/networking/qca6490-cfr-validation.svg)
 
-Additional requirements are listed below based on patch type
+## Why this matters
 
-## Requirements for backports from mainline Linux: `UPSTREAM:`, `BACKPORT:`
+Qualcomm CFR data normally crosses several asynchronous paths before it is
+available to userspace. Raw DBR data, RX PPDU metadata, and the final correlated
+capture can arrive at different times. Firmware can also stop producing DBR
+events while traffic continues.
 
-- If the patch is a cherry-pick from Linux mainline with no changes at all
-    - tag the patch subject with `UPSTREAM:`.
-    - add upstream commit information with a `(cherry picked from commit ...)` line
-    - Example:
-        - if the upstream commit message is
-```
-        important patch from upstream
+This project changes that behavior in five important ways:
 
-        This is the detailed description of the important patch
+1. **Complete-frame relay transport**: every CFRR record is committed in full
+   or dropped in full. Partial records are never published.
+2. **Raw evidence before correlation**: raw DBR bytes, parsed DBR metadata, and
+   RX PPDU evidence are preserved before lookup-table correlation changes state.
+3. **Reproducible sessions**: each capture has one session identifier, ordered
+   sequence numbers, start configuration, stop reason, and final counters.
+4. **Bounded recovery**: soft, hard, and one-time blind recovery stages restart
+   stalled QCA6490 capture without replacing the relay file descriptor.
+5. **Observable failure**: overload, malformed input, correlation misses,
+   recovery attempts, and reader resynchronization are counted explicitly.
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-```
->- then Joe Smith would upload the patch for the common kernel as
-```
-        UPSTREAM: important patch from upstream
+The kernel exports CFR evidence. Antenna mapping, RF calibration, phase
+correction, channel-matrix construction, and higher-level CSI analysis remain
+userspace research tasks.
 
-        This is the detailed description of the important patch
+## Project status
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
+| Area | Status |
+| --- | --- |
+| Complete CFRR framing | Validated on the 5.10.258 reference build |
+| Raw DBR and RX PPDU export | Validated on the 5.10.258 reference build |
+| Session start and end records | Validated on the 5.10.258 reference build |
+| Soft, hard, and blind recovery | Validated on the 5.10.258 reference build |
+| 180 second sustained capture | Passed on the reference build with zero transport gaps |
+| No-reader relay exhaustion | Passed with counted complete-frame drops |
+| Explicit little-endian payload ABI | Source-tested and feature-build tested |
+| Final public branch on-device boot | Not yet repeated after audit fixes |
+| Physical antenna and lane mapping | Unverified |
+| Other devices and WLAN chipsets | Unsupported |
 
-        Bug: 135791357
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry picked from commit c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
+The full architecture, ABI, controls, and validation record are documented in
+[Documentation/networking/qca6490-cfr.rst](Documentation/networking/qca6490-cfr.rst).
 
-- If the patch requires any changes from the upstream version, tag the patch with `BACKPORT:`
-instead of `UPSTREAM:`.
-    - use the same tags as `UPSTREAM:`
-    - add comments about the changes under the `(cherry picked from commit ...)` line
-    - Example:
-```
-        BACKPORT: important patch from upstream
+## Tested platform
 
-        This is the detailed description of the important patch
+This project has one primary test target. Similar Xiaomi devices are not
+implicitly supported.
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
+| Component | Tested value |
+| --- | --- |
+| Device | POCO F5, codename `marble` |
+| SoC family | Qualcomm SM7475, Snapdragon 7+ Gen 2 |
+| Wi-Fi chipset | Qualcomm QCA6490 |
+| WLAN firmware image | `/vendor/firmware_mnt/image/qca6490/amss20.bin` |
+| Vendor and firmware base | HyperOS `OS3.0.4.0.VMRMIXM` global |
+| Vendor fingerprint | `POCO/marble_global/marble:15/AQ3A.250226.002/OS3.0.4.0.VMRMIXM:user/release-keys` |
+| Active research userspace | Custom `infinity_marble-user`, Android 16, API 36, build ID `BP4A.251205.006` |
+| Public source branch base | `5.10.256-Bouquet-v4.7` |
+| Device validation kernel | `5.10.258-Bouquet-v4.9` |
+| Live reference QCA module hash | `c33b14c6acc5d9f2a19d072c62224fcb5cac661e55b6f4e1b81a2e1f121e8188` |
+| Public branch feature-build module hash | `1b36b6d4974c765e114394f95e49d610f7edbe1f826ae859bc19c7caa58865aa` |
+| Firmware capture-count capability | Not advertised, value `0` |
 
-        Bug: 135791357
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry picked from commit c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        [joe: Resolved minor conflict in drivers/foo/bar.c ]
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
+The active system distribution version, internal WLAN firmware version string,
+and `amss20.bin` hash were not archived during the test run. The exact vendor
+package, vendor fingerprint, system build identity, and firmware image path are
+recorded above. This missing firmware identity is a reproducibility limitation,
+not an implied compatibility claim.
 
-## Requirements for other backports: `FROMGIT:`, `FROMLIST:`,
+## Repository layout
 
-- If the patch has been merged into an upstream maintainer tree, but has not yet
-been merged into Linux mainline
-    - tag the patch subject with `FROMGIT:`
-    - add info on where the patch came from as `(cherry picked from commit <sha1> <repo> <branch>)`. This
-must be a stable maintainer branch (not rebased, so don't use `linux-next` for example).
-    - if changes were required, use `BACKPORT: FROMGIT:`
-    - Example:
-        - if the commit message in the maintainer tree is
-```
-        important patch from upstream
+| Path | Purpose |
+| --- | --- |
+| `Documentation/networking/qca6490-cfr.rst` | Research architecture and ABI reference |
+| `tools/qca6490_cfr/cfrr_inspect.py` | Small standalone CFRR capture inspector |
+| `tools/qca6490_cfr/test_cfrr_inspect.py` | Inspector unit tests |
+| `tools/testing/selftests/net/qca6490_cfr_abi.py` | Golden-byte ABI and source conversion test |
+| `drivers/staging/qca-wifi-host-cmn/umac/cfr/` | CFR framing, sessions, and recovery |
+| `drivers/staging/qca-wifi-host-cmn/target_if/cfr/` | QCA6490 DBR and RX PPDU handling |
+| `drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfr.c` | Root-only controls and health reporting |
 
-        This is the detailed description of the important patch
+The original Android common-kernel contribution notes are preserved at
+[Documentation/process/android-common-kernel-patches.md](Documentation/process/android-common-kernel-patches.md).
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-```
->- then Joe Smith would upload the patch for the common kernel as
-```
-        FROMGIT: important patch from upstream
+## Build
 
-        This is the detailed description of the important patch
+### Prerequisites
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
+The Bouquet build script expects a Linux build host and an LLVM toolchain. It
+looks for Slim LLVM 22.1.8 at:
 
-        Bug: 135791357
-        (cherry picked from commit 878a2fd9de10b03d11d2f622250285c7e63deace
-         https://git.kernel.org/pub/scm/linux/kernel/git/foo/bar.git test-branch)
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
-
-
-- If the patch has been submitted to LKML, but not accepted into any maintainer tree
-    - tag the patch subject with `FROMLIST:`
-    - add a `Link:` tag with a link to the submittal on lore.kernel.org
-    - add a `Bug:` tag with the Android bug (required for patches not accepted into
-a maintainer tree)
-    - if changes were required, use `BACKPORT: FROMLIST:`
-    - Example:
-```
-        FROMLIST: important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        Link: https://lore.kernel.org/lkml/20190619171517.GA17557@someone.com/
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
+```text
+~/build_toolchain/llvm-22.1.8-x86_64/bin
 ```
 
-## Requirements for Android-specific patches: `ANDROID:`
+The compiler is not downloaded by this repository. Install a compatible LLVM
+toolchain at that path or update `CLANG_PATH` in `build_bouquet.sh`. Common host
+dependencies include `bc`, `bison`, `build-essential`, `flex`, `git`, `libelf`,
+`libssl`, `lld`, `llvm`, `python3`, and standard archive tools.
 
-- If the patch is fixing a bug to Android-specific code
-    - tag the patch subject with `ANDROID:`
-    - add a `Fixes:` tag that cites the patch with the bug
-    - Example:
+The capture data plane requires these final settings:
+
+```text
+CONFIG_DEBUG_FS=y
+CONFIG_RELAY=y
+CONFIG_WLAN_CFR_ENABLE=y
+CONFIG_WLAN_ENH_CFR_ENABLE=y
+CONFIG_WLAN_STREAMFS=y
 ```
-        ANDROID: fix android-specific bug in foobar.c
 
-        This is the detailed description of the important fix
+The Qualcomm WLAN profile already derives its streamfs setting from
+`CONFIG_DEBUG_FS` and `CONFIG_RELAY`. This branch intentionally does not change
+the production defconfig, so integrators must enable `CONFIG_RELAY` in their
+device configuration and verify the final compiler flags.
 
-        Fixes: 1234abcd2468 ("foobar: add cool feature")
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
+For a local feature-build test, enable relay in a private config change before
+compiling:
+
+```bash
+scripts/config --file arch/arm64/configs/marble_defconfig -e RELAY
 ```
 
-- If the patch is a new feature
-    - tag the patch subject with `ANDROID:`
-    - add a `Bug:` tag with the Android bug (required for android-specific features)
+Do not publish that config change as device support until it has been booted and
+validated on the intended ROM.
 
+Check the generated configuration and WLAN command files after building:
+
+```bash
+grep '^CONFIG_RELAY=y' out/.config
+grep '^CONFIG_DEBUG_FS=y' out/.config
+rg --hidden --no-ignore -- '-DWLAN_STREAMFS' \
+  out/drivers/staging/qcacld-3.0 | head
+```
+
+### Compile
+
+```bash
+git clone https://github.com/kruonos/android_kernel_xiaomi_marble.git
+cd android_kernel_xiaomi_marble
+git switch CSI/CFR-PATCH
+./build_bouquet.sh --noccache
+```
+
+Important outputs include:
+
+```text
+out/arch/arm64/boot/Image
+out/drivers/staging/qcacld-3.0/qca6490.ko
+out/include/config/kernel.release
+```
+
+Run the included source and parser tests:
+
+```bash
+python3 tools/testing/selftests/net/qca6490_cfr_abi.py
+python3 tools/qca6490_cfr/test_cfrr_inspect.py
+```
+
+The userspace examples require Python 3.8 or newer and have no third-party
+package dependencies.
+
+The golden ABI test checks packed sizes, field declarations, conversion sites,
+and byte-exact little-endian vectors. A successful source build with streamfs
+disabled does not validate the relay implementation, so the final feature flags
+must still be inspected.
+
+## Installation and flashing
+
+This repository does not ship a universal flashable ZIP. The kernel Image and
+QCA6490 module must be integrated into a package that already matches the exact
+ROM, partition layout, module list, and boot format on the target device.
+
+There is currently no supported public installation procedure for end users.
+The source branch is intended for kernel developers who already maintain a
+verified Marble boot and vendor module packaging flow. Publishing a reproducible
+installer remains open work.
+
+For the tested HyperOS layout, the WLAN module is installed as:
+
+```text
+/vendor_dlkm/lib/modules/qca_cld3_qca6490.ko
+```
+
+Before flashing:
+
+1. Make a complete off-device backup of user data.
+2. Record the active slot and kernel version.
+3. Back up `boot`, `vendor_boot`, `dtbo`, and `vendor_dlkm` for that slot.
+4. Keep a known-good recovery package available off-device.
+5. Verify the flash package changes only the intended Image and WLAN module.
+6. Verify every module still matches the target kernel release and symbol ABI.
+7. Test one patch set at a time.
+
+Do not flash a raw `Image` directly to a partition. Do not reuse a package from
+a different HyperOS release, regional firmware, kernel base, or device variant.
+A mismatched WLAN module can leave the device booted without Wi-Fi, while a
+mismatched boot or vendor boot image can prevent startup entirely.
+
+## Capture CFRR data
+
+Root access is required. The example below uses duration mode because the
+tested firmware does not advertise capture-count support.
+
+### 1. Prepare debugfs and CFR
+
+```bash
+adb shell su -c 'mount -t debugfs none /sys/kernel/debug 2>/dev/null || true'
+adb shell su -c 'printf "stop\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "relay_reset\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "clear\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "relay_on\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "window 100000 100000\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "interval_mode duration\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "continuous on\n" > /sys/kernel/qca6490/cfr_control'
+adb shell su -c 'printf "watchdog 250 50 75\n" > /sys/kernel/qca6490/cfr_control'
+```
+
+Confirm the selected state:
+
+```bash
+adb shell su -c 'cat /sys/kernel/qca6490/cfr_status'
+adb shell su -c 'cat /sys/kernel/debug/cfrwlan0/continuous'
+```
+
+### 2. Open the reader before capture starts
+
+```bash
+adb exec-out su -c \
+  'cat /sys/kernel/debug/cfrwlan0/cfr_dump0' > capture.cfrr &
+READER_PID=$!
+```
+
+### 3. Start traffic and capture
+
+`continuous_capture` enables the all-packet filter and has measurable CPU and
+latency cost. Use it only in a controlled test environment.
+
+```bash
+adb shell su -c \
+  'printf "continuous_capture\n" > /sys/kernel/qca6490/cfr_control'
+
+# Generate the traffic required by the experiment, then stop after the chosen
+# interval.
+sleep 30
+
+adb shell su -c 'printf "stop\n" > /sys/kernel/qca6490/cfr_control'
+sleep 1
+kill "$READER_PID" 2>/dev/null || true
+adb shell su -c 'printf "relay_off\n" > /sys/kernel/qca6490/cfr_control'
+```
+
+Validate the file immediately. The inspector exits nonzero when the capture is
+missing a matching session start or session end, contains a sequence gap, or
+contains malformed framing:
+
+```bash
+python3 tools/qca6490_cfr/cfrr_inspect.py capture.cfrr
+```
+
+Use `--allow-incomplete` only for an intentional rotated segment whose session
+boundaries are stored in adjacent files.
+
+If ADB or the reader disconnects while capture continues, the fixed relay will
+eventually fill and begin dropping complete records. Stop the experiment and
+inspect `relay_stats` before treating the file as valid evidence.
+
+## Inspect and decode CFRR metadata
+
+The included inspector validates framing and summarizes sessions, sequence
+gaps, record types, DBR metadata, RX PPDU evidence, recovery stages, and final
+counters:
+
+```bash
+python3 tools/qca6490_cfr/cfrr_inspect.py capture.cfrr --records 3
+```
+
+JSON output is available for notebooks and analysis pipelines:
+
+```bash
+python3 tools/qca6490_cfr/cfrr_inspect.py capture.cfrr --json \
+  > capture.summary.json
+```
+
+Expected summary shape from the 180 second validation run:
+
+```text
+records: 72599
+bytes: 79875376
+types: {"dbr_meta": 28729, "final": 3370, "raw_dbr": 28729,
+        "rearm": 356, "rx_ppdu": 11413, "session_end": 1,
+        "session_start": 1}
+sequence_gaps: 0
+invalid_headers: 0
+invalid_payloads: 0
+lifecycle_errors: 0
+counter_mismatches: 0
+rearms: {"blind": 6, "hard": 175, "soft": 175}
+rearm_failures: 0
+session_end: {"records_committed": 72599, "records_dropped": 0, ...}
+```
+
+The example inspector does not convert raw samples into calibrated CSI. It is
+deliberately small and focuses on transport integrity. The exact payload ABI,
+DBR metadata fields, and reader requirements are documented in the
+[CFR transport reference](Documentation/networking/qca6490-cfr.rst).
+
+## Validation evidence
+
+Two uncapped device tests are documented:
+
+- 75 seconds, 34,132 records, one blind recovery, zero sequence gaps
+- 180 seconds, 72,599 records, six blind recoveries, zero sequence gaps
+
+Every blind recovery restored both PPDU and DBR evidence. A separate no-reader
+test filled the 4 MiB relay and produced 17,894 counted complete-frame drops
+without malformed records.
+
+Under one 400-packet ICMP workload, active all-packet CFR increased average RTT
+from 23.242 ms to 55.695 ms and whole-device CPU busy time from about 6.31
+percent to 29.02 percent. These values describe one test setup and are not a
+general performance guarantee.
+
+## Known limitations
+
+- The final public branch is compile-tested with the real relay feature path,
+  but the post-review audit fixes have not yet been flashed on the device.
+- Live validation used `5.10.258-Bouquet-v4.9`; this public source branch is
+  based on `5.10.256-Bouquet-v4.7`.
+- The tested WLAN firmware reports no capture-count support. Duration mode and
+  host recovery are required.
+- The internal `amss20.bin` firmware version string and file hash were not
+  archived during the original run.
+- The exact active Android 16 distribution release name and fingerprint were
+  not archived. Its build flavor and build ID are listed in the support table.
+- The 32 KiB frame limit is specific to this Marble QCA6490 experiment.
+- Physical antenna mapping, lane calibration, and full CSI reconstruction are
+  not implemented here.
+- The example inspector validates CFRR framing but does not decode complex I/Q
+  samples.
+- Optional vendor netlink duplication is not intended for sustained high-rate
+  capture.
+- Other devices, regional firmware packages, QCA chipsets, and 5.15 kernels are
+  unverified.
+- Generic relayfs users outside this CFR channel have not received a dedicated
+  regression suite for this patch.
+
+## Data safety and research ethics
+
+CFR and CSI can reveal properties of radio traffic and the surrounding
+environment. Collect data only from networks and devices where the operator
+has authorization. Treat raw captures as sensitive research data.
+
+Every published result should include:
+
+- device model and codename
+- ROM and vendor fingerprints
+- WLAN firmware path, version, and hash when available
+- kernel release and commit
+- QCA6490 module hash
+- complete capture configuration
+- CFRR file hash and parser version
+- sequence-gap, drop, malformed-record, and recovery counters
+
+Do not upload raw captures containing third-party traffic without a documented
+consent and redaction process.
+
+## Contributing and reporting results
+
+Issues and pull requests are welcome when they include enough information to
+reproduce the result.
+
+For a bug report, provide:
+
+```text
+Device and codename:
+ROM fingerprint:
+Vendor fingerprint:
+WLAN firmware path and version:
+Kernel release and commit:
+QCA module SHA256:
+Capture mode and window:
+Traffic workload:
+Session duration:
+Record counts:
+Sequence gaps and drops:
+Soft, hard, and blind recovery counts:
+First relevant kernel warning or error:
+```
+
+Useful contributions include:
+
+- verified support reports for another Marble firmware build
+- CFRR parser tests and fuzz cases
+- maximum-record relay latency measurements
+- correlation and unmatched-raw analysis
+- documented lane and antenna mapping experiments
+- lower-overhead capture profiles
+
+Keep patches focused, preserve the bounded-memory design, and include a test or
+capture result for behavior changes. Safety-critical thermal, PMIC, regulator,
+storage, and partition changes are outside the scope of this project.
+
+## License
+
+Kernel changes follow the licensing of their source files and the Linux kernel
+GPL-2.0 license. Userspace examples in `tools/qca6490_cfr` are GPL-2.0.
