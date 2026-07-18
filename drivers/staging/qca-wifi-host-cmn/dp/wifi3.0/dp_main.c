@@ -13718,14 +13718,59 @@ dp_get_cfr_dbg_stats(struct cdp_soc_t *soc_hdl, uint8_t pdev_id,
 {
 	struct dp_soc *soc = cdp_soc_t_to_dp_soc(soc_hdl);
 	struct dp_pdev *pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, pdev_id);
+	struct dp_pdev *iter_pdev;
+	uint8_t iter;
 
 	if (!pdev) {
 		dp_err("Invalid pdev");
 		return;
 	}
 
+	qdf_mem_zero(cfr_rcc_stats, sizeof(struct cdp_cfr_rcc_stats));
 	qdf_mem_copy(cfr_rcc_stats, &pdev->stats.rcc,
 		     sizeof(struct cdp_cfr_rcc_stats));
+
+#ifdef WDI_EVENT_ENABLE
+	cfr_rcc_stats->wdi_event_enabled = 1;
+#else
+	cfr_rcc_stats->wdi_event_enabled = 0;
+#endif
+
+	for (iter = 0; iter < CFR_RCC_STATS_MAX_PDEVS && iter < MAX_PDEV_CNT;
+	     iter++) {
+		iter_pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, iter);
+		if (!iter_pdev)
+			continue;
+
+		cfr_rcc_stats->wdi_rx_ppdu_all_valid[iter] = 1;
+		cfr_rcc_stats->wdi_rx_ppdu_all_num_pdevs++;
+		cfr_rcc_stats->wdi_rx_ppdu_all_pdev_id[iter] = iter_pdev->pdev_id;
+		cfr_rcc_stats->wdi_rx_ppdu_all_lmac_id[iter] = iter_pdev->lmac_id;
+		cfr_rcc_stats->wdi_rx_ppdu_all_emit_cfr_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_emit_cfr_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_emit_ppdu_stats_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_emit_ppdu_stats_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_handler_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_handler_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_sub_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_sub_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_no_sub_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_no_sub_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_no_pdev_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_no_pdev_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_fallback_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_fallback_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_fallback_fail_cnt[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_fallback_fail_cnt;
+		cfr_rcc_stats->wdi_rx_ppdu_all_last_input_pdev_id[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_last_input_pdev_id;
+		cfr_rcc_stats->wdi_rx_ppdu_all_last_resolved_pdev_id[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_last_resolved_pdev_id;
+		cfr_rcc_stats->wdi_rx_ppdu_all_last_fallback_pdev_id[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_last_fallback_pdev_id;
+		cfr_rcc_stats->wdi_rx_ppdu_all_last_sub_present[iter] =
+			iter_pdev->stats.rcc.wdi_rx_ppdu_last_sub_present;
+	}
 }
 
 /*
@@ -13740,13 +13785,19 @@ static void dp_clear_cfr_dbg_stats(struct cdp_soc_t *soc_hdl,
 {
 	struct dp_soc *soc = cdp_soc_t_to_dp_soc(soc_hdl);
 	struct dp_pdev *pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, pdev_id);
+	uint8_t iter;
 
 	if (!pdev) {
 		dp_err("dp pdev is NULL");
 		return;
 	}
 
-	qdf_mem_zero(&pdev->stats.rcc, sizeof(pdev->stats.rcc));
+	for (iter = 0; iter < CFR_RCC_STATS_MAX_PDEVS && iter < MAX_PDEV_CNT;
+	     iter++) {
+		pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, iter);
+		if (pdev)
+			qdf_mem_zero(&pdev->stats.rcc, sizeof(pdev->stats.rcc));
+	}
 }
 #endif
 
@@ -15160,4 +15211,3 @@ static QDF_STATUS dp_pdev_init_wifi3(struct cdp_soc_t *txrx_soc,
 {
 	return dp_pdev_init(txrx_soc, htc_handle, qdf_osdev, pdev_id);
 }
-

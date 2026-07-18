@@ -246,6 +246,11 @@ dp_rx_handle_cfr(struct dp_soc *soc, struct dp_pdev *pdev,
 	if (!ppdu_info->cfr_info.bb_captured_channel)
 		return;
 
+	DP_STATS_INC(pdev, rcc.wdi_rx_ppdu_emit_cfr_cnt, 1);
+	pdev->stats.rcc.wdi_rx_ppdu_last_emit_path = 1;
+	pdev->stats.rcc.wdi_rx_ppdu_last_emit_pdev_id = pdev->pdev_id;
+	pdev->stats.rcc.wdi_rx_ppdu_last_emit_lmac_id = pdev->lmac_id;
+
 	ppdu_nbuf = qdf_nbuf_alloc(soc->osdev,
 				   sizeof(struct cdp_rx_indication_ppdu),
 				   0,
@@ -261,6 +266,8 @@ dp_rx_handle_cfr(struct dp_soc *soc, struct dp_pdev *pdev,
 		dp_wdi_event_handler(WDI_EVENT_RX_PPDU_DESC, soc,
 				     ppdu_nbuf, HTT_INVALID_PEER,
 				     WDI_NO_VAL, pdev->pdev_id);
+	} else {
+		DP_STATS_INC(pdev, rcc.wdi_rx_ppdu_alloc_fail_cnt, 1);
 	}
 }
 
@@ -997,23 +1004,50 @@ dp_rx_handle_ppdu_stats(struct dp_soc *soc, struct dp_pdev *pdev,
 		dp_rx_populate_cdp_indication_ppdu(pdev,
 						   ppdu_info, cdp_rx_ppdu);
 		if (!qdf_nbuf_put_tail(ppdu_nbuf,
-				       sizeof(struct cdp_rx_indication_ppdu)))
+					       sizeof(struct cdp_rx_indication_ppdu))) {
+			if (dp_cfr_rcc_mode_status(pdev))
+				DP_STATS_INC(pdev,
+					     rcc.wdi_rx_ppdu_put_tail_fail_cnt,
+					     1);
 			return;
+		}
 
 		dp_rx_stats_update(pdev, cdp_rx_ppdu);
 
 		if (cdp_rx_ppdu->peer_id != HTT_INVALID_PEER) {
+			if (dp_cfr_rcc_mode_status(pdev)) {
+				DP_STATS_INC(pdev,
+					     rcc.wdi_rx_ppdu_emit_ppdu_stats_cnt,
+					     1);
+				pdev->stats.rcc.wdi_rx_ppdu_last_emit_path = 2;
+				pdev->stats.rcc.wdi_rx_ppdu_last_emit_pdev_id =
+					pdev->pdev_id;
+				pdev->stats.rcc.wdi_rx_ppdu_last_emit_lmac_id =
+					pdev->lmac_id;
+			}
 			dp_wdi_event_handler(WDI_EVENT_RX_PPDU_DESC,
 					     soc, ppdu_nbuf,
 					     cdp_rx_ppdu->peer_id,
 					     WDI_NO_VAL, pdev->pdev_id);
 		} else if (mon_pdev->mcopy_mode || dp_cfr_rcc_mode_status(pdev)) {
+			if (dp_cfr_rcc_mode_status(pdev)) {
+				DP_STATS_INC(pdev,
+					     rcc.wdi_rx_ppdu_emit_ppdu_stats_cnt,
+					     1);
+				pdev->stats.rcc.wdi_rx_ppdu_last_emit_path = 2;
+				pdev->stats.rcc.wdi_rx_ppdu_last_emit_pdev_id =
+					pdev->pdev_id;
+				pdev->stats.rcc.wdi_rx_ppdu_last_emit_lmac_id =
+					pdev->lmac_id;
+			}
 			dp_wdi_event_handler(WDI_EVENT_RX_PPDU_DESC, soc,
 					     ppdu_nbuf, HTT_INVALID_PEER,
 					     WDI_NO_VAL, pdev->pdev_id);
 		} else {
 			qdf_nbuf_free(ppdu_nbuf);
 		}
+	} else if (dp_cfr_rcc_mode_status(pdev)) {
+		DP_STATS_INC(pdev, rcc.wdi_rx_ppdu_alloc_fail_cnt, 1);
 	}
 }
 #endif/* QCA_ENHANCED_STATS_SUPPORT */

@@ -113,7 +113,6 @@ const struct nla_policy cfr_config_policy[
 						.type = NLA_U32},
 };
 
-/* Optional vendor netlink duplication; relayfs remains independently active. */
 static void
 wlan_hdd_transport_mode_cfg(struct wlan_objmgr_pdev *pdev,
 			    uint8_t vdev_id, uint32_t pid,
@@ -875,7 +874,7 @@ static int hdd_cfr_sysfs_start_mode(enum capture_type mode)
 	if (ret)
 		return ret;
 
-	if (hdd_get_conparam() == QDF_GLOBAL_FTM_MODE)
+	if (QDF_GLOBAL_FTM_MODE == hdd_get_conparam())
 		return -EPERM;
 
 	ret = osif_psoc_sync_op_start(hdd_ctx->parent_dev, &psoc_sync);
@@ -1268,13 +1267,6 @@ static int hdd_cfr_clear_counters_action(struct wlan_objmgr_pdev *pdev,
 	return status == QDF_STATUS_SUCCESS ? 0 : -EINVAL;
 }
 
-/*
- * Bounded CFR operator interface
- *
- * Sysfs carries configuration and scalar health only. High-rate CSI payloads
- * remain exclusively in the framed relay data plane; detailed state is exposed
- * through debugfs seq_file readers implemented by the CFR core.
- */
 struct hdd_cfr_reader_stats {
 	uint64_t sequence_gaps;
 	uint64_t resync_bytes;
@@ -1605,25 +1597,16 @@ static void hdd_cfr_set_aggressive_profile(void)
 	mutex_unlock(&hdd_cfr_config_lock);
 }
 
-static int hdd_cfr_set_continuous_profile(void)
+static void hdd_cfr_set_continuous_profile(void)
 {
-	struct hdd_cfr_transport_snapshot snapshot = {0};
-	int ret;
-
-	ret = hdd_cfr_read_transport_snapshot(&snapshot);
-	if (ret)
-		return ret;
-
 	mutex_lock(&hdd_cfr_config_lock);
 	hdd_cfr_filter_group_bitmap = 0xffff;
 	hdd_cfr_capture_duration = 100000U;
 	hdd_cfr_capture_interval = 100000U;
 	hdd_cfr_capture_count = 256;
-	hdd_cfr_capture_interval_mode = snapshot.capture_count_supported ? 1 : 0;
+	hdd_cfr_capture_interval_mode = 1;
 	hdd_cfr_continuous_requested = true;
 	mutex_unlock(&hdd_cfr_config_lock);
-
-	return 0;
 }
 
 static ssize_t hdd_cfr_control_show(struct kobject *kobj,
@@ -1697,7 +1680,8 @@ static ssize_t hdd_cfr_control_store(struct kobject *kobj,
 		hdd_cfr_set_aggressive_profile();
 		ret = 0;
 	} else if (sysfs_streq(buf, "profile_continuous")) {
-		ret = hdd_cfr_set_continuous_profile();
+		hdd_cfr_set_continuous_profile();
+		ret = 0;
 	} else if (sysfs_streq(buf, "stop") || sysfs_streq(buf, "0")) {
 		ret = hdd_cfr_sysfs_stop();
 		hdd_cfr_last_stop_status = ret;

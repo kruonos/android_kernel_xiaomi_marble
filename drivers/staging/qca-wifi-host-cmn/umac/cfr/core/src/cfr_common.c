@@ -24,7 +24,6 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/overflow.h>
-#include <linux/preempt.h>
 #include <linux/seq_file.h>
 #include <qdf_types.h>
 #include <qdf_time.h>
@@ -45,16 +44,6 @@
 #include "cfr_cfg.h"
 #ifdef WLAN_CFR_PM
 #include "host_diag_core_event.h"
-#endif
-
-#ifdef WLAN_ENH_CFR_ENABLE
-static uint64_t cfr_continuous_age_ns(uint64_t now_ns, uint64_t timestamp_ns)
-{
-	if (!timestamp_ns || now_ns < timestamp_ns)
-		return 0;
-
-	return now_ns - timestamp_ns;
-}
 #endif
 
 static const char *cfr_streamfs_session_state_name(uint8_t state)
@@ -289,9 +278,9 @@ static int cfr_debugfs_continuous_show(struct seq_file *s, void *unused)
 	uint64_t now_ns, ppdu_ns, dbr_ns;
 
 	qdf_mutex_acquire(&pa->continuous_config_lock);
+	now_ns = qdf_ktime_to_ns(qdf_ktime_get());
 	ppdu_ns = pa->continuous_last_ppdu_ns;
 	dbr_ns = pa->continuous_last_dbr_ns;
-	now_ns = qdf_ktime_to_ns(qdf_ktime_get());
 	seq_printf(s, "enabled=%u\n", pa->continuous_enabled);
 	seq_printf(s, "capture_active=%u\n", pa->continuous_capture_active);
 	seq_printf(s, "snapshot_valid=%u\n", pa->continuous_snapshot_valid);
@@ -310,9 +299,11 @@ static int cfr_debugfs_continuous_show(struct seq_file *s, void *unused)
 	seq_printf(s, "drain_ms=%u\n", pa->continuous_drain_ms);
 	seq_printf(s, "backoff_ms=%u\n", pa->continuous_backoff_ms);
 	seq_printf(s, "last_ppdu_age_ms=%llu\n",
-		   cfr_continuous_age_ns(now_ns, ppdu_ns) / NSEC_PER_MSEC);
+		   ppdu_ns && now_ns >= ppdu_ns ?
+		   (now_ns - ppdu_ns) / NSEC_PER_MSEC : 0);
 	seq_printf(s, "last_dbr_age_ms=%llu\n",
-		   cfr_continuous_age_ns(now_ns, dbr_ns) / NSEC_PER_MSEC);
+		   dbr_ns && now_ns >= dbr_ns ?
+		   (now_ns - dbr_ns) / NSEC_PER_MSEC : 0);
 	seq_printf(s, "rearm_stage=%u\n", pa->continuous_rearm_stage);
 	seq_printf(s, "rearm_epoch=%llu\n", pa->continuous_rearm_epoch);
 	seq_printf(s, "stall_events=%llu\n", pa->continuous_stall_cnt);
@@ -393,15 +384,6 @@ cfr_streamfs_end_session_locked(struct pdev_cfr *pa,
 				bool disable_relay);
 
 #ifdef WLAN_ENH_CFR_ENABLE
-/*
- * Bounded continuous-capture recovery
- *
- * RX PPDU and DBR callbacks only publish monotonic evidence timestamps. This
- * delayed-work state machine performs firmware transactions in process
- * context: soft RCC resubmit, hard disable/drain/DP-cycle/LUT-reset/re-enable,
- * and at most one blind hard retry when a successful hard rearm yields no new
- * evidence. Generation checks make stop and reconfiguration cancel-safe.
- */
 static void cfr_continuous_emit_rearm(struct pdev_cfr *pa, uint32_t stage,
 				      QDF_STATUS status, uint64_t now_ns)
 {
@@ -464,7 +446,6 @@ static void cfr_continuous_rearm_worker(void *context)
 	struct wlan_objmgr_pdev *pdev;
 	struct cfr_rcc_param active, disabled;
 	uint64_t now_ns, ppdu_ns, dbr_ns, stall_ns, hard_complete_ns;
-	uint64_t ppdu_age_ns, dbr_age_ns, hard_complete_age_ns;
 	uint64_t completion_ns = 0;
 	uint64_t generation;
 	uint32_t stage, next_delay;
@@ -501,22 +482,17 @@ static void cfr_continuous_rearm_worker(void *context)
 	}
 
 	qdf_mem_copy(&active, &pa->continuous_rcc_snapshot, sizeof(active));
+	now_ns = qdf_ktime_to_ns(qdf_ktime_get());
 	ppdu_ns = READ_ONCE(pa->continuous_last_ppdu_ns);
 	dbr_ns = READ_ONCE(pa->continuous_last_dbr_ns);
 	hard_complete_ns = pa->continuous_hard_complete_ns;
-	now_ns = qdf_ktime_to_ns(qdf_ktime_get());
-	ppdu_age_ns = cfr_continuous_age_ns(now_ns, ppdu_ns);
-	dbr_age_ns = cfr_continuous_age_ns(now_ns, dbr_ns);
-	hard_complete_age_ns =
-		cfr_continuous_age_ns(now_ns, hard_complete_ns);
 	stall_ns = (uint64_t)cfr_continuous_effective_stall_ms(pa, &active) *
 		   NSEC_PER_MSEC;
 	if (pa->continuous_blind_retry_pending) {
 		if ((ppdu_ns && ppdu_ns > hard_complete_ns) ||
 		    (dbr_ns && dbr_ns > hard_complete_ns)) {
 			pa->continuous_blind_retry_pending = 0;
-		} else if (hard_complete_ns &&
-			   hard_complete_age_ns >= stall_ns) {
+		} else if (hard_complete_ns && now_ns - hard_complete_ns >= stall_ns) {
 			pa->continuous_blind_retry_pending = 0;
 			blind_recovery = true;
 		} else {
@@ -528,8 +504,8 @@ static void cfr_continuous_rearm_worker(void *context)
 
 	/* No PPDU traffic means there is no evidence that firmware is stalled. */
 	if (!blind_recovery &&
-	    (!ppdu_ns || ppdu_age_ns > stall_ns ||
-	     (dbr_ns && dbr_age_ns < stall_ns))) {
+	    (!ppdu_ns || now_ns - ppdu_ns > stall_ns ||
+	     (dbr_ns && now_ns - dbr_ns < stall_ns))) {
 		if (dbr_ns != pa->continuous_last_rearm_dbr_ns)
 			pa->continuous_rearm_stage = CFR_CONTINUOUS_REARM_NONE;
 		next_delay = pa->continuous_poll_ms;
@@ -1014,8 +990,6 @@ wlan_cfr_pdev_obj_create_handler(struct wlan_objmgr_pdev *pdev, void *arg)
 	BUILD_BUG_ON(sizeof(struct cfr_streamfs_session_start_v2) != 80);
 	BUILD_BUG_ON(sizeof(struct cfr_streamfs_session_end_v1) != 80);
 	BUILD_BUG_ON(sizeof(struct cfr_streamfs_rearm_v1) != 60);
-	BUILD_BUG_ON(sizeof(struct cfr_streamfs_dbr_meta_v1) != 112);
-	BUILD_BUG_ON(sizeof(struct cfr_streamfs_rx_ppdu_v1) != 40);
 
 	if (wlan_cfr_is_ini_disabled(pdev)) {
 		wlan_pdev_nif_feat_ext_cap_clear(pdev, WLAN_PDEV_FEXT_CFR_EN);
@@ -1539,13 +1513,6 @@ cfr_streamfs_write_record_locked(struct pdev_cfr *pa, uint32_t type,
 	size_t payload_len = 0, record_len = 0;
 	QDF_STATUS status = QDF_STATUS_SUCCESS;
 
-	/*
-	 * Complete-frame CFRR transport
-	 *
-	 * Build in the fixed per-pdev staging buffer, then use the ordered QDF
-	 * relay writer. A full relay drops this complete record and leaves a
-	 * visible sequence gap; partial records are never published.
-	 */
 	if (!pa->streamfs_record_enabled) {
 		status = QDF_STATUS_COMP_DISABLED;
 		pa->streamfs_record_disabled_cnt++;
@@ -1693,9 +1660,6 @@ QDF_STATUS cfr_streamfs_write_record(struct pdev_cfr *pa, uint32_t type,
 
 	if (!pa)
 		return QDF_STATUS_E_INVAL;
-	/* spin_lock_bh serialization is not safe for hard-IRQ writers. */
-	if (qdf_unlikely(in_irq()))
-		return QDF_STATUS_E_NOSUPPORT;
 
 	qdf_spin_lock_bh(&pa->streamfs_record_lock);
 	status = cfr_streamfs_write_record_locked(pa, type, meta0, meta1,

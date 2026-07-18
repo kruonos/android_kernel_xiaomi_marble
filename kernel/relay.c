@@ -961,13 +961,6 @@ static int relay_file_release(struct inode *inode, struct file *filp)
 }
 
 /*
- * A producer may use buf->offset as the publication boundary for a complete
- * record: it copies the bytes first, then advances offset with a release
- * store.  Every relay read path that trusts this boundary must therefore use
- * an acquire load before exposing the corresponding bytes to userspace.
- */
-
-/*
  *	relay_file_read_consume - update the consumed count for the buffer
  */
 static void relay_file_read_consume(struct rchan_buf *buf,
@@ -976,7 +969,6 @@ static void relay_file_read_consume(struct rchan_buf *buf,
 {
 	size_t subbuf_size = buf->chan->subbuf_size;
 	size_t n_subbufs = buf->chan->n_subbufs;
-	/* Pair with complete-record release publication by CFR writers. */
 	size_t write_offset = smp_load_acquire(&buf->offset);
 	size_t read_subbuf;
 
@@ -1010,7 +1002,6 @@ static int relay_file_read_avail(struct rchan_buf *buf)
 {
 	size_t subbuf_size = buf->chan->subbuf_size;
 	size_t n_subbufs = buf->chan->n_subbufs;
-	/* Pair with complete-record release publication by CFR writers. */
 	size_t write_offset = smp_load_acquire(&buf->offset);
 	size_t produced = buf->subbufs_produced;
 	size_t consumed;
@@ -1060,7 +1051,6 @@ static size_t relay_file_read_subbuf_avail(size_t read_pos,
 	size_t subbuf_size = buf->chan->subbuf_size;
 
 	write_subbuf = (buf->data - buf->start) / subbuf_size;
-	/* Pair with complete-record release publication by CFR writers. */
 	write_offset = smp_load_acquire(&buf->offset);
 	write_offset = write_offset > subbuf_size ? subbuf_size : write_offset;
 	read_subbuf = read_pos / subbuf_size;

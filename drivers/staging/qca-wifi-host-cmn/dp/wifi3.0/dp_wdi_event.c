@@ -93,6 +93,39 @@ dp_wdi_event_iter_sub(
 	}
 }
 
+#if defined(WLAN_CFR_ENABLE) && defined(WLAN_ENH_CFR_ENABLE)
+static inline void
+dp_wdi_rx_ppdu_record(struct dp_pdev *pdev, uint8_t input_pdev_id,
+			      uint32_t sub_present)
+{
+	if (!pdev)
+		return;
+
+	pdev->stats.rcc.wdi_rx_ppdu_last_input_pdev_id = input_pdev_id;
+	pdev->stats.rcc.wdi_rx_ppdu_last_resolved_pdev_id = pdev->pdev_id;
+	pdev->stats.rcc.wdi_rx_ppdu_last_sub_present = sub_present;
+}
+
+static struct dp_pdev *
+dp_wdi_rx_ppdu_find_subscribed_pdev(struct dp_soc *soc, uint32_t event_index,
+				    struct dp_pdev *skip_pdev)
+{
+	struct dp_pdev *pdev;
+	uint8_t pdev_id;
+
+	for (pdev_id = 0; pdev_id < MAX_PDEV_CNT; pdev_id++) {
+		pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, pdev_id);
+		if (!pdev || pdev == skip_pdev || pdev->pdev_deinit)
+			continue;
+
+		if (pdev->wdi_event_list[event_index])
+			return pdev;
+	}
+
+	return NULL;
+}
+#endif
+
 
 /*
  * dp_wdi_event_handler() - Event handler for WDI event
@@ -119,14 +152,46 @@ dp_wdi_event_handler(
 	wdi_event_subscribe *wdi_sub;
 	struct dp_pdev *txrx_pdev;
 	struct dp_soc *soc_t = (struct dp_soc *)soc;
+	bool is_rx_ppdu_desc = (event == WDI_EVENT_RX_PPDU_DESC);
 	txrx_pdev = dp_get_pdev_for_mac_id(soc_t, pdev_id);
 
-	if (!event) {
+	if (!event || event < WDI_EVENT_BASE || event >= WDI_EVENT_LAST) {
 		QDF_TRACE(QDF_MODULE_ID_DP, QDF_TRACE_LEVEL_ERROR,
 			"Invalid WDI event in %s", __func__);
 		return;
 	}
+
+	event_index = event - WDI_EVENT_BASE;
+
 	if (!txrx_pdev || txrx_pdev->pdev_deinit) {
+#if defined(WLAN_CFR_ENABLE) && defined(WLAN_ENH_CFR_ENABLE)
+		if (is_rx_ppdu_desc) {
+			struct dp_pdev *fallback_pdev;
+
+			fallback_pdev = dp_wdi_rx_ppdu_find_subscribed_pdev(
+						soc_t, event_index, NULL);
+			if (fallback_pdev) {
+				DP_STATS_INC(fallback_pdev,
+					     rcc.wdi_rx_ppdu_no_pdev_cnt, 1);
+				DP_STATS_INC(fallback_pdev,
+					     rcc.wdi_rx_ppdu_fallback_cnt, 1);
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_input_pdev_id = pdev_id;
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_resolved_pdev_id =
+					fallback_pdev->pdev_id;
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_fallback_pdev_id =
+					fallback_pdev->pdev_id;
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_sub_present = 1;
+				dp_wdi_event_iter_sub(fallback_pdev, event_index,
+						fallback_pdev->wdi_event_list[event_index],
+						data, peer_id, status);
+				return;
+			}
+		}
+#endif
 		QDF_TRACE(QDF_MODULE_ID_DP, QDF_TRACE_LEVEL_ERROR,
 			"Invalid pdev in WDI event handler");
 		return;
@@ -136,10 +201,45 @@ dp_wdi_event_handler(
 	 *  There can be NULL data, so no validation for the data
 	 *  Subscribers must do the sanity based on the requirements
 	 */
-	event_index = event - WDI_EVENT_BASE;
-
 	DP_STATS_INC(txrx_pdev, wdi_event[event_index], 1);
 	wdi_sub = txrx_pdev->wdi_event_list[event_index];
+
+#if defined(WLAN_CFR_ENABLE) && defined(WLAN_ENH_CFR_ENABLE)
+	if (is_rx_ppdu_desc) {
+		dp_wdi_rx_ppdu_record(txrx_pdev, pdev_id, wdi_sub ? 1 : 0);
+		DP_STATS_INC(txrx_pdev, rcc.wdi_rx_ppdu_handler_cnt, 1);
+		if (wdi_sub) {
+			DP_STATS_INC(txrx_pdev, rcc.wdi_rx_ppdu_sub_cnt, 1);
+		} else {
+			struct dp_pdev *fallback_pdev;
+
+			DP_STATS_INC(txrx_pdev, rcc.wdi_rx_ppdu_no_sub_cnt, 1);
+			fallback_pdev = dp_wdi_rx_ppdu_find_subscribed_pdev(
+						soc_t, event_index, txrx_pdev);
+			if (fallback_pdev) {
+				DP_STATS_INC(fallback_pdev,
+					     rcc.wdi_rx_ppdu_fallback_cnt, 1);
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_input_pdev_id = pdev_id;
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_resolved_pdev_id =
+					txrx_pdev->pdev_id;
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_fallback_pdev_id =
+					fallback_pdev->pdev_id;
+				fallback_pdev->stats.rcc.
+					wdi_rx_ppdu_last_sub_present = 1;
+				dp_wdi_event_iter_sub(fallback_pdev, event_index,
+						fallback_pdev->wdi_event_list[event_index],
+						data, peer_id, status);
+				return;
+			}
+
+			DP_STATS_INC(txrx_pdev,
+				     rcc.wdi_rx_ppdu_fallback_fail_cnt, 1);
+		}
+	}
+#endif
 
 	/* Find the subscriber */
 	dp_wdi_event_iter_sub(txrx_pdev, event_index, wdi_sub, data,

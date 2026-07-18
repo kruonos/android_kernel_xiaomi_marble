@@ -345,8 +345,6 @@ QDF_STATUS ucfg_cfr_rcc_reset_lut(struct wlan_objmgr_vdev *vdev);
  */
 QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev);
 
-/* Framed relay transport and bounded continuous-capture control contracts. */
-
 /**
  * ucfg_cfr_streamfs_init() - initialize CFR relayfs data plane
  * @pdev: pointer to pdev object

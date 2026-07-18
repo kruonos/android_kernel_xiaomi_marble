@@ -7506,7 +7506,6 @@ void hdd_cfr_data_send_nl_event(uint8_t vdev_id, uint32_t pid,
 	vendor_event = cfg80211_vendor_event_alloc(
 			hdd_ctx->wiphy, &adapter->wdev, len,
 			QCA_NL80211_VENDOR_SUBCMD_PEER_CFR_CAPTURE_CFG_INDEX,
-			/* CFR may invoke this optional path from DBR context. */
 			GFP_ATOMIC);
 
 	if (!vendor_event) {

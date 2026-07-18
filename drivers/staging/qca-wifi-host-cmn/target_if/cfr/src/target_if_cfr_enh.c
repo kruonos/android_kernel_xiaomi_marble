@@ -35,15 +35,21 @@
 #define NUM_CHAINS_FW_TO_HOST(n) ((1 << ((n) + 1)) - 1)
 
 #define CFR_INVALID_SNR 0x80
+#define CFR_RX_PPDU_SNAPSHOT_MAGIC 0x50505243U
 
-/*
- * Loss-observable CFR evidence stream
- *
- * Raw DBR bytes, parsed DBR metadata, and RX PPDU snapshots are mirrored as
- * independent CFRR records before correlation mutates the lookup table. The
- * callback path uses bounded stack/fixed storage only; formatting, allocation,
- * and recovery commands remain outside RX/DBR context.
- */
+struct cfr_rx_ppdu_snapshot {
+	uint32_t magic;
+	uint32_t ppdu_id;
+	uint32_t bb_captured_channel;
+	uint32_t rx_location_info_valid;
+	uint32_t chan_capture_status;
+	uint32_t rtt_che_buffer_pointer_low32;
+	uint32_t rtt_che_buffer_pointer_high8;
+	uint32_t buffer_addr_low32;
+	uint32_t buffer_addr_high32;
+	uint32_t srng_id;
+};
+
 static QDF_STATUS target_if_cfr_streamfs_mirror(struct pdev_cfr *pcfr,
 					       uint32_t type, uint32_t meta0,
 					       uint32_t meta1, const void *data,
@@ -68,14 +74,14 @@ target_if_cfr_meta_fill_freeze_common(struct cfr_streamfs_dbr_meta_v1 *meta,
 	meta->freeze_packet_type = freeze->packet_type;
 	meta->freeze_packet_subtype = freeze->packet_sub_type;
 	meta->freeze_sw_peer_id_valid = freeze->sw_peer_id_valid;
-	meta->freeze_sw_peer_id = cpu_to_le16(freeze->sw_peer_id);
-	meta->freeze_phy_ppdu_id = cpu_to_le16(freeze->phy_ppdu_id);
-	meta->packet_ta_lower_16 = cpu_to_le16(freeze->packet_ta_lower_16);
-	meta->packet_ta_mid_16 = cpu_to_le16(freeze->packet_ta_mid_16);
-	meta->packet_ta_upper_16 = cpu_to_le16(freeze->packet_ta_upper_16);
-	meta->packet_ra_lower_16 = cpu_to_le16(freeze->packet_ra_lower_16);
-	meta->packet_ra_mid_16 = cpu_to_le16(freeze->packet_ra_mid_16);
-	meta->packet_ra_upper_16 = cpu_to_le16(freeze->packet_ra_upper_16);
+	meta->freeze_sw_peer_id = freeze->sw_peer_id;
+	meta->freeze_phy_ppdu_id = freeze->phy_ppdu_id;
+	meta->packet_ta_lower_16 = freeze->packet_ta_lower_16;
+	meta->packet_ta_mid_16 = freeze->packet_ta_mid_16;
+	meta->packet_ta_upper_16 = freeze->packet_ta_upper_16;
+	meta->packet_ra_lower_16 = freeze->packet_ra_lower_16;
+	meta->packet_ra_mid_16 = freeze->packet_ra_mid_16;
+	meta->packet_ra_upper_16 = freeze->packet_ra_upper_16;
 }
 
 static void
@@ -87,13 +93,11 @@ target_if_cfr_meta_fill_freeze_v1(struct cfr_streamfs_dbr_meta_v1 *meta,
 
 	target_if_cfr_meta_fill_freeze_common(meta, freeze_tlv);
 	meta->freeze_directed = freeze->directed;
-	meta->tsf_word0 = cpu_to_le16(freeze->tsf_timestamp_15_0);
-	meta->tsf_word1 = cpu_to_le16(freeze->tsf_timestamp_31_16);
-	meta->tsf_word2 = cpu_to_le16(freeze->tsf_timestamp_47_32);
-	meta->tsf_word3_or_user_mask_36_32 =
-		cpu_to_le16(freeze->tsf_timestamp_63_48);
-	meta->user_mask_word0 =
-		cpu_to_le16(freeze->user_index_or_user_mask_5_0);
+	meta->tsf_word0 = freeze->tsf_timestamp_15_0;
+	meta->tsf_word1 = freeze->tsf_timestamp_31_16;
+	meta->tsf_word2 = freeze->tsf_timestamp_47_32;
+	meta->tsf_word3_or_user_mask_36_32 = freeze->tsf_timestamp_63_48;
+	meta->user_mask_word0 = freeze->user_index_or_user_mask_5_0;
 }
 
 static void
@@ -105,14 +109,13 @@ target_if_cfr_meta_fill_freeze_v3(struct cfr_streamfs_dbr_meta_v1 *meta,
 
 	target_if_cfr_meta_fill_freeze_common(meta, freeze_tlv);
 	meta->freeze_directed = freeze->directed;
-	meta->tsf_word0 = cpu_to_le16(freeze->tsf_timestamp_15_0);
-	meta->tsf_word1 = cpu_to_le16(freeze->tsf_timestamp_31_16);
-	meta->tsf_word2 = cpu_to_le16(freeze->tsf_timestamp_47_32);
+	meta->tsf_word0 = freeze->tsf_timestamp_15_0;
+	meta->tsf_word1 = freeze->tsf_timestamp_31_16;
+	meta->tsf_word2 = freeze->tsf_timestamp_47_32;
 	meta->tsf_word3_or_user_mask_36_32 =
-		cpu_to_le16(freeze->tsf_63_48_or_user_mask_36_32);
-	meta->user_mask_word0 =
-		cpu_to_le16(freeze->user_index_or_user_mask_15_0);
-	meta->user_mask_word1 = cpu_to_le16(freeze->user_mask_31_16);
+		freeze->tsf_63_48_or_user_mask_36_32;
+	meta->user_mask_word0 = freeze->user_index_or_user_mask_15_0;
+	meta->user_mask_word1 = freeze->user_mask_31_16;
 }
 
 static void
@@ -124,15 +127,13 @@ target_if_cfr_meta_fill_freeze_v5(struct cfr_streamfs_dbr_meta_v1 *meta,
 
 	target_if_cfr_meta_fill_freeze_common(meta, freeze_tlv);
 	meta->freeze_directed = freeze->directed;
-	meta->tsf_word0 = cpu_to_le16(freeze->tsf_timestamp_15_0);
-	meta->tsf_word1 = cpu_to_le16(freeze->tsf_timestamp_31_16);
-	meta->tsf_word2 = cpu_to_le16(freeze->tsf_timestamp_47_32);
-	meta->tsf_word3_or_user_mask_36_32 =
-		cpu_to_le16(freeze->tsf_timestamp_63_48);
-	meta->user_mask_word0 =
-		cpu_to_le16(freeze->user_index_or_user_mask_5_0);
-	meta->user_mask_word1 = cpu_to_le16(freeze->user_mask_21_6);
-	meta->user_mask_word2 = cpu_to_le16(freeze->user_mask_36_22);
+	meta->tsf_word0 = freeze->tsf_timestamp_15_0;
+	meta->tsf_word1 = freeze->tsf_timestamp_31_16;
+	meta->tsf_word2 = freeze->tsf_timestamp_47_32;
+	meta->tsf_word3_or_user_mask_36_32 = freeze->tsf_timestamp_63_48;
+	meta->user_mask_word0 = freeze->user_index_or_user_mask_5_0;
+	meta->user_mask_word1 = freeze->user_mask_21_6;
+	meta->user_mask_word2 = freeze->user_mask_36_22;
 }
 
 static void
@@ -145,8 +146,6 @@ target_if_cfr_streamfs_write_dbr_meta(struct pdev_cfr *pcfr, uint32_t cookie,
 				      void *freeze_tlv)
 {
 	struct cfr_streamfs_dbr_meta_v1 meta = {0};
-	uint32_t flags = CFR_STREAMFS_DBR_META_F_RAW_HDR_VALID |
-			 CFR_STREAMFS_DBR_META_F_SAMPLE_PRESENT;
 
 	if (!pcfr || !data || !dma_hdr || !parsed_len)
 		return;
@@ -154,26 +153,27 @@ target_if_cfr_streamfs_write_dbr_meta(struct pdev_cfr *pcfr, uint32_t cookie,
 	if (sample_offset > parsed_len || sample_offset > dbr_len)
 		return;
 
-	meta.magic = cpu_to_le32(CFR_STREAMFS_DBR_META_MAGIC);
-	meta.version = cpu_to_le16(CFR_STREAMFS_DBR_META_VERSION);
-	meta.meta_len = cpu_to_le16(sizeof(meta));
-	meta.cookie = cpu_to_le32(cookie);
-	meta.phy_ppdu_id = cpu_to_le32(dma_hdr->phy_ppdu_id);
-	meta.paddr_low32 = cpu_to_le32((uint32_t)paddr);
-	meta.paddr_high32 = cpu_to_le32((uint32_t)(paddr >> 32));
-	meta.dbr_len = cpu_to_le32(dbr_len > 0xffffffffU ?
-				     0xffffffffU : (uint32_t)dbr_len);
-	meta.parsed_len = cpu_to_le32(parsed_len > 0xffffffffU ?
-					0xffffffffU : (uint32_t)parsed_len);
-	meta.dma_hdr_bytes = cpu_to_le16(sizeof(*dma_hdr));
-	meta.dma_hdr_words = cpu_to_le16(dma_hdr->length);
-	meta.freeze_tlv_len = cpu_to_le16(freeze_tlv_len > 0xffffU ?
-					    0xffffU : (uint16_t)freeze_tlv_len);
-	meta.mu_rx_user_size = cpu_to_le16(mu_rx_user_size > 0xffffU ?
-					    0xffffU : (uint16_t)mu_rx_user_size);
-	meta.mu_rx_num_users = cpu_to_le16(dma_hdr->mu_rx_num_users);
-	meta.sample_offset = cpu_to_le16(sample_offset);
-	meta.sample_len = cpu_to_le32(dma_hdr->total_bytes);
+	meta.magic = CFR_STREAMFS_DBR_META_MAGIC;
+	meta.version = CFR_STREAMFS_DBR_META_VERSION;
+	meta.meta_len = sizeof(meta);
+	meta.flags = CFR_STREAMFS_DBR_META_F_RAW_HDR_VALID |
+		CFR_STREAMFS_DBR_META_F_SAMPLE_PRESENT;
+	meta.cookie = cookie;
+	meta.phy_ppdu_id = dma_hdr->phy_ppdu_id;
+	meta.paddr_low32 = (uint32_t)paddr;
+	meta.paddr_high32 = (uint32_t)(paddr >> 32);
+	meta.dbr_len = dbr_len > 0xffffffffU ? 0xffffffffU : (uint32_t)dbr_len;
+	meta.parsed_len = parsed_len > 0xffffffffU ?
+		0xffffffffU : (uint32_t)parsed_len;
+	meta.dma_hdr_bytes = sizeof(*dma_hdr);
+	meta.dma_hdr_words = dma_hdr->length;
+	meta.freeze_tlv_len = freeze_tlv_len > 0xffffU ?
+		0xffffU : (uint16_t)freeze_tlv_len;
+	meta.mu_rx_user_size = mu_rx_user_size > 0xffffU ?
+		0xffffU : (uint16_t)mu_rx_user_size;
+	meta.mu_rx_num_users = dma_hdr->mu_rx_num_users;
+	meta.sample_offset = sample_offset;
+	meta.sample_len = dma_hdr->total_bytes;
 	meta.tag = dma_hdr->tag;
 	meta.upload_done = dma_hdr->upload_done;
 	meta.capture_type = dma_hdr->capture_type;
@@ -182,8 +182,8 @@ target_if_cfr_streamfs_write_dbr_meta(struct pdev_cfr *pcfr, uint32_t cookie,
 	meta.num_chains = dma_hdr->num_chains;
 	meta.upload_pkt_bw = dma_hdr->upload_pkt_bw;
 	meta.sw_peer_id_valid = dma_hdr->sw_peer_id_valid;
-	meta.sw_peer_id = cpu_to_le16(dma_hdr->sw_peer_id);
-	meta.total_bytes = cpu_to_le16(dma_hdr->total_bytes);
+	meta.sw_peer_id = dma_hdr->sw_peer_id;
+	meta.total_bytes = dma_hdr->total_bytes;
 	meta.header_version = dma_hdr->header_version;
 	meta.target_id = dma_hdr->target_id;
 	meta.cfr_fmt = dma_hdr->cfr_fmt;
@@ -191,29 +191,28 @@ target_if_cfr_streamfs_write_dbr_meta(struct pdev_cfr *pcfr, uint32_t cookie,
 	meta.freeze_data_incl = dma_hdr->freeze_data_incl;
 	meta.freeze_tlv_version = dma_hdr->freeze_tlv_version;
 	meta.decimation_factor = dma_hdr->decimation_factor;
-	meta.raw_header_len = cpu_to_le32(sample_offset);
+	meta.raw_header_len = sample_offset;
 
 	if (dma_hdr->freeze_data_incl && freeze_tlv) {
-		flags |= CFR_STREAMFS_DBR_META_F_FREEZE_PRESENT;
+		meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_PRESENT;
 		if (dma_hdr->freeze_tlv_version == MACRX_FREEZE_TLV_VERSION_3) {
 			target_if_cfr_meta_fill_freeze_v3(&meta, freeze_tlv);
-			flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
+			meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
 		} else if (dma_hdr->freeze_tlv_version ==
 			   MACRX_FREEZE_TLV_VERSION_5) {
 			target_if_cfr_meta_fill_freeze_v5(&meta, freeze_tlv);
-			flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
+			meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
 		} else if (dma_hdr->freeze_tlv_version <=
 			   MACRX_FREEZE_TLV_VERSION_2) {
 			target_if_cfr_meta_fill_freeze_v1(&meta, freeze_tlv);
-			flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
+			meta.flags |= CFR_STREAMFS_DBR_META_F_FREEZE_FIELDS;
 		}
 	}
 
 	if (dma_hdr->mu_rx_data_incl)
-		flags |= CFR_STREAMFS_DBR_META_F_MU_PRESENT;
+		meta.flags |= CFR_STREAMFS_DBR_META_F_MU_PRESENT;
 	if (sample_offset)
-		flags |= CFR_STREAMFS_DBR_META_F_RAW_HEADER_BYTES;
-	meta.flags = cpu_to_le32(flags);
+		meta.flags |= CFR_STREAMFS_DBR_META_F_RAW_HEADER_BYTES;
 
 	(void)cfr_streamfs_write_record(pcfr, CFR_STREAMFS_RECORD_DBR_META,
 					cookie, dma_hdr->phy_ppdu_id,
@@ -233,7 +232,7 @@ static u_int32_t end_magic = 0xBEAFDEAD;
 static inline
 u_int32_t snr_to_signal_strength(uint8_t snr)
 {
-	/* target converts snr to dBm */
+	/* target onverts snr to dBm */
 	return snr;
 }
 #else
@@ -1354,7 +1353,7 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 	uint16_t pdelta, gain;
 	uint16_t gain_info[HOST_MAX_CHAINS];
 	bool invalid_gain_table_idx = false;
-	struct cfr_streamfs_rx_ppdu_v1 rx_snapshot = {0};
+	struct cfr_rx_ppdu_snapshot rx_snapshot = {0};
 	uint64_t cur_tstamp;
 
 	if (qdf_unlikely(!pdev)) {
@@ -1384,22 +1383,18 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 	buf_addr = (cfr_info->rtt_che_buffer_pointer_low32 |
 		    ((uint64_t)buf_addr_extn << 32));
 
-	rx_snapshot.magic = cpu_to_le32(CFR_STREAMFS_RX_PPDU_MAGIC);
-	rx_snapshot.ppdu_id = cpu_to_le32(cdp_rx_ppdu->ppdu_id);
-	rx_snapshot.bb_captured_channel =
-		cpu_to_le32(cfr_info->bb_captured_channel);
-	rx_snapshot.rx_location_info_valid =
-		cpu_to_le32(cfr_info->rx_location_info_valid);
-	rx_snapshot.chan_capture_status =
-		cpu_to_le32(cfr_info->chan_capture_status);
+	rx_snapshot.magic = CFR_RX_PPDU_SNAPSHOT_MAGIC;
+	rx_snapshot.ppdu_id = cdp_rx_ppdu->ppdu_id;
+	rx_snapshot.bb_captured_channel = cfr_info->bb_captured_channel;
+	rx_snapshot.rx_location_info_valid = cfr_info->rx_location_info_valid;
+	rx_snapshot.chan_capture_status = cfr_info->chan_capture_status;
 	rx_snapshot.rtt_che_buffer_pointer_low32 =
-		cpu_to_le32(cfr_info->rtt_che_buffer_pointer_low32);
+		cfr_info->rtt_che_buffer_pointer_low32;
 	rx_snapshot.rtt_che_buffer_pointer_high8 =
-		cpu_to_le32(cfr_info->rtt_che_buffer_pointer_high8);
-	rx_snapshot.buffer_addr_low32 = cpu_to_le32((uint32_t)buf_addr);
-	rx_snapshot.buffer_addr_high32 =
-		cpu_to_le32((uint32_t)(buf_addr >> 32));
-	rx_snapshot.srng_id = cpu_to_le32(pcfr->rcc_param.srng_id);
+		cfr_info->rtt_che_buffer_pointer_high8;
+	rx_snapshot.buffer_addr_low32 = (uint32_t)buf_addr;
+	rx_snapshot.buffer_addr_high32 = (uint32_t)(buf_addr >> 32);
+	rx_snapshot.srng_id = pcfr->rcc_param.srng_id;
 	(void)target_if_cfr_streamfs_mirror(pcfr,
 					   CFR_STREAMFS_RECORD_RX_PPDU,
 					   cdp_rx_ppdu->ppdu_id,

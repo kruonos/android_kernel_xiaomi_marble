@@ -1269,7 +1269,6 @@ QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev)
 	return status;
 }
 
-/* Framed relay and continuous-recovery dispatcher boundary. */
 QDF_STATUS ucfg_cfr_streamfs_init(struct wlan_objmgr_pdev *pdev)
 {
 	QDF_STATUS status;

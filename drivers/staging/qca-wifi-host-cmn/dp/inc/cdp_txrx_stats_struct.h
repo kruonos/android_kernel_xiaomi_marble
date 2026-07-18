@@ -2179,6 +2179,8 @@ enum chan_capture_status {
 	CAPTURE_MAX,
 };
 
+#define CFR_RCC_STATS_MAX_PDEVS 4
+
 /* struct cdp_cfr_rcc_stats - CFR RCC debug statistics
  * @bb_captured_channel_cnt: No. of PPDUs for which MAC sent Freeze TLV to PHY
  * @bb_captured_timeout_cnt: No. of PPDUs for which CFR filter criteria matched
@@ -2205,6 +2207,40 @@ struct cdp_cfr_rcc_stats {
 	uint64_t rx_loc_info_valid_cnt;
 	uint64_t chan_capture_status[CAPTURE_MAX];
 	uint64_t reason_cnt[FREEZE_REASON_MAX];
+	uint64_t wdi_rx_ppdu_emit_cfr_cnt;
+	uint64_t wdi_rx_ppdu_emit_ppdu_stats_cnt;
+	uint64_t wdi_rx_ppdu_alloc_fail_cnt;
+	uint64_t wdi_rx_ppdu_put_tail_fail_cnt;
+	uint64_t wdi_rx_ppdu_handler_cnt;
+	uint64_t wdi_rx_ppdu_sub_cnt;
+	uint64_t wdi_rx_ppdu_no_sub_cnt;
+	uint64_t wdi_rx_ppdu_no_pdev_cnt;
+	uint64_t wdi_rx_ppdu_fallback_cnt;
+	uint64_t wdi_rx_ppdu_fallback_fail_cnt;
+	uint32_t wdi_rx_ppdu_last_emit_path;
+	uint32_t wdi_rx_ppdu_last_emit_pdev_id;
+	uint32_t wdi_rx_ppdu_last_emit_lmac_id;
+	uint32_t wdi_rx_ppdu_last_input_pdev_id;
+	uint32_t wdi_rx_ppdu_last_resolved_pdev_id;
+	uint32_t wdi_rx_ppdu_last_fallback_pdev_id;
+	uint32_t wdi_rx_ppdu_last_sub_present;
+	uint32_t wdi_event_enabled;
+	uint32_t wdi_rx_ppdu_all_num_pdevs;
+	uint32_t wdi_rx_ppdu_all_valid[CFR_RCC_STATS_MAX_PDEVS];
+	uint32_t wdi_rx_ppdu_all_pdev_id[CFR_RCC_STATS_MAX_PDEVS];
+	uint32_t wdi_rx_ppdu_all_lmac_id[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_emit_cfr_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_emit_ppdu_stats_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_handler_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_sub_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_no_sub_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_no_pdev_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_fallback_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint64_t wdi_rx_ppdu_all_fallback_fail_cnt[CFR_RCC_STATS_MAX_PDEVS];
+	uint32_t wdi_rx_ppdu_all_last_input_pdev_id[CFR_RCC_STATS_MAX_PDEVS];
+	uint32_t wdi_rx_ppdu_all_last_resolved_pdev_id[CFR_RCC_STATS_MAX_PDEVS];
+	uint32_t wdi_rx_ppdu_all_last_fallback_pdev_id[CFR_RCC_STATS_MAX_PDEVS];
+	uint32_t wdi_rx_ppdu_all_last_sub_present[CFR_RCC_STATS_MAX_PDEVS];
 };
 #else
 struct cdp_cfr_rcc_stats {
