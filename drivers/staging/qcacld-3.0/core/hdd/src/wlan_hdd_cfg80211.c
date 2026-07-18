@@ -7481,6 +7481,7 @@ end:
 #endif
 
 #ifdef WLAN_CFR_ENABLE
+/* Optional vendor netlink duplication; relayfs remains independently active. */
 void hdd_cfr_data_send_nl_event(uint8_t vdev_id, uint32_t pid,
 				const void *data, uint32_t data_len)
 {

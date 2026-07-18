@@ -13736,6 +13736,11 @@ dp_get_cfr_dbg_stats(struct cdp_soc_t *soc_hdl, uint8_t pdev_id,
 	cfr_rcc_stats->wdi_event_enabled = 0;
 #endif
 
+	/*
+	 * A single requested pdev is insufficient for diagnosing QCA6490 routing
+	 * mismatches. Return a bounded all-pdev snapshot so userspace can compare
+	 * the producer, WDI handler, subscriber, and fallback paths by pdev/LMAC.
+	 */
 	for (iter = 0; iter < CFR_RCC_STATS_MAX_PDEVS && iter < MAX_PDEV_CNT;
 	     iter++) {
 		iter_pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, iter);
@@ -13792,6 +13797,7 @@ static void dp_clear_cfr_dbg_stats(struct cdp_soc_t *soc_hdl,
 		return;
 	}
 
+	/* Clear every pdev represented by the aggregated diagnostic snapshot. */
 	for (iter = 0; iter < CFR_RCC_STATS_MAX_PDEVS && iter < MAX_PDEV_CNT;
 	     iter++) {
 		pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, iter);

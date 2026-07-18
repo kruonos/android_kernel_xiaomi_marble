@@ -1269,6 +1269,7 @@ QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev)
 	return status;
 }
 
+/* Keep HDD policy separate from the CFR core lifecycle implementation. */
 QDF_STATUS ucfg_cfr_streamfs_init(struct wlan_objmgr_pdev *pdev)
 {
 	QDF_STATUS status;

@@ -94,6 +94,12 @@ dp_wdi_event_iter_sub(
 }
 
 #if defined(WLAN_CFR_ENABLE) && defined(WLAN_ENH_CFR_ENABLE)
+/*
+ * QCA6490 firmware and monitor paths can report an RX PPDU against a pdev that
+ * does not own the CFR subscription. Preserve the input and resolved IDs and
+ * route to another subscribed pdev when possible, so a routing mismatch is
+ * observable instead of becoming silent CSI loss.
+ */
 static inline void
 dp_wdi_rx_ppdu_record(struct dp_pdev *pdev, uint8_t input_pdev_id,
 			      uint32_t sub_present)

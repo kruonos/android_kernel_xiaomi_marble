@@ -961,6 +961,13 @@ static int relay_file_release(struct inode *inode, struct file *filp)
 }
 
 /*
+ * CFR complete-record writers use buf->offset as a publication boundary. They
+ * copy a bounded record first and advance the offset with a release store.
+ * Every read-side observation of that boundary therefore uses an acquire load
+ * before exposing the corresponding bytes to userspace.
+ */
+
+/*
  *	relay_file_read_consume - update the consumed count for the buffer
  */
 static void relay_file_read_consume(struct rchan_buf *buf,

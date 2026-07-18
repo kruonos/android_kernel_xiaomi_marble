@@ -127,11 +127,22 @@ cfr_streamfs_reset(struct wlan_objmgr_pdev *pdev);
  *
  * Return: status of fs write
  */
+/*
+ * CFRR framed relay ABI.
+ *
+ * The frame header and lifecycle records use explicit little-endian fields.
+ * DBR metadata and RX PPDU evidence retain the validated main-kernel
+ * fixed-width layout emitted by the little-endian Marble target. A frame is
+ * committed in full or dropped in full, so readers can resynchronize on this
+ * magic and account for loss through sequence gaps. Keep existing structure
+ * prefixes and fixed sizes stable when extending the research ABI.
+ */
 #define CFR_STREAMFS_RECORD_MAGIC 0x52524643U /* "CFRR" little-endian */
 #define CFR_STREAMFS_RECORD_VERSION 2
 #define CFR_STREAMFS_RECORD_V1_HDR_LEN 40U
 #define CFR_STREAMFS_MAX_RECORD_SIZE (32U * 1024U)
 
+/* Bounded watchdog defaults and accepted operator-control limits. */
 #define CFR_CONTINUOUS_DEFAULT_POLL_MS 50U
 #define CFR_CONTINUOUS_DEFAULT_STALL_MS 250U
 #define CFR_CONTINUOUS_DEFAULT_DRAIN_MS 75U

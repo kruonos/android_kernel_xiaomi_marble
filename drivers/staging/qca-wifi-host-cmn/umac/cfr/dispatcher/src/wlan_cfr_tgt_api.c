@@ -27,6 +27,13 @@
 #include <cfr_defs_i.h>
 #include <linux/overflow.h>
 
+/*
+ * Final correlated-capture fan-out.
+ *
+ * Relayfs is the independent all-or-drop data plane. Optional netlink
+ * duplication uses fixed per-pdev storage under its own lock, so an absent or
+ * slow netlink consumer cannot fragment the relay stream.
+ */
 uint32_t tgt_cfr_info_send(struct wlan_objmgr_pdev *pdev, void *head,
 			   size_t hlen, void *data, size_t dlen, void *tail,
 			   size_t tlen)

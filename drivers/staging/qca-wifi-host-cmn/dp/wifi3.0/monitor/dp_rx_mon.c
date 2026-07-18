@@ -246,6 +246,7 @@ dp_rx_handle_cfr(struct dp_soc *soc, struct dp_pdev *pdev,
 	if (!ppdu_info->cfr_info.bb_captured_channel)
 		return;
 
+	/* Record the production path before WDI delivery or allocation can fail. */
 	DP_STATS_INC(pdev, rcc.wdi_rx_ppdu_emit_cfr_cnt, 1);
 	pdev->stats.rcc.wdi_rx_ppdu_last_emit_path = 1;
 	pdev->stats.rcc.wdi_rx_ppdu_last_emit_pdev_id = pdev->pdev_id;

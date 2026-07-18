@@ -17,7 +17,11 @@
 /**
  * DOC: wlan_hdd_cfr.c
  *
- * WLAN Host Device Driver CFR capture Implementation
+ * WLAN Host Device Driver CFR capture implementation.
+ *
+ * Sysfs carries root-only configuration and bounded scalar health. High-rate
+ * CSI evidence remains in the framed relay data plane, while detailed state is
+ * exposed through debugfs seq_file readers implemented by the CFR core.
  */
 
 #include <linux/version.h>
@@ -1630,6 +1634,10 @@ static ssize_t hdd_cfr_control_store(struct kobject *kobj,
 	uint32_t value, value2, value3;
 	int ret = -EINVAL;
 
+	/*
+	 * Keep this parser bounded and command-oriented. Binary capture data must
+	 * never be returned through sysfs; relayfs is the research data plane.
+	 */
 	if (sscanf(buf, "reader_stats %llu %llu %llu", &gaps,
 		   &resync_bytes, &invalid_frames) == 3) {
 		reader_stats.sequence_gaps = gaps;

@@ -2207,6 +2207,7 @@ struct cdp_cfr_rcc_stats {
 	uint64_t rx_loc_info_valid_cnt;
 	uint64_t chan_capture_status[CAPTURE_MAX];
 	uint64_t reason_cnt[FREEZE_REASON_MAX];
+	/* Per-pdev RX PPDU production, delivery, fallback, and failure evidence. */
 	uint64_t wdi_rx_ppdu_emit_cfr_cnt;
 	uint64_t wdi_rx_ppdu_emit_ppdu_stats_cnt;
 	uint64_t wdi_rx_ppdu_alloc_fail_cnt;
@@ -2224,6 +2225,7 @@ struct cdp_cfr_rcc_stats {
 	uint32_t wdi_rx_ppdu_last_resolved_pdev_id;
 	uint32_t wdi_rx_ppdu_last_fallback_pdev_id;
 	uint32_t wdi_rx_ppdu_last_sub_present;
+	/* Aggregated snapshot used to diagnose pdev and LMAC routing mismatches. */
 	uint32_t wdi_event_enabled;
 	uint32_t wdi_rx_ppdu_all_num_pdevs;
 	uint32_t wdi_rx_ppdu_all_valid[CFR_RCC_STATS_MAX_PDEVS];

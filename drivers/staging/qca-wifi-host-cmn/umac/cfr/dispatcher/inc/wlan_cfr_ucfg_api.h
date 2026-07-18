@@ -349,6 +349,9 @@ QDF_STATUS ucfg_cfr_rcc_dump_lut(struct wlan_objmgr_vdev *vdev);
  * ucfg_cfr_streamfs_init() - initialize CFR relayfs data plane
  * @pdev: pointer to pdev object
  *
+ * This dispatcher boundary keeps HDD policy separate from the core relay
+ * lifecycle and continuous-recovery implementation.
+ *
  * Return: status
  */
 QDF_STATUS ucfg_cfr_streamfs_init(struct wlan_objmgr_pdev *pdev);

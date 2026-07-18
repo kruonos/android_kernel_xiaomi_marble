@@ -148,6 +148,15 @@ void qdf_streamfs_write(qdf_streamfs_chan_t chan,
 
 qdf_export_symbol(qdf_streamfs_write);
 
+/*
+ * Complete-record relay writer used by the framed CFR transport.
+ *
+ * CFR serializes writers with its per-pdev record lock. local_irq_save() keeps
+ * the current-CPU relay selection stable and excludes a local interrupt writer
+ * while the bounded record is copied. smp_store_release() is the publication
+ * point paired with acquire loads in relay readers. Do not use this helper for
+ * unbounded payloads because interrupts remain disabled during memcpy().
+ */
 bool qdf_streamfs_write_atomic(qdf_streamfs_chan_t chan, const void *data,
 			       size_t length)
 {

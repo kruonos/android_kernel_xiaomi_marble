@@ -384,6 +384,16 @@ cfr_streamfs_end_session_locked(struct pdev_cfr *pa,
 				bool disable_relay);
 
 #ifdef WLAN_ENH_CFR_ENABLE
+/*
+ * Bounded continuous-capture recovery.
+ *
+ * RX PPDU and DBR callbacks publish monotonic evidence timestamps. This
+ * delayed-work state machine performs firmware transactions in process
+ * context: soft RCC resubmit, hard disable and drain, datapath cycle, LUT
+ * reset, and re-enable. At most one blind hard retry is allowed when a
+ * successful hard rearm yields no new evidence. Generation checks make stop
+ * and reconfiguration cancel-safe.
+ */
 static void cfr_continuous_emit_rearm(struct pdev_cfr *pa, uint32_t stage,
 				      QDF_STATUS status, uint64_t now_ns)
 {
@@ -1589,6 +1599,11 @@ cfr_streamfs_write_record_locked(struct pdev_cfr *pa, uint32_t type,
 		return status;
 	}
 
+	/*
+	 * Assemble the complete CFRR frame in fixed per-pdev storage before
+	 * publishing it. A full relay drops this complete frame and leaves an
+	 * observable sequence gap; partial frames are never made readable.
+	 */
 	cursor = record;
 	qdf_mem_copy(cursor, &hdr, sizeof(hdr));
 	cursor += sizeof(hdr);
@@ -1661,6 +1676,10 @@ QDF_STATUS cfr_streamfs_write_record(struct pdev_cfr *pa, uint32_t type,
 	if (!pa)
 		return QDF_STATUS_E_INVAL;
 
+	/*
+	 * spin_lock_bh() is the cross-CPU writer contract for current CFR paths.
+	 * Do not add a hard-IRQ caller without changing this serialization model.
+	 */
 	qdf_spin_lock_bh(&pa->streamfs_record_lock);
 	status = cfr_streamfs_write_record_locked(pa, type, meta0, meta1,
 						   head, hlen, data, dlen,

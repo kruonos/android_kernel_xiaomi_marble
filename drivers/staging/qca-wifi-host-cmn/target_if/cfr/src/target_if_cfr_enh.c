@@ -37,6 +37,15 @@
 #define CFR_INVALID_SNR 0x80
 #define CFR_RX_PPDU_SNAPSHOT_MAGIC 0x50505243U
 
+/*
+ * Loss-observable CFR evidence stream.
+ *
+ * Raw DBR bytes, parsed DBR metadata, and RX PPDU evidence are mirrored as
+ * independent CFRR records before correlation mutates the lookup table. These
+ * records let userspace distinguish missing radio evidence from a failed host
+ * correlation. The fixed-width snapshot is emitted by the little-endian Marble
+ * target and is kept at 40 bytes for parser compatibility.
+ */
 struct cfr_rx_ppdu_snapshot {
 	uint32_t magic;
 	uint32_t ppdu_id;
@@ -232,7 +241,7 @@ static u_int32_t end_magic = 0xBEAFDEAD;
 static inline
 u_int32_t snr_to_signal_strength(uint8_t snr)
 {
-	/* target onverts snr to dBm */
+	/* The target already converts SNR to dBm for this chipset family. */
 	return snr;
 }
 #else

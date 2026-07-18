@@ -155,9 +155,12 @@ void qdf_streamfs_write(qdf_streamfs_chan_t chan, const void *data,
  * @data: complete record bytes
  * @length: complete record length
  *
- * The caller must serialize writers. The relay write offset is published only
- * after the full record has been copied, so a concurrent reader cannot observe
- * stale bytes from a reserved but not-yet-filled slot.
+ * The caller must serialize writers across CPUs. The implementation disables
+ * local interrupts while it selects and fills the per-CPU relay buffer, so the
+ * copied record must remain bounded. The relay write offset is published only
+ * after the full record is resident. A concurrent reader therefore observes
+ * either the previous boundary or the complete new record, never an unfilled
+ * reservation.
  *
  * Return: true when the complete record was committed, false when full.
  */

@@ -174,6 +174,11 @@ out:
 }
 #endif /* CFR_USE_FIXED_FOLDER */
 
+/*
+ * Pause or resume QCA6490 CFR datapath processing without removing the WDI
+ * subscription. Continuous recovery uses this around LUT reset so callback
+ * ownership remains stable while monitor reap state is refreshed.
+ */
 QDF_STATUS target_if_cfr_set_dp_pipeline(struct wlan_objmgr_pdev *pdev,
 					 bool enable)
 {

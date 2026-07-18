@@ -624,6 +624,7 @@ struct pdev_cfr {
 	uint64_t tx_peer_status_cfr_fail;
 	uint64_t tx_evt_status_cfr_fail;
 	uint64_t tx_dbr_cookie_lookup_fail;
+	/* CFRR session lifecycle and complete-frame publication counters. */
 	uint32_t streamfs_record_seq;
 	uint8_t streamfs_record_enabled;
 	uint8_t streamfs_session_state;
@@ -675,18 +676,22 @@ struct pdev_cfr {
 	uint64_t streamfs_reader_sequence_gaps;
 	uint64_t streamfs_reader_resync_bytes;
 	uint64_t streamfs_reader_invalid_frames;
+	/* Fixed staging avoids allocation and segmented relay writes in hot paths. */
 	void *streamfs_record_buf;
+	/* Optional netlink duplication is isolated from the relay data plane. */
 	qdf_spinlock_t netlink_lock;
 	void *netlink_buf;
 	uint32_t netlink_buf_size;
 	uint8_t netlink_enabled;
 	uint64_t netlink_send_cnt;
 	uint64_t netlink_drop_cnt;
+	/* PPDU subscription ownership is stable across recovery DP cycles. */
 	qdf_mutex_t ppdu_sub_lock;
 	void *ppdu_subscribe_ctx;
 #ifdef WLAN_ENH_CFR_ENABLE
 	struct cfr_rcc_param rcc_param;
 	struct cfr_rcc_param continuous_rcc_snapshot;
+	/* Process-context recovery state; callbacks only publish evidence. */
 	qdf_mutex_t continuous_config_lock;
 	qdf_mutex_t continuous_lifecycle_lock;
 	qdf_mutex_t continuous_fw_lock;
