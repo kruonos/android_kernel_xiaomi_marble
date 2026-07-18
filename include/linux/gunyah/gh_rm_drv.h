@@ -7,6 +7,7 @@
 #ifndef __GH_RM_DRV_H
 #define __GH_RM_DRV_H
 
+#include <linux/err.h>
 #include <linux/types.h>
 #include <linux/notifier.h>
 #include <linux/fwnode.h>
@@ -297,6 +298,11 @@ struct gh_vm_status {
 /* RM client registration APIs */
 int gh_rm_register_notifier(struct notifier_block *nb);
 int gh_rm_unregister_notifier(struct notifier_block *nb);
+void *gh_rm_call_raw(u32 message_id, void *req_buff, size_t req_buff_size,
+			     size_t *resp_buff_size, int *rm_error);
+void *gh_rm_call_raw_timeout(u32 message_id, void *req_buff,
+				    size_t req_buff_size, size_t *resp_buff_size,
+				    int *rm_error, unsigned int timeout_ms);
 
 /* Client APIs for IRQ management */
 int gh_rm_virq_to_irq(u32 virq, u32 type);
@@ -393,8 +399,23 @@ static inline int gh_rm_unregister_notifier(struct notifier_block *nb)
 	return -ENODEV;
 }
 
+static inline void *gh_rm_call_raw(u32 message_id, void *req_buff,
+				   size_t req_buff_size, size_t *resp_buff_size,
+				   int *rm_error)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline void *gh_rm_call_raw_timeout(u32 message_id, void *req_buff,
+					   size_t req_buff_size,
+					   size_t *resp_buff_size, int *rm_error,
+					   unsigned int timeout_ms)
+{
+	return ERR_PTR(-ENODEV);
+}
+
 /* Client APIs for IRQ management */
-static inline int gh_rm_virq_to_irq(u32 virq)
+static inline int gh_rm_virq_to_irq(u32 virq, u32 type)
 {
 	return -EINVAL;
 }

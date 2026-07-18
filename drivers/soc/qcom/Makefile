@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
+ifeq ($(GUESTVM_DIAG_ONLY),1)
+obj-m += guestvm_loader.o
+else
 CFLAGS_rpmh-rsc.o := -I$(src)
 obj-$(CONFIG_QCOM_AOSS_QMP) +=	qcom_aoss.o
 obj-$(CONFIG_QCOM_GENI_SE) +=	qcom-geni-se.o
@@ -124,3 +127,4 @@ obj-$(CONFIG_MSM_HELIOSCOM_INTERFACE) += helioscom_interface.o
 obj-$(CONFIG_QTI_OEMVM_CORE_CTL) += oemvm_core_ctl.o
 
 obj-$(CONFIG_VH_FS)	+= vh_fs/
+endif

@@ -52,6 +52,7 @@ int i2c_disable_irq(struct nfc_dev *dev);
 int i2c_write(struct nfc_dev *dev, const char *buf, size_t count,
 						int max_retry_cnt);
 int i2c_read(struct nfc_dev *dev, char *buf, size_t count, int timeout);
+void nfc_i2c_reset_rx_reassembly(struct nfc_dev *dev);
 
 #else
 
@@ -74,6 +75,10 @@ static inline int i2c_write(struct nfc_dev *dev, const char *buf,
 static inline int i2c_read(struct nfc_dev *dev, char *buf, size_t count, int timeout)
 {
 	return -ENXIO;
+}
+
+static inline void nfc_i2c_reset_rx_reassembly(struct nfc_dev *dev)
+{
 }
 
 #endif

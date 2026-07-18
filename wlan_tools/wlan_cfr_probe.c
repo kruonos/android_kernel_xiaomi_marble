@@ -35,6 +35,7 @@ enum qca_wlan_vendor_cfr_capture_type {
     QCA_WLAN_VENDOR_CFR_DIRECT_NDPA_NDP = 2,
     QCA_WLAN_VENDOR_CFR_TA_RA = 3,
     QCA_WLAN_VENDOR_CFR_ALL_PACKET = 4,
+    QCA_WLAN_VENDOR_CFR_NDPA_NDP_ALL = 5,
 };
 
 enum qca_wlan_vendor_peer_cfr_capture_attr {
@@ -295,17 +296,21 @@ static int parse_capture_type(const char *value, uint8_t *capture_type)
         *capture_type = QCA_WLAN_VENDOR_CFR_ALL_PACKET;
         return 0;
     }
+    if (strcmp(value, "all_ndpa") == 0 || strcmp(value, "ndpa_all") == 0) {
+        *capture_type = QCA_WLAN_VENDOR_CFR_NDPA_NDP_ALL;
+        return 0;
+    }
 
     errno = 0;
     numeric = strtoul(value, &end, 0);
     if (errno == 0 && end != value && *end == '\0' &&
-        numeric <= QCA_WLAN_VENDOR_CFR_ALL_PACKET) {
+        numeric <= QCA_WLAN_VENDOR_CFR_NDPA_NDP_ALL) {
         *capture_type = (uint8_t)numeric;
         return 0;
     }
 
     fprintf(stderr, "invalid capture type '%s'\n", value);
-    fprintf(stderr, "valid: direct_ftm, all_ftm_ack, direct_ndpa, ta_ra, all_packet, or 0-4\n");
+    fprintf(stderr, "valid: direct_ftm, all_ftm_ack, direct_ndpa, all_ndpa, ta_ra, all_packet, or 0-5\n");
     return -1;
 }
 
@@ -548,7 +553,7 @@ static void usage(const char *prog)
             "  %s start [ifname] [capture_type]\n"
             "  %s stop [ifname]\n"
             "  %s probe [ifname] [listen_ms] [capture_type]\n"
-            "capture_type: direct_ftm, all_ftm_ack, direct_ndpa, ta_ra, all_packet, or 0-4\n",
+            "capture_type: direct_ftm, all_ftm_ack, direct_ndpa, all_ndpa, ta_ra, all_packet, or 0-5\n",
             prog, prog, prog, prog);
 }
 

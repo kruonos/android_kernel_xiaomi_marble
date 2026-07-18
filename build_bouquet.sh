@@ -66,15 +66,34 @@ done
 
 ########## Preparation Phase ##########
 
-export KBUILD_BUILD_HOST="wsl2"
-export KBUILD_BUILD_USER="pzqqt"
+export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-wsl2}"
+export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-pzqqt}"
 
-echo -e "${gre}Building kernel with Slim LLVM 22.1.8 $white"
-CLANG_PATH=~/build_toolchain/llvm-22.1.8-x86_64/bin
+echo -e "${gre}Building kernel with LLVM from PATH${white}"
+CLANG_PATH=${CLANG_PATH:-}
+HOST_ARCH=$(uname -m)
 
-export PATH=$(realpath $CLANG_PATH):$(realpath ${KDIR}/build-tools):${PATH}
+require_cmd() {
+	local cmd=$1
+	command -v "$cmd" >/dev/null || {
+		echo -e "${red}missing required command: ${cmd}${white}"
+		exit 1
+	}
+}
 
-export LOCALVERSION=-v4.7
+if [ -n "${CLANG_PATH}" ]; then
+	export PATH=$(realpath "${CLANG_PATH}"):${PATH}
+fi
+
+if [ "${HOST_ARCH}" = "x86_64" ]; then
+	export PATH=$(realpath "${KDIR}/build-tools"):${PATH}
+else
+	echo -e "${yellow}Using native host DT/AVB tools for ${HOST_ARCH}; bundled build-tools are x86_64.${white}"
+fi
+
+AVBTOOL=${AVBTOOL:-avbtool}
+
+export LOCALVERSION=${LOCALVERSION:--v4.9}
 $with_ksu && {
 	while true; do
 		kversion_ksu_suffix=$(cat /dev/urandom | tr -dc 'a-zA-Z' | head -c 3)
@@ -87,6 +106,18 @@ $with_ksu && {
 make_flags="ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out"
 make_kcflags="-D__ANDROID_COMMON_KERNEL__ -O3"
 make_kbuild_ldflags="-O3 --lto-O3"
+
+polly_plugin=${LLVM_POLLY_PLUGIN:-}
+if [ -z "${polly_plugin}" ] && [ -f /usr/lib64/LLVMPolly.so ]; then
+	polly_plugin=/usr/lib64/LLVMPolly.so
+fi
+if [ -n "${polly_plugin}" ]; then
+	if [ ! -f "${polly_plugin}" ]; then
+		echo -e "${red}LLVM_POLLY_PLUGIN does not exist: ${polly_plugin}${white}"
+		exit 1
+	fi
+	make_kcflags+=" -fpass-plugin=${polly_plugin}"
+fi
 
 $no_ccache && {
 	echo -e "${yellow}Warning: ccache is not used! $white"
@@ -608,12 +639,31 @@ if [ -d ${KDIR}/${DEVICETREE} ] && [ -d ${KDIR}/out/${DEVICETREE} ]; then
 
 	echo ""
 	echo "Merging dtbs & dtbos..."
-	merge_dtbs.py -b /tmp/devicetree_base -t /tmp/devicetree_techpack -o ${OUTPUT_DIR}/devicetree
+	require_cmd fdtget
+	require_cmd fdtput
+	require_cmd fdtoverlay
+	require_cmd fdtoverlaymerge
+	require_cmd ufdt_apply_overlay
+	require_cmd ${AVBTOOL}
+	python3 ${KDIR}/build-tools/merge_dtbs.py -b /tmp/devicetree_base -t /tmp/devicetree_techpack -o ${OUTPUT_DIR}/devicetree || {
+		echo -e "${red} << Failed to merge dtbs/dtbos >>${white}"
+		exit 1
+	}
 
 	echo ""
 	echo "- Making dtbo.img ..."
-	mkdtboimg.py create ${OUTPUT_DIR}/devicetree/dtbo.img ${OUTPUT_DIR}/devicetree/marble-sm7475-pm8008-overlay.dtbo
-	avbtool add_hash_footer --partition_name dtbo --partition_size $((24 * 1024 * 1024)) --image ${OUTPUT_DIR}/devicetree/dtbo.img
+	python3 ${KDIR}/build-tools/mkdtboimg.py create ${OUTPUT_DIR}/devicetree/dtbo.img ${OUTPUT_DIR}/devicetree/marble-sm7475-pm8008-overlay.dtbo || {
+		echo -e "${red} << Failed to create dtbo.img >>${white}"
+		exit 1
+	}
+	${AVBTOOL} add_hash_footer --partition_name dtbo --partition_size $((24 * 1024 * 1024)) --image ${OUTPUT_DIR}/devicetree/dtbo.img || {
+		echo -e "${red} << Failed to add dtbo AVB hash footer >>${white}"
+		exit 1
+	}
+	if [ "$(wc -c < ${OUTPUT_DIR}/devicetree/dtbo.img)" -ne $((24 * 1024 * 1024)) ]; then
+		echo -e "${red} << Invalid dtbo.img size after AVB footer >>${white}"
+		exit 1
+	fi
 
 	rm -rf /tmp/devicetree_base
 	rm -rf /tmp/devicetree_techpack

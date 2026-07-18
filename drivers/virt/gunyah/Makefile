@@ -11,3 +11,8 @@ obj-$(CONFIG_GH_VIRTIO_BACKEND) += gh_virtio_backend.o
 obj-$(CONFIG_GH_GUEST_POPS)	+= gh_guest_pops.o
 obj-$(CONFIG_GH_VM_LOADER)	+= gh_vm_loader.o
 gh_vm_loader-y			:= gh_vm_loader_core.o gh_vm_loader_sec.o
+
+# Guarded staging import of the modern /dev/gunyah VM-manager path used by
+# crosvm/AVF-style guests. Disabled by CONFIG_GUNYAH_AVF_EXPERIMENTAL until
+# its 6.x dependencies and RM compatibility layer are ported.
+obj-$(CONFIG_GUNYAH_AVF_EXPERIMENTAL) += avf/

@@ -1,5 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
+
+config GUNYAH_AVF_EXPERIMENTAL
+	tristate "Experimental modern Gunyah /dev/gunyah VM manager"
+	depends on ARM64
+	depends on GH_RM_DRV
+	help
+	  Import scaffold for the newer Qualcomm/Gunyah VM-manager ABI used by
+	  crosvm/AVF-style guests. This is intentionally disabled for the bootable
+	  Bouquet baseline until its 6.x dependencies are backported or adapted:
+	  maple_tree, auxiliary bus, modern arm64 Gunyah hypercalls, and Resource
+	  Manager binding/API compatibility.
+
+	  Do not enable this in production builds yet. It is only a guarded staging
+	  target for compile-only porting of drivers/virt/gunyah/avf/.
+
 menuconfig GUNYAH_DRIVERS
 	bool "Gunyah Virtualization drivers"
 	depends on ARM64

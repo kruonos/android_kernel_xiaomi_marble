@@ -16,6 +16,8 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/completion.h>
+#include <linux/jiffies.h>
+#include <linux/kref.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
@@ -46,6 +48,7 @@
  * @fragments_received: fragments received so far.
  * @rm_error: For request/reply sequences with standard replies.
  * @seq: Sequence ID for the main message.
+ * @refcount: Keeps timed-out request objects alive while RX owns them.
  */
 struct gh_rm_connection {
 	void *payload;
@@ -61,6 +64,7 @@ struct gh_rm_connection {
 	u32 rm_error;
 	u16 seq;
 	struct completion seq_done;
+	struct kref refcount;
 };
 
 struct gh_rm_notif_validate {
@@ -142,9 +146,27 @@ static struct gh_rm_connection *gh_rm_alloc_connection(u32 msg_id,
 	if (needed)
 		init_completion(&connection->seq_done);
 
+	kref_init(&connection->refcount);
 	connection->msg_id = msg_id;
 
 	return connection;
+}
+
+static void gh_rm_connection_release(struct kref *refcount)
+{
+	struct gh_rm_connection *connection;
+
+	connection = container_of(refcount, struct gh_rm_connection, refcount);
+	kfree(connection->payload);
+	kfree(connection);
+}
+
+static void gh_rm_connection_put(struct gh_rm_connection *connection)
+{
+	if (IS_ERR_OR_NULL(connection))
+		return;
+
+	kref_put(&connection->refcount, gh_rm_connection_release);
 }
 
 static int
@@ -337,8 +359,7 @@ static void gh_rm_validate_notif(struct work_struct *work)
 
 	srcu_notifier_call_chain(&gh_rm_notifier, notification, payload);
 err:
-	kfree(payload);
-	kfree(connection);
+	gh_rm_connection_put(connection);
 	kfree(validate_work);
 }
 
@@ -349,11 +370,12 @@ struct gh_rm_connection *gh_rm_process_notif(void *msg, size_t msg_size)
 	struct gh_rm_connection *connection;
 
 	connection = gh_rm_alloc_connection(hdr->msg_id, false);
-	if (!connection)
-		return NULL;
+	if (IS_ERR(connection))
+		return connection;
+	connection->seq = hdr->seq;
 
 	if (gh_rm_init_connection_buff(connection, msg, sizeof(*hdr), msg_size - sizeof(*hdr))) {
-		kfree(connection);
+		gh_rm_connection_put(connection);
 		return NULL;
 	}
 
@@ -369,28 +391,49 @@ struct gh_rm_connection *gh_rm_process_rply(void *recv_buff, size_t recv_buff_si
 	size_t payload_size;
 	int ret = 0;
 
+	if (recv_buff_size < sizeof(*reply_hdr)) {
+		pr_err("%s: Invalid reply message size: %zu\n",
+			__func__, recv_buff_size);
+		return ERR_PTR(-EINVAL);
+	}
+
 	if (mutex_lock_interruptible(&gh_rm_call_idr_lock)) {
 		ret = -ERESTARTSYS;
 		return ERR_PTR(ret);
 	}
 
 	connection = idr_find(&gh_rm_call_idr, hdr->seq);
-	mutex_unlock(&gh_rm_call_idr_lock);
-
-	if (!connection || connection->seq != hdr->seq ||
-	    connection->msg_id != hdr->msg_id) {
+	if (!connection) {
+		mutex_unlock(&gh_rm_call_idr_lock);
 		pr_err("%s: Failed to get the connection info for seq: %d\n",
 			__func__, hdr->seq);
 		ret = -EINVAL;
 		return ERR_PTR(ret);
+	}
+	kref_get(&connection->refcount);
+	mutex_unlock(&gh_rm_call_idr_lock);
+
+	if (connection->seq != hdr->seq || connection->msg_id != hdr->msg_id) {
+		pr_err("%s: Reply mismatch seq:%u/%u msg_id:%x/%x\n",
+			__func__, hdr->seq, connection->seq,
+			hdr->msg_id, connection->msg_id);
+		connection->type = GH_RM_RPC_TYPE_RPLY;
+		connection->ret = -EINVAL;
+		connection->num_fragments = 0;
+		connection->fragments_received = 0;
+		return connection;
 	}
 
 	payload_size = recv_buff_size - sizeof(*reply_hdr);
 
 	ret = gh_rm_init_connection_buff(connection, recv_buff,
 					sizeof(*reply_hdr), payload_size);
-	if (ret < 0)
-		return ERR_PTR(ret);
+	if (ret < 0) {
+		connection->ret = ret;
+		connection->num_fragments = 0;
+		connection->fragments_received = 0;
+		return connection;
+	}
 
 	connection->rm_error = reply_hdr->err_code;
 
@@ -412,6 +455,13 @@ static int gh_rm_process_cont(struct gh_rm_connection *connection,
 	if (connection->msg_id != hdr->msg_id) {
 		pr_err("%s: got message id %x when expecting %x\n",
 			__func__, hdr->msg_id, connection->msg_id);
+		return -EINVAL;
+	}
+
+	if (connection->seq != hdr->seq) {
+		pr_err("%s: got seq %u when expecting %u\n",
+			__func__, hdr->seq, connection->seq);
+		return -EINVAL;
 	}
 
 	/*
@@ -434,11 +484,14 @@ static int gh_rm_process_cont(struct gh_rm_connection *connection,
 	return 0;
 }
 
-static bool gh_rm_complete_connection(struct gh_rm_connection *connection)
+static bool gh_rm_complete_connection(struct gh_rm_connection *connection,
+				      bool *put_connection)
 {
 	struct gh_rm_notif_validate *validate_work;
 
-	if (!connection)
+	*put_connection = false;
+
+	if (IS_ERR_OR_NULL(connection))
 		return false;
 
 	if (connection->fragments_received != connection->num_fragments)
@@ -447,12 +500,12 @@ static bool gh_rm_complete_connection(struct gh_rm_connection *connection)
 	switch (connection->type) {
 	case GH_RM_RPC_TYPE_RPLY:
 		complete(&connection->seq_done);
+		*put_connection = true;
 		break;
 	case GH_RM_RPC_TYPE_NOTIF:
 		validate_work = kzalloc(sizeof(*validate_work), GFP_KERNEL);
 		if (validate_work == NULL) {
-			kfree(connection->payload);
-			kfree(connection);
+			*put_connection = true;
 			break;
 		}
 
@@ -463,6 +516,7 @@ static bool gh_rm_complete_connection(struct gh_rm_connection *connection)
 		break;
 	default:
 		pr_err("Invalid message type (%d) received\n", connection->type);
+		*put_connection = true;
 		break;
 	}
 
@@ -471,16 +525,19 @@ static bool gh_rm_complete_connection(struct gh_rm_connection *connection)
 
 static void gh_rm_abort_connection(struct gh_rm_connection *connection)
 {
+	if (IS_ERR_OR_NULL(connection))
+		return;
+
 	switch (connection->type) {
 	case GH_RM_RPC_TYPE_RPLY:
 		connection->ret = -EIO;
 		complete(&connection->seq_done);
+		gh_rm_connection_put(connection);
 		break;
 	case GH_RM_RPC_TYPE_NOTIF:
 		fallthrough;
 	default:
-		kfree(connection->payload);
-		kfree(connection);
+		gh_rm_connection_put(connection);
 	}
 }
 
@@ -490,6 +547,7 @@ static int gh_rm_recv_task_fn(void *data)
 	struct gh_rm_rpc_hdr *hdr = NULL;
 	size_t recv_buff_size;
 	void *recv_buff;
+	bool put_connection;
 	int ret;
 
 	recv_buff = kzalloc(GH_MSGQ_MAX_MSG_SIZE_BYTES, GFP_KERNEL);
@@ -533,17 +591,32 @@ static int gh_rm_recv_task_fn(void *data)
 				pr_warn("Received a continuation message without receiving initial message\n");
 				break;
 			}
-			gh_rm_process_cont(connection, recv_buff, recv_buff_size);
+			ret = gh_rm_process_cont(connection, recv_buff, recv_buff_size);
+			if (ret < 0) {
+				gh_rm_abort_connection(connection);
+				connection = NULL;
+			}
 			break;
 		default:
 			pr_err("%s: Invalid message type (%d) received\n",
 				__func__, hdr->type);
 		}
+
+		if (IS_ERR(connection)) {
+			pr_err("%s: Dropping RM connection error: %ld\n",
+				__func__, PTR_ERR(connection));
+			connection = NULL;
+			continue;
+		}
+
 		print_hex_dump_debug("gh_rm_recv: ", DUMP_PREFIX_OFFSET,
 				     4, 1, recv_buff, recv_buff_size, false);
 
-		if (gh_rm_complete_connection(connection))
+		if (gh_rm_complete_connection(connection, &put_connection)) {
+			if (put_connection)
+				gh_rm_connection_put(connection);
 			connection = NULL;
+		}
 	}
 
 	kfree(recv_buff);
@@ -563,14 +636,16 @@ static int gh_rm_send_request(u32 message_id,
 	void *msg;
 	int i, ret = 0;
 
-	num_fragments = (req_buff_size + GH_RM_MAX_MSG_SIZE_BYTES - 1) /
-			GH_RM_MAX_MSG_SIZE_BYTES;
+	if (req_buff_size) {
+		num_fragments = (req_buff_size + GH_RM_MAX_MSG_SIZE_BYTES - 1) /
+				GH_RM_MAX_MSG_SIZE_BYTES;
 
-	/* The above calculation also includes the count
-	 * for the 'request' packet. Exclude it as the
-	 * header needs to fill the num. of fragments to follow.
-	 */
-	num_fragments--;
+		/* The above calculation also includes the count
+		 * for the 'request' packet. Exclude it as the
+		 * header needs to fill the num. of fragments to follow.
+		 */
+		num_fragments--;
+	}
 
 	if (num_fragments > GH_RM_MAX_NUM_FRAGMENTS) {
 		pr_err("%s: Limit exceeded for the number of fragments: %u\n",
@@ -607,8 +682,10 @@ static int gh_rm_send_request(u32 message_id,
 		hdr->msg_id = message_id;
 
 		/* Copy payload */
-		memcpy(msg + sizeof(*hdr), req_buff_curr, payload_size);
-		req_buff_curr += payload_size;
+		if (payload_size) {
+			memcpy(msg + sizeof(*hdr), req_buff_curr, payload_size);
+			req_buff_curr += payload_size;
+		}
 
 		/* Force the last fragment to be sent immediately to the receiver */
 		tx_flags = (i == num_fragments) ? GH_MSGQ_TX_PUSH : 0;
@@ -646,17 +723,23 @@ free_msg:
  * (if applicable). Also, the caller should kfree the returned pointer
  * when done.
  */
-void *gh_rm_call(gh_rm_msgid_t message_id,
+static void *__gh_rm_call(gh_rm_msgid_t message_id,
 			void *req_buff, size_t req_buff_size,
-			size_t *resp_buff_size, int *rm_error)
+			size_t *resp_buff_size, int *rm_error,
+			unsigned int timeout_ms)
 {
 	struct gh_rm_connection *connection;
 	bool seq_done_needed = true;
 	int req_ret;
+	int seq;
 	void *ret;
 
-	if (!message_id || !req_buff || !resp_buff_size || !rm_error)
+	if (!message_id || (!req_buff && req_buff_size) || !resp_buff_size ||
+	    !rm_error)
 		return ERR_PTR(-EINVAL);
+
+	*resp_buff_size = 0;
+	*rm_error = 0;
 
 	connection = gh_rm_alloc_connection(message_id, seq_done_needed);
 	if (IS_ERR_OR_NULL(connection))
@@ -664,13 +747,18 @@ void *gh_rm_call(gh_rm_msgid_t message_id,
 
 	/* Allocate a new seq number for this connection */
 	if (mutex_lock_interruptible(&gh_rm_call_idr_lock)) {
-		kfree(connection);
-		return ERR_PTR(-ERESTARTSYS);
+		ret = ERR_PTR(-ERESTARTSYS);
+		goto out;
 	}
 
-	connection->seq = idr_alloc_cyclic(&gh_rm_call_idr, connection,
-					0, U16_MAX, GFP_KERNEL);
+	seq = idr_alloc_cyclic(&gh_rm_call_idr, connection,
+				       0, U16_MAX, GFP_KERNEL);
 	mutex_unlock(&gh_rm_call_idr_lock);
+	if (seq < 0) {
+		ret = ERR_PTR(seq);
+		goto out;
+	}
+	connection->seq = seq;
 
 	pr_debug("%s TX msg_id: %x\n", __func__, message_id);
 	print_hex_dump_debug("gh_rm_call TX: ", DUMP_PREFIX_OFFSET, 4, 1,
@@ -681,28 +769,46 @@ void *gh_rm_call(gh_rm_msgid_t message_id,
 					connection);
 	if (req_ret < 0) {
 		ret = ERR_PTR(req_ret);
-		goto out;
+		goto remove_idr;
 	}
 
-	/* Wait for response */
-	wait_for_completion(&connection->seq_done);
+	/* Wait for response. A zero timeout keeps the legacy infinite wait. */
+	if (timeout_ms) {
+		unsigned long timeout = msecs_to_jiffies(timeout_ms);
 
+		if (!timeout)
+			timeout = 1;
+
+		if (!wait_for_completion_timeout(&connection->seq_done, timeout)) {
+			mutex_lock(&gh_rm_call_idr_lock);
+			idr_remove(&gh_rm_call_idr, connection->seq);
+			mutex_unlock(&gh_rm_call_idr_lock);
+			pr_err("%s: timed out waiting for msg_id:%x seq:%d timeout_ms:%u\n",
+			       __func__, message_id, connection->seq, timeout_ms);
+			ret = ERR_PTR(-ETIMEDOUT);
+			goto out;
+		}
+	} else {
+		wait_for_completion(&connection->seq_done);
+	}
+
+remove_idr:
 	mutex_lock(&gh_rm_call_idr_lock);
 	idr_remove(&gh_rm_call_idr, connection->seq);
 	mutex_unlock(&gh_rm_call_idr_lock);
+	if (req_ret < 0)
+		goto out;
 
 	*rm_error = connection->rm_error;
 	if (connection->rm_error) {
 		pr_err("%s: Reply for seq:%d failed with RM err: %d\n",
 			__func__, connection->seq, connection->rm_error);
 		ret = ERR_PTR(gh_remap_error(connection->rm_error));
-		kfree(connection->payload);
 		goto out;
 	}
 
 	if (connection->ret) {
 		ret = ERR_PTR(connection->ret);
-		kfree(connection->payload);
 		goto out;
 	}
 
@@ -711,12 +817,38 @@ void *gh_rm_call(gh_rm_msgid_t message_id,
 			     false);
 
 	ret = connection->payload;
+	connection->payload = NULL;
 	*resp_buff_size = connection->size;
 
 out:
-	kfree(connection);
+	gh_rm_connection_put(connection);
 	return ret;
 }
+
+void *gh_rm_call(gh_rm_msgid_t message_id,
+			void *req_buff, size_t req_buff_size,
+			size_t *resp_buff_size, int *rm_error)
+{
+	return __gh_rm_call(message_id, req_buff, req_buff_size,
+				 resp_buff_size, rm_error, 0);
+}
+
+void *gh_rm_call_raw(u32 message_id, void *req_buff, size_t req_buff_size,
+			     size_t *resp_buff_size, int *rm_error)
+{
+	return gh_rm_call(message_id, req_buff, req_buff_size, resp_buff_size,
+			  rm_error);
+}
+EXPORT_SYMBOL_GPL(gh_rm_call_raw);
+
+void *gh_rm_call_raw_timeout(u32 message_id, void *req_buff,
+				    size_t req_buff_size, size_t *resp_buff_size,
+				    int *rm_error, unsigned int timeout_ms)
+{
+	return __gh_rm_call(message_id, req_buff, req_buff_size,
+				 resp_buff_size, rm_error, timeout_ms);
+}
+EXPORT_SYMBOL_GPL(gh_rm_call_raw_timeout);
 
 /**
  * gh_rm_virq_to_irq: Get a Linux IRQ from a Gunyah-compatible vIRQ

@@ -145,6 +145,36 @@
 #define READ_RETRY_WAIT_TIME_USEC       (3500)
 #define NFC_MAGIC 0xE9
 
+#define NFC_RAW_NCI_MAX_LEN             (260)
+#define NFC_MAX_ROUTING_ENTRIES         32
+
+struct nfc_raw_nci_arg {
+	__u8 cmd[NFC_RAW_NCI_MAX_LEN];
+	__u32 cmd_len;
+	__u8 rsp[NFC_RAW_NCI_MAX_LEN];
+	__u32 rsp_len;
+	__s32 timeout_ms;
+};
+
+struct nfc_routing_entry {
+	__u8 type;
+	__u8 destination;
+	__u8 aid[16];
+	__u8 aid_len;
+	__u8 protocol;
+	__u8 tech;
+};
+
+struct nfc_routing_info {
+	__u8 num_entries;
+	struct nfc_routing_entry entries[NFC_MAX_ROUTING_ENTRIES];
+	__u8 status;
+	__u8 reserved[2];
+	__u32 raw_rsp_len;
+	__s32 timeout_ms;
+	__u8 raw_rsp[NFC_RAW_NCI_MAX_LEN];
+};
+
 // Ioctls
 // The type should be aligned with MW HAL definitions
 
@@ -155,6 +185,56 @@
 
 /* NFC HAL can call this ioctl to get the current IRQ state */
 #define NFC_GET_IRQ_STATE      _IO(NFC_MAGIC, 0x06)
+
+/* Vendor RF diagnostic/testing ioctls for NCI development tools. */
+#define NFC_SEND_RAW_NCI	_IOWR(NFC_MAGIC, 0x0A, struct nfc_raw_nci_arg)
+#define NFC_GET_ROUTING		_IOWR(NFC_MAGIC, 0x0B, struct nfc_routing_info)
+
+/* Private Bouquet debug ioctls. Keep these away from stock HAL numbers. */
+#define QTI_NFC_TRACE_USER_DATA_LEN	256
+#define QTI_NFC_TRACE_USER_COMM_LEN	16
+#define QTI_NFC_TRACE_USER_DIR_LEN	16
+
+struct qti_nfc_trace_info {
+	__u32 record_count;
+	__u32 record_capacity;
+	__u32 record_data_len;
+	__u32 max_len;
+	__u64 dropped;
+	__u64 next_seq;
+	__u8 capture;
+	__u8 dmesg;
+	__u8 reserved[6];
+};
+
+struct qti_nfc_trace_user_record {
+	__u64 seq;
+	__u64 ts_ns;
+	__s32 pid;
+	__s32 ret;
+	__u32 len;
+	__u32 dump_len;
+	__u8 truncated;
+	__u8 reserved[7];
+	char comm[QTI_NFC_TRACE_USER_COMM_LEN];
+	char dir[QTI_NFC_TRACE_USER_DIR_LEN];
+	__u8 data[QTI_NFC_TRACE_USER_DATA_LEN];
+};
+
+struct qti_nfc_trace_read_record {
+	__u32 index;
+	__u32 reserved;
+	struct qti_nfc_trace_user_record record;
+};
+
+#define QTI_NFC_TRACE_GET_INFO		_IOR(NFC_MAGIC, 0x70, struct qti_nfc_trace_info)
+#define QTI_NFC_TRACE_READ_RECORD	_IOWR(NFC_MAGIC, 0x71, struct qti_nfc_trace_read_record)
+#define QTI_NFC_TRACE_CLEAR		_IO(NFC_MAGIC, 0x72)
+#define QTI_NFC_TRACE_SET_CAPTURE	_IO(NFC_MAGIC, 0x73)
+#define QTI_NFC_TRACE_SET_MAX_LEN	_IO(NFC_MAGIC, 0x74)
+#define QTI_NFC_TRACE_SET_DMESG		_IO(NFC_MAGIC, 0x75)
+#define NFC_DIAG_ACQUIRE		_IO(NFC_MAGIC, 0x76)
+#define NFC_DIAG_RELEASE		_IO(NFC_MAGIC, 0x77)
 
 #define DTS_IRQ_GPIO_STR	"qcom,sn-irq"
 #define DTS_VEN_GPIO_STR	"qcom,sn-ven"
@@ -235,6 +315,12 @@ enum nfc_state_flags {
 	/*nfc booted in Fw teared mode */
 	NFC_STATE_FW_TEARED = 0x4,
 };
+
+enum nfc_ese_diag_state {
+	NFC_ESE_STATE_OFF = 0,
+	NFC_ESE_STATE_ON,
+	NFC_ESE_STATE_RESET,
+};
 /*
  * Power state for IBI handing, mainly needed to defer the IBI handling
  *  for the IBI received in suspend state to do it later in resume call
@@ -274,6 +360,13 @@ struct platform_configs {
 	struct platform_ldo ldo;
 };
 
+struct nfc_rx_reassembly {
+	uint8_t data[MAX_BUFFER_SIZE];
+	uint16_t len;
+	uint16_t expected;
+	uint8_t header_len;
+};
+
 enum chip_types {
 	CHIP_SN1XX = 0x01,
 	CHIP_SN220 = 0x02,
@@ -285,10 +378,13 @@ struct nfc_dev {
 	wait_queue_head_t read_wq;
 	struct mutex read_mutex;
 	struct mutex write_mutex;
+	struct mutex rx_reassembly_mutex;
+	struct nfc_rx_reassembly rx_reassembly;
 	uint8_t *read_kbuf;
 	uint8_t *write_kbuf;
 	struct mutex dev_ref_mutex;
 	unsigned int dev_ref_count;
+	struct file *diag_owner;
 	struct class *nfc_class;
 	struct device *nfc_device;
 	struct cdev c_dev;
@@ -304,6 +400,9 @@ struct nfc_dev {
 	uint8_t fw_major_version;
 	bool is_vreg_enabled;
 	bool is_ese_session_active;
+	bool rf_field;
+	enum nfc_ese_diag_state ese_state;
+	bool diag_sysfs_created;
 	struct i2c_dev i2c_dev;
 	struct platform_configs configs;
 	struct cold_reset cold_reset;
@@ -328,6 +427,7 @@ int nfc_dev_open(struct inode *inode, struct file *filp);
 int nfc_dev_flush(struct file *pfile, fl_owner_t id);
 int nfc_dev_close(struct inode *inode, struct file *filp);
 long nfc_dev_ioctl(struct file *pfile, unsigned int cmd, unsigned long arg);
+long qti_nfc_trace_ioctl(unsigned int cmd, unsigned long arg);
 int nfc_parse_dt(struct device *dev, struct platform_configs *nfc_configs,
 			uint8_t interface);
 int nfc_misc_register(struct nfc_dev *nfc_dev,

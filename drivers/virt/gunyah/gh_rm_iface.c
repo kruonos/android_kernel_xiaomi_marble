@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/limits.h>
 #include <linux/module.h>
+#include <linux/ktime.h>
 
 #include <linux/gunyah/gh_vm.h>
 #include <linux/gunyah/gh_msgq.h>
@@ -31,6 +32,34 @@
 
 static DEFINE_SPINLOCK(gh_vm_table_lock);
 static struct gh_vm_property gh_vm_table[GH_VM_MAX];
+
+static bool gh_rm_vm_diag = true;
+module_param_named(vm_diag, gh_rm_vm_diag, bool, 0644);
+MODULE_PARM_DESC(vm_diag, "Enable verbose Gunyah RM VM lifecycle diagnostics");
+
+#define gh_rm_vm_diag_log(fmt, ...) \
+	do { \
+		if (gh_rm_vm_diag) \
+			pr_info("gh_rm_vm_diag: " fmt, ##__VA_ARGS__); \
+	} while (0)
+
+static const char *gh_rm_vm_name_str(enum gh_vm_names vm_name)
+{
+	switch (vm_name) {
+	case GH_SELF_VM:
+		return "self";
+	case GH_PRIMARY_VM:
+		return "pvm";
+	case GH_TRUSTED_VM:
+		return "trustedvm";
+	case GH_CPUSYS_VM:
+		return "cpusys_vm";
+	case GH_OEM_VM:
+		return "oem_vm";
+	default:
+		return "unknown";
+	}
+}
 
 void gh_init_vm_prop_table(void)
 {
@@ -930,6 +959,9 @@ int gh_rm_vm_alloc_vmid(enum gh_vm_names vm_name, int *vmid)
 	size_t resp_payload_size;
 	struct gh_vm_property vm_prop = {0};
 	int err, reply_err_code;
+	int requested_vmid;
+	ktime_t begin;
+	s64 delta_us;
 
 	/* Look up for the vm_name<->vmid pair if already present.
 	 * If so, return.
@@ -947,12 +979,22 @@ int gh_rm_vm_alloc_vmid(enum gh_vm_names vm_name, int *vmid)
 	}
 	spin_unlock(&gh_vm_table_lock);
 
+	requested_vmid = *vmid;
 	req_payload.vmid = *vmid;
+	begin = ktime_get();
+	gh_rm_vm_diag_log("VM_ALLOCATE begin msg=0x%08x vm_name=%d/%s requested_vmid=%d\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_ALLOCATE, vm_name,
+		gh_rm_vm_name_str(vm_name), requested_vmid);
 
 	resp_payload = gh_rm_call(GH_RM_RPC_MSG_ID_CALL_VM_ALLOCATE,
 				&req_payload, sizeof(req_payload),
 				&resp_payload_size, &reply_err_code);
+	delta_us = ktime_to_us(ktime_sub(ktime_get(), begin));
 	if (reply_err_code || IS_ERR(resp_payload)) {
+		gh_rm_vm_diag_log("VM_ALLOCATE end msg=0x%08x requested_vmid=%d ret=%ld reply_err=%d resp_size=%zu delta_us=%lld\n",
+			GH_RM_RPC_MSG_ID_CALL_VM_ALLOCATE, requested_vmid,
+			IS_ERR(resp_payload) ? PTR_ERR(resp_payload) : 0,
+			reply_err_code, resp_payload_size, delta_us);
 		err = PTR_ERR(resp_payload);
 		pr_err("%s: VM_ALLOCATE failed with err: %d\n",
 			__func__, err);
@@ -969,6 +1011,9 @@ int gh_rm_vm_alloc_vmid(enum gh_vm_names vm_name, int *vmid)
 
 	if (resp_payload)
 		*vmid = resp_payload->vmid;
+	gh_rm_vm_diag_log("VM_ALLOCATE end msg=0x%08x requested_vmid=%d allocated_vmid=%d reply_err=%d resp_size=%zu delta_us=%lld\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_ALLOCATE, requested_vmid, *vmid,
+		reply_err_code, resp_payload_size, delta_us);
 
 	vm_prop.vmid = *vmid;
 	err = gh_update_vm_prop_table(vm_name, &vm_prop);
@@ -999,10 +1044,20 @@ int gh_rm_vm_dealloc_vmid(gh_vmid_t vmid)
 	size_t resp_payload_size;
 	int err, reply_err_code;
 	void *resp;
+	ktime_t begin;
+	s64 delta_us;
 
+	begin = ktime_get();
+	gh_rm_vm_diag_log("VM_DEALLOCATE begin msg=0x%08x vmid=%u\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_DEALLOCATE, vmid);
 	resp = gh_rm_call(GH_RM_RPC_MSG_ID_CALL_VM_DEALLOCATE,
 				&req_payload, sizeof(req_payload),
 				&resp_payload_size, &reply_err_code);
+	delta_us = ktime_to_us(ktime_sub(ktime_get(), begin));
+	gh_rm_vm_diag_log("VM_DEALLOCATE end msg=0x%08x vmid=%u ret=%ld reply_err=%d resp_size=%zu delta_us=%lld\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_DEALLOCATE, vmid,
+		IS_ERR(resp) ? PTR_ERR(resp) : 0, reply_err_code,
+		resp_payload_size, delta_us);
 	if (reply_err_code || IS_ERR(resp)) {
 		err = reply_err_code;
 		pr_err("%s: VM_DEALLOCATE failed with err: %d\n",
@@ -1036,12 +1091,22 @@ int gh_rm_vm_start(int vmid)
 	struct gh_vm_start_req_payload req_payload = {0};
 	size_t resp_payload_size;
 	int reply_err_code = 0;
+	ktime_t begin;
+	s64 delta_us;
 
 	req_payload.vmid = (gh_vmid_t) vmid;
+	begin = ktime_get();
+	gh_rm_vm_diag_log("VM_START begin msg=0x%08x vmid=%d\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_START, vmid);
 
 	resp_payload = gh_rm_call(GH_RM_RPC_MSG_ID_CALL_VM_START,
 				&req_payload, sizeof(req_payload),
 				&resp_payload_size, &reply_err_code);
+	delta_us = ktime_to_us(ktime_sub(ktime_get(), begin));
+	gh_rm_vm_diag_log("VM_START end msg=0x%08x vmid=%d ret=%ld reply_err=%d resp_size=%zu delta_us=%lld\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_START, vmid,
+		IS_ERR(resp_payload) ? PTR_ERR(resp_payload) : 0,
+		reply_err_code, resp_payload_size, delta_us);
 	if (reply_err_code) {
 		pr_err("%s: VM_START failed with err: %d\n",
 			__func__, reply_err_code);
@@ -1071,6 +1136,8 @@ int gh_rm_vm_stop(gh_vmid_t vmid, u32 stop_reason, u8 flags)
 	size_t resp_payload_size;
 	int err, reply_err_code;
 	void *resp;
+	ktime_t begin;
+	s64 delta_us;
 
 	if (stop_reason >= GH_VM_STOP_MAX) {
 		pr_err("%s: Invalid stop reason provided for VM_STOP\n",
@@ -1081,10 +1148,18 @@ int gh_rm_vm_stop(gh_vmid_t vmid, u32 stop_reason, u8 flags)
 	req_payload.vmid = vmid;
 	req_payload.stop_reason = stop_reason;
 	req_payload.flags = flags;
+	begin = ktime_get();
+	gh_rm_vm_diag_log("VM_STOP begin msg=0x%08x vmid=%u stop_reason=%u flags=0x%x\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_STOP, vmid, stop_reason, flags);
 
 	resp = gh_rm_call(GH_RM_RPC_MSG_ID_CALL_VM_STOP,
 				&req_payload, sizeof(req_payload),
 				&resp_payload_size, &reply_err_code);
+	delta_us = ktime_to_us(ktime_sub(ktime_get(), begin));
+	gh_rm_vm_diag_log("VM_STOP end msg=0x%08x vmid=%u stop_reason=%u flags=0x%x ret=%ld reply_err=%d resp_size=%zu delta_us=%lld\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_STOP, vmid, stop_reason, flags,
+		IS_ERR(resp) ? PTR_ERR(resp) : 0, reply_err_code,
+		resp_payload_size, delta_us);
 	if (reply_err_code || IS_ERR(resp)) {
 		err = reply_err_code;
 		pr_err("%s: VM_STOP failed with err: %d\n", __func__, err);
@@ -1118,10 +1193,20 @@ int gh_rm_vm_reset(gh_vmid_t vmid)
 	size_t resp_payload_size;
 	int err, reply_err_code;
 	void *resp;
+	ktime_t begin;
+	s64 delta_us;
 
+	begin = ktime_get();
+	gh_rm_vm_diag_log("VM_RESET begin msg=0x%08x vmid=%u\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_RESET, vmid);
 	resp = gh_rm_call(GH_RM_RPC_MSG_ID_CALL_VM_RESET,
 				&req_payload, sizeof(req_payload),
 				&resp_payload_size, &reply_err_code);
+	delta_us = ktime_to_us(ktime_sub(ktime_get(), begin));
+	gh_rm_vm_diag_log("VM_RESET end msg=0x%08x vmid=%u ret=%ld reply_err=%d resp_size=%zu delta_us=%lld\n",
+		GH_RM_RPC_MSG_ID_CALL_VM_RESET, vmid,
+		IS_ERR(resp) ? PTR_ERR(resp) : 0, reply_err_code,
+		resp_payload_size, delta_us);
 	if (reply_err_code || IS_ERR(resp)) {
 		err = reply_err_code;
 		pr_err("%s: VM_RESET failed with err: %d\n",

@@ -1622,8 +1622,9 @@ static QDF_STATUS target_if_dbr_cfg_tgt(struct wlan_objmgr_pdev *pdev,
 		qdf_get_lower_32_bits(dbr_ring_cfg->tail_idx_addr);
 	dbr_cfg_req.tail_idx_paddr_hi =
 		qdf_get_upper_32_bits(dbr_ring_cfg->tail_idx_addr);
-	dbr_cfg_req.num_elems = dbr_ring_cap->ring_elems_min;
-	dbr_cfg_req.buf_size = dbr_ring_cap->min_buf_size;
+	dbr_cfg_req.num_elems = dbr_ring_cfg->num_ptr;
+	dbr_cfg_req.buf_size = dbr_ring_cfg->buf_size ?
+		dbr_ring_cfg->buf_size : dbr_ring_cap->min_buf_size;
 	dbr_cfg_req.num_resp_per_event = dbr_config->num_resp_per_event;
 	dbr_cfg_req.event_timeout_ms = dbr_config->event_timeout_in_ms;
 	direct_buf_rx_debug("pdev id %d mod id %d base addr lo %x\n"
@@ -1951,7 +1952,10 @@ static QDF_STATUS target_if_get_dbr_data(struct wlan_objmgr_pdev *pdev,
 	dbr_data->paddr = paddr;
 	direct_buf_rx_debug("Cookie = %d Vaddr look up = %pK",
 			    dbr_data->cookie, dbr_data->vaddr);
-	dbr_data->dbr_len = dbr_rsp->dbr_entries[idx].len;
+	if (mod_param->dbr_ring_cfg && mod_param->dbr_ring_cfg->buf_size)
+		dbr_data->dbr_len = mod_param->dbr_ring_cfg->buf_size;
+	else
+		dbr_data->dbr_len = dbr_ring_cap->min_buf_size;
 	qdf_mem_unmap_nbytes_single(dbr_psoc_obj->osdev, (qdf_dma_addr_t)paddr,
 				    QDF_DMA_FROM_DEVICE,
 				    dbr_ring_cap->min_buf_size);

@@ -24,6 +24,23 @@
 #include <linux/delay.h>
 #include "nfc_common.h"
 
+#define NCI_RF_MGMT_GID			(0x01)
+#define NCI_RF_GET_ROUTING_OID		(0x02)
+#define NCI_RF_GET_ROUTING_CMD_GID	(NCI_MSG_CMD | NCI_RF_MGMT_GID)
+#define NCI_RF_GET_ROUTING_RSP_GID	(NCI_MSG_RSP | NCI_RF_MGMT_GID)
+#define NCI_RF_GET_ROUTING_NTF_GID	(NCI_MSG_NTF | NCI_RF_MGMT_GID)
+
+#define NCI_ROUTING_TYPE_TECH		(0x00)
+#define NCI_ROUTING_TYPE_PROTOCOL	(0x01)
+#define NCI_ROUTING_TYPE_AID		(0x02)
+#define NCI_ROUTING_TYPE_SYSTEM_CODE	(0x03)
+#define NCI_ROUTING_QUALIFIER_TYPE_MASK	(0x0F)
+#define NCI_ROUTING_MORE_MAX		(0x01)
+#define NFC_ROUTING_TYPE_AID		(0x01)
+#define NFC_ROUTING_TYPE_PROTOCOL	(0x02)
+#define NFC_ROUTING_TYPE_TECH		(0x03)
+#define NFC_ROUTING_MAX_NTF_FRAMES	(32)
+
 int nfc_parse_dt(struct device *dev, struct platform_configs *nfc_configs,
 		 uint8_t interface)
 {
@@ -364,6 +381,8 @@ int nfc_misc_register(struct nfc_dev *nfc_dev,
 	nfc_dev->cold_reset.is_nfc_enabled = false;
 	nfc_dev->cold_reset.is_crp_en = false;
 	nfc_dev->cold_reset.last_src_ese_prot = ESE_COLD_RESET_ORIGIN_NONE;
+	nfc_dev->rf_field = false;
+	nfc_dev->ese_state = NFC_ESE_STATE_OFF;
 
 	init_waitqueue_head(&nfc_dev->cold_reset.read_wq);
 
@@ -379,7 +398,7 @@ int nfc_misc_register(struct nfc_dev *nfc_dev,
 int nfc_ese_pwr(struct nfc_dev *nfc_dev, unsigned long arg)
 {
 	int ret = 0;
-	pr_info("%s : enter, arg=%d\n", __func__, arg);
+	pr_info("%s : enter, arg=%lu\n", __func__, arg);
 	if (arg == ESE_POWER_ON) {
 		/*
 		 * Let's store the NFC VEN pin state
@@ -396,6 +415,7 @@ int nfc_ese_pwr(struct nfc_dev *nfc_dev, unsigned long arg)
 			pr_debug("ven already HIGH\n");
 		}
 		nfc_dev->is_ese_session_active = true;
+		nfc_dev->ese_state = NFC_ESE_STATE_ON;
 	} else if (arg == ESE_POWER_OFF) {
 		if (!nfc_dev->nfc_ven_enabled) {
 			pr_debug("NFC not enabled, disabling ven\n");
@@ -404,6 +424,7 @@ int nfc_ese_pwr(struct nfc_dev *nfc_dev, unsigned long arg)
 			pr_debug("keep ven high as NFC is enabled\n");
 		}
 		nfc_dev->is_ese_session_active = false;
+		nfc_dev->ese_state = NFC_ESE_STATE_OFF;
 	} else if (arg == ESE_POWER_STATE) {
 		/* get VEN gpio state for eSE, as eSE also enabled through same GPIO */
 		ret = gpio_get_value(nfc_dev->configs.gpio.ven);
@@ -429,7 +450,12 @@ static int nfc_ioctl_power_states(struct nfc_dev *nfc_dev, unsigned long arg)
 {
 	int ret = 0;
 	struct platform_gpio *nfc_gpio = &nfc_dev->configs.gpio;
-	pr_info("%s : enter, arg=%d \n", __func__, arg);
+	pr_info("%s : enter, arg=%lu \n", __func__, arg);
+	if (arg == NFC_POWER_OFF || arg == NFC_POWER_ON ||
+	    arg == NFC_FW_DWL_VEN_TOGGLE || arg == NFC_FW_DWL_HIGH ||
+	    arg == NFC_VEN_FORCED_HARD_RESET || arg == NFC_FW_DWL_LOW)
+		nfc_i2c_reset_rx_reassembly(nfc_dev);
+
 	if (arg == NFC_POWER_OFF) {
 		/*
 		 * We are attempting a hardware reset so let us disable
@@ -440,6 +466,7 @@ static int nfc_ioctl_power_states(struct nfc_dev *nfc_dev, unsigned long arg)
 		set_valid_gpio(nfc_gpio->dwl_req, 0);
 		gpio_set_ven(nfc_dev, 0);
 		nfc_dev->nfc_ven_enabled = false;
+		nfc_dev->rf_field = false;
 
 	} else if (arg == NFC_POWER_ON) {
 		nfc_dev->nfc_enable_intr(nfc_dev);
@@ -519,6 +546,398 @@ unsigned int nfc_ioctl_nfcc_info(struct file *filp, unsigned long arg)
 	return r;
 }
 
+static int nfc_diag_parse_timeout(__s32 timeout_ms, int *timeout)
+{
+	if (timeout_ms < -1)
+		return -EINVAL;
+
+	if (timeout_ms == -1)
+		*timeout = 0;
+	else if (timeout_ms == 0)
+		*timeout = NCI_CMD_RSP_TIMEOUT;
+	else
+		*timeout = timeout_ms;
+
+	return 0;
+}
+
+static int nfc_diag_trim_nci_frame(const __u8 *rsp, __u32 read_len,
+					  __u32 rsp_max, __u32 *rsp_len)
+{
+	__u32 frame_len;
+
+	if (read_len < NCI_HDR_LEN)
+		return -EIO;
+
+	frame_len = NCI_HDR_LEN + rsp[NCI_PAYLOAD_LEN_IDX];
+	if (frame_len > read_len || frame_len > rsp_max)
+		return -EMSGSIZE;
+
+	*rsp_len = frame_len;
+	return 0;
+}
+
+/* Raw NCI diagnostic passthrough for internal RF/NCI development tooling. */
+static int nfc_diag_nci_xfer(struct nfc_dev *nfc_dev, const __u8 *cmd,
+				     __u32 cmd_len, __u8 *rsp, __u32 *rsp_len,
+				     int timeout)
+{
+	int ret;
+
+	if (!cmd || !rsp || !rsp_len || !cmd_len || !*rsp_len)
+		return -EINVAL;
+
+	ret = validate_nfc_state_nci(nfc_dev);
+	if (ret)
+		return ret;
+
+	if (!mutex_trylock(&nfc_dev->read_mutex))
+		return -EBUSY;
+
+	if (!mutex_trylock(&nfc_dev->write_mutex)) {
+		mutex_unlock(&nfc_dev->read_mutex);
+		return -EBUSY;
+	}
+
+	dev_dbg(nfc_dev->nfc_device,
+		"debug raw nci xfer cmd_len %u rsp_max %u timeout %d\n",
+		cmd_len, *rsp_len, timeout);
+
+	ret = nfc_dev->nfc_write(nfc_dev, (const char *)cmd, cmd_len, NO_RETRY);
+	if (ret != (int)cmd_len) {
+		if (ret >= 0)
+			ret = -EIO;
+		goto out;
+	}
+
+	ret = nfc_dev->nfc_read(nfc_dev, (char *)rsp, *rsp_len, timeout);
+	if (ret == 0)
+		ret = -ETIMEDOUT;
+	if (ret < 0)
+		goto out;
+
+	ret = nfc_diag_trim_nci_frame(rsp, ret, *rsp_len, rsp_len);
+	if (ret)
+		goto out;
+
+	ret = 0;
+
+out:
+	mutex_unlock(&nfc_dev->write_mutex);
+	mutex_unlock(&nfc_dev->read_mutex);
+	return ret;
+}
+
+static int nfc_diag_acquire(struct file *pfile)
+{
+	struct nfc_dev *nfc_dev = pfile->private_data;
+	int ret = 0;
+
+	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (nfc_dev->diag_owner == pfile)
+		goto out;
+	if (nfc_dev->diag_owner || nfc_dev->dev_ref_count != 1) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	nfc_dev->diag_owner = pfile;
+out:
+	mutex_unlock(&nfc_dev->dev_ref_mutex);
+	return ret;
+}
+
+static int nfc_diag_release(struct file *pfile)
+{
+	struct nfc_dev *nfc_dev = pfile->private_data;
+	int ret = 0;
+
+	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (!nfc_dev->diag_owner)
+		goto out;
+	if (nfc_dev->diag_owner != pfile) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	nfc_dev->diag_owner = NULL;
+out:
+	mutex_unlock(&nfc_dev->dev_ref_mutex);
+	return ret;
+}
+
+static int nfc_send_raw_nci_ioctl(struct nfc_dev *nfc_dev, unsigned long arg)
+{
+	int ret;
+	int timeout;
+	__u32 rsp_len;
+	struct nfc_raw_nci_arg raw_arg;
+
+	if (!arg)
+		return -EINVAL;
+
+	if (copy_from_user(&raw_arg, (void __user *)arg, sizeof(raw_arg)))
+		return -EFAULT;
+
+	if (raw_arg.cmd_len < NCI_HDR_LEN ||
+	    raw_arg.cmd_len > sizeof(raw_arg.cmd))
+		return -EINVAL;
+	if (raw_arg.rsp_len > sizeof(raw_arg.rsp))
+		return -EINVAL;
+
+	rsp_len = raw_arg.rsp_len ? raw_arg.rsp_len : sizeof(raw_arg.rsp);
+	if (rsp_len < NCI_HDR_LEN)
+		return -EINVAL;
+
+	ret = nfc_diag_parse_timeout(raw_arg.timeout_ms, &timeout);
+	if (ret)
+		return ret;
+
+	memset(raw_arg.rsp, 0x00, sizeof(raw_arg.rsp));
+	ret = nfc_diag_nci_xfer(nfc_dev, raw_arg.cmd, raw_arg.cmd_len,
+				 raw_arg.rsp, &rsp_len, timeout);
+	if (ret)
+		return ret;
+
+	raw_arg.rsp_len = rsp_len;
+	if (copy_to_user((void __user *)arg, &raw_arg, sizeof(raw_arg)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static void nfc_routing_add_entry(struct nfc_routing_info *info,
+				  __u8 qualifier, const __u8 *data, __u8 len)
+{
+	__u8 aid_len;
+	__u8 nci_type = qualifier & NCI_ROUTING_QUALIFIER_TYPE_MASK;
+	struct nfc_routing_entry *entry;
+
+	if (len < 2 || info->num_entries >= NFC_MAX_ROUTING_ENTRIES)
+		return;
+
+	entry = &info->entries[info->num_entries];
+	memset(entry, 0x00, sizeof(*entry));
+	entry->destination = data[0];
+
+	switch (nci_type) {
+	case NCI_ROUTING_TYPE_AID:
+		entry->type = NFC_ROUTING_TYPE_AID;
+		aid_len = min_t(__u8, len - 2, sizeof(entry->aid));
+		memcpy(entry->aid, &data[2], aid_len);
+		entry->aid_len = aid_len;
+		break;
+	case NCI_ROUTING_TYPE_PROTOCOL:
+		if (len != 3)
+			return;
+		entry->type = NFC_ROUTING_TYPE_PROTOCOL;
+		entry->protocol = data[2];
+		break;
+	case NCI_ROUTING_TYPE_TECH:
+		if (len != 3)
+			return;
+		entry->type = NFC_ROUTING_TYPE_TECH;
+		entry->tech = data[2];
+		break;
+	case NCI_ROUTING_TYPE_SYSTEM_CODE:
+		/* The v1 diagnostic ABI has no system-code field. */
+		return;
+	default:
+		return;
+	}
+
+	info->num_entries++;
+}
+
+static int nfc_parse_routing_ntf(const __u8 *rsp, __u32 rsp_len,
+				 struct nfc_routing_info *info, bool *more)
+{
+	__u8 count;
+	__u8 qualifier;
+	__u8 len;
+	__u8 i;
+	__u32 payload_len;
+	__u32 pos = 2;
+	const __u8 *payload;
+
+	if (!more || rsp_len < (NCI_HDR_LEN + 2) ||
+	    rsp[0] != NCI_RF_GET_ROUTING_NTF_GID ||
+	    rsp[1] != NCI_RF_GET_ROUTING_OID)
+		return -EPROTO;
+
+	payload_len = rsp[NCI_PAYLOAD_LEN_IDX];
+	if (payload_len > rsp_len - NCI_HDR_LEN || payload_len < 2)
+		return -EPROTO;
+
+	payload = &rsp[NCI_PAYLOAD_IDX];
+	if (payload[0] > NCI_ROUTING_MORE_MAX)
+		return -EPROTO;
+	*more = payload[0] != 0;
+	count = payload[1];
+
+	for (i = 0; i < count; i++) {
+		if (pos + 2 > payload_len)
+			return -EPROTO;
+		qualifier = payload[pos++];
+		len = payload[pos++];
+		if (len > payload_len - pos)
+			return -EPROTO;
+		nfc_routing_add_entry(info, qualifier, &payload[pos], len);
+		pos += len;
+	}
+
+	return pos == payload_len ? 0 : -EPROTO;
+}
+
+static int nfc_parse_routing_rsp(const __u8 *rsp, __u32 rsp_len,
+				 struct nfc_routing_info *info)
+{
+	__u32 payload_len;
+	const __u8 *payload;
+
+	info->status = 0xFF;
+
+	if (rsp_len <= NCI_HDR_LEN || rsp[0] != NCI_RF_GET_ROUTING_RSP_GID ||
+	    rsp[1] != NCI_RF_GET_ROUTING_OID)
+		return -EPROTO;
+
+	payload_len = min_t(__u32, rsp[NCI_PAYLOAD_LEN_IDX],
+				    rsp_len - NCI_HDR_LEN);
+	if (!payload_len)
+		return -EPROTO;
+
+	payload = &rsp[NCI_HDR_LEN];
+	info->status = payload[0];
+	return 0;
+}
+
+static void nfc_routing_store_raw(struct nfc_routing_info *info,
+				  const __u8 *frame, __u32 frame_len)
+{
+	__u32 available = sizeof(info->raw_rsp) - info->raw_rsp_len;
+	__u32 copy_len = min(frame_len, available);
+
+	if (!copy_len)
+		return;
+	memcpy(&info->raw_rsp[info->raw_rsp_len], frame, copy_len);
+	info->raw_rsp_len += copy_len;
+}
+
+static int nfc_get_routing_xfer(struct nfc_dev *nfc_dev, const __u8 *cmd,
+				__u32 cmd_len, int timeout,
+				struct nfc_routing_info *info)
+{
+	__u8 rsp[NFC_RAW_NCI_MAX_LEN];
+	__u32 rsp_len;
+	bool more;
+	int frame_count;
+	int ret;
+
+	ret = validate_nfc_state_nci(nfc_dev);
+	if (ret)
+		return ret;
+	if (!mutex_trylock(&nfc_dev->read_mutex))
+		return -EBUSY;
+	if (!mutex_trylock(&nfc_dev->write_mutex)) {
+		mutex_unlock(&nfc_dev->read_mutex);
+		return -EBUSY;
+	}
+
+	ret = nfc_dev->nfc_write(nfc_dev, (const char *)cmd, cmd_len, NO_RETRY);
+	if (ret != (int)cmd_len) {
+		if (ret >= 0)
+			ret = -EIO;
+		goto out;
+	}
+
+	rsp_len = sizeof(rsp);
+	ret = nfc_dev->nfc_read(nfc_dev, (char *)rsp, rsp_len, timeout);
+	if (!ret) {
+		ret = -ETIMEDOUT;
+		goto out;
+	}
+	if (ret < 0)
+		goto out;
+	rsp_len = ret;
+	ret = nfc_diag_trim_nci_frame(rsp, rsp_len, sizeof(rsp), &rsp_len);
+	if (ret)
+		goto out;
+	nfc_routing_store_raw(info, rsp, rsp_len);
+	ret = nfc_parse_routing_rsp(rsp, rsp_len, info);
+	if (ret || info->status)
+		goto out;
+
+	more = true;
+	for (frame_count = 0; more && frame_count < NFC_ROUTING_MAX_NTF_FRAMES;
+	     frame_count++) {
+		rsp_len = sizeof(rsp);
+		ret = nfc_dev->nfc_read(nfc_dev, (char *)rsp, rsp_len, timeout);
+		if (!ret) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+		if (ret < 0)
+			goto out;
+		rsp_len = ret;
+		ret = nfc_diag_trim_nci_frame(rsp, rsp_len, sizeof(rsp), &rsp_len);
+		if (ret)
+			goto out;
+		nfc_routing_store_raw(info, rsp, rsp_len);
+		ret = nfc_parse_routing_ntf(rsp, rsp_len, info, &more);
+		if (ret)
+			goto out;
+	}
+
+	if (more)
+		ret = -EOVERFLOW;
+	else
+		dev_dbg(nfc_dev->nfc_device,
+			"RF_GET_ROUTING parsed %u entries from %d notifications\n",
+			info->num_entries, frame_count);
+
+out:
+	mutex_unlock(&nfc_dev->write_mutex);
+	mutex_unlock(&nfc_dev->read_mutex);
+	return ret;
+}
+
+static int nfc_get_routing_ioctl(struct nfc_dev *nfc_dev, unsigned long arg)
+{
+	int ret;
+	int timeout;
+	__s32 timeout_ms;
+	__u8 cmd[NCI_HDR_LEN] = {
+		NCI_RF_GET_ROUTING_CMD_GID,
+		NCI_RF_GET_ROUTING_OID,
+		0x00,
+	};
+	struct nfc_routing_info info;
+
+	if (!arg)
+		return -EINVAL;
+
+	if (copy_from_user(&info, (void __user *)arg, sizeof(info)))
+		return -EFAULT;
+
+	ret = nfc_diag_parse_timeout(info.timeout_ms, &timeout);
+	if (ret)
+		return ret;
+	timeout_ms = info.timeout_ms;
+
+	memset(&info, 0x00, sizeof(info));
+	info.timeout_ms = timeout_ms;
+	info.status = 0xFF;
+
+	ret = nfc_get_routing_xfer(nfc_dev, cmd, sizeof(cmd), timeout, &info);
+	if (ret)
+		return ret;
+
+	if (copy_to_user((void __user *)arg, &info, sizeof(info)))
+		return -EFAULT;
+
+	return 0;
+}
+
 /** @brief   IOCTL function  to be used to set or get data from upper layer.
  *
  *  @param   pfile  fil node for opened device.
@@ -535,7 +954,7 @@ long nfc_dev_ioctl(struct file *pfile, unsigned int cmd, unsigned long arg)
 	if (!nfc_dev)
 		return -ENODEV;
 
-	pr_info("%s cmd = %x arg = %zx\n", __func__, cmd, arg);
+	pr_debug("%s cmd = %x arg = %zx\n", __func__, cmd, arg);
 
 	switch (cmd) {
 	case NFC_SET_PWR:
@@ -553,12 +972,41 @@ long nfc_dev_ioctl(struct file *pfile, unsigned int cmd, unsigned long arg)
 	case NFC_GET_PLATFORM_TYPE:
 		ret = nfc_dev->interface;
 		break;
-	case ESE_COLD_RESET:
+	case ESE_COLD_RESET: {
+		enum nfc_ese_diag_state prev_ese_state = nfc_dev->ese_state;
+
 		pr_debug("nfc ese cold reset ioctl\n");
+		nfc_dev->ese_state = NFC_ESE_STATE_RESET;
 		ret = ese_cold_reset_ioctl(nfc_dev, arg);
+		nfc_dev->ese_state = prev_ese_state;
 		break;
+	}
 	case NFC_GET_IRQ_STATE:
 		ret = gpio_get_value(nfc_dev->configs.gpio.irq);
+		break;
+	case NFC_SEND_RAW_NCI:
+		ret = nfc_diag_acquire(pfile);
+		if (!ret)
+			ret = nfc_send_raw_nci_ioctl(nfc_dev, arg);
+		break;
+	case NFC_GET_ROUTING:
+		ret = nfc_diag_acquire(pfile);
+		if (!ret)
+			ret = nfc_get_routing_ioctl(nfc_dev, arg);
+		break;
+	case NFC_DIAG_ACQUIRE:
+		ret = nfc_diag_acquire(pfile);
+		break;
+	case NFC_DIAG_RELEASE:
+		ret = nfc_diag_release(pfile);
+		break;
+	case QTI_NFC_TRACE_GET_INFO:
+	case QTI_NFC_TRACE_READ_RECORD:
+	case QTI_NFC_TRACE_CLEAR:
+	case QTI_NFC_TRACE_SET_CAPTURE:
+	case QTI_NFC_TRACE_SET_MAX_LEN:
+	case QTI_NFC_TRACE_SET_DMESG:
+		ret = qti_nfc_trace_ioctl(cmd, arg);
 		break;
 	default:
 		pr_err("%s Unsupported ioctl cmd 0x%x, arg %lu\n",
@@ -577,6 +1025,11 @@ int nfc_dev_open(struct inode *inode, struct file *filp)
 		return -ENODEV;
 
 	pr_debug("%s: %d, %d\n", __func__, imajor(inode), iminor(inode));
+	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (nfc_dev->diag_owner) {
+		mutex_unlock(&nfc_dev->dev_ref_mutex);
+		return -EBUSY;
+	}
 
 	/* Set flag to block freezer fake signal if not set already.
 	 * Without this Signal being set, Driver is trying to do a read
@@ -586,8 +1039,6 @@ int nfc_dev_open(struct inode *inode, struct file *filp)
 		current->flags |= PF_NOFREEZE;
 		pr_debug("%s: current->flags 0x%x.\n", __func__, current->flags);
 	}
-
-	mutex_lock(&nfc_dev->dev_ref_mutex);
 
 	filp->private_data = nfc_dev;
 
@@ -621,6 +1072,7 @@ int nfc_dev_flush(struct file *pfile, fl_owner_t id)
 	} else {
 		pr_debug("%s: read thread already released\n", __func__);
 	}
+	nfc_i2c_reset_rx_reassembly(nfc_dev);
 	mutex_unlock(&nfc_dev->read_mutex);
 	return 0;
 }
@@ -642,6 +1094,8 @@ int nfc_dev_close(struct inode *inode, struct file *filp)
 	}
 
 	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (nfc_dev->diag_owner == filp)
+		nfc_dev->diag_owner = NULL;
 
 	if (nfc_dev->dev_ref_count == 1) {
 		nfc_dev->nfc_disable_intr(nfc_dev);
@@ -856,6 +1310,13 @@ static enum chip_types get_nfcc_chip_type(struct nfc_dev *nfc_dev)
 		goto err_disable_intr;
 	}
 
+	if (ret < NCI_HDR_LEN || rsp[0] != NCI_MSG_NTF ||
+	    rsp[NCI_PAYLOAD_LEN_IDX] < NFC_CHIP_TYPE_OFF ||
+	    NCI_HDR_LEN + rsp[NCI_PAYLOAD_LEN_IDX] > ret) {
+		pr_err("%s invalid nci core reset notification\n", __func__);
+		goto err_disable_intr;
+	}
+
 	if (rsp[0] == NCI_MSG_NTF) {
 		/* read version info from NCI Reset Notification */
 		rom_version = rsp[NCI_HDR_LEN + rsp[NCI_PAYLOAD_LEN_IDX] - 3];
@@ -898,7 +1359,7 @@ static bool validate_download_gpio(struct nfc_dev *nfc_dev, enum chip_types chip
 	struct platform_gpio *nfc_gpio;
 
 	if (nfc_dev == NULL) {
-		pr_err("%s nfc devices structure is null\n");
+		pr_err("%s nfc devices structure is null\n", __func__);
 		return status;
 	}
 	nfc_gpio = &nfc_dev->configs.gpio;
