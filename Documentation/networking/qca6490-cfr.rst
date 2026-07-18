@@ -29,10 +29,10 @@ The implementation has four main parts:
 Build prerequisites
 ===================
 
-The source changes intentionally do not modify a device defconfig, vendor
-feature list, Kconfig selection, or module list. A build that uses this data
-plane must provide the following settings through its existing configuration
-system::
+The Marble defconfig in this branch enables ``CONFIG_RELAY=y`` to match the
+main patched kernel. The existing WLAN profile derives streamfs support from
+the kernel relay and debugfs settings. A build using this data plane must end
+with the following settings::
 
   CONFIG_RELAY=y
   CONFIG_WLAN_CFR_ENABLE=y
@@ -117,9 +117,10 @@ DBR mirror path.
 CFRR framing ABI
 ================
 
-All multibyte CFRR fields are declared ``__le16``, ``__le32``, or ``__le64``
-and are populated with ``cpu_to_le*()`` conversions. Packed structure sizes
-are checked at build time.
+The CFRR frame header and session records use explicit little-endian
+declarations. The copied main-kernel DBR metadata and RX PPDU evidence payloads
+use fixed-width integer declarations on the little-endian Marble target. Packed
+transport structure sizes are checked at build time.
 
 The version 2 frame header is 64 bytes:
 
@@ -185,8 +186,8 @@ base configuration.
 
 The fixed DBR metadata prefix is 112 bytes. Optional validated raw DMA header
 bytes follow that prefix in the same DBR_META payload. The RX PPDU evidence
-payload is a fixed 40-byte structure containing ten little-endian 32-bit
-fields.
+payload is a fixed 40-byte structure containing ten 32-bit fields emitted by the
+little-endian target.
 
 Reader requirements
 -------------------
@@ -387,8 +388,8 @@ reader that drains the relay continuously and reports any sequence gap.
 Validation evidence
 ===================
 
-The source-linked golden ABI check validates exported field declarations,
-conversion sites, packed sizes, and byte-exact little-endian vectors::
+The source-linked golden ABI check validates exported field declarations, fixed
+packed sizes, and byte-exact vectors from the copied main-kernel ABI::
 
   python3 tools/testing/selftests/net/qca6490_cfr_abi.py
 

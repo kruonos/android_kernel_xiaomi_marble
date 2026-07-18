@@ -52,8 +52,9 @@ userspace research tasks.
 | Soft, hard, and blind recovery | Validated on the 5.10.258 reference build |
 | 180 second sustained capture | Passed on the reference build with zero transport gaps |
 | No-reader relay exhaustion | Passed with counted complete-frame drops |
-| Explicit little-endian payload ABI | Source-tested and feature-build tested |
-| Final public branch on-device boot | Not yet repeated after audit fixes |
+| Main-kernel CFRR payload ABI | Source-matched to the validated main tree |
+| Pre-transfer RC2 package boot | Passed on device |
+| Main-kernel parity transfer boot | Not yet tested |
 | Physical antenna and lane mapping | Unverified |
 | Other devices and WLAN chipsets | Unsupported |
 
@@ -93,7 +94,10 @@ not an implied compatibility claim.
 | `Documentation/networking/qca6490-cfr.rst` | Research architecture and ABI reference |
 | `tools/qca6490_cfr/cfrr_inspect.py` | Small standalone CFRR capture inspector |
 | `tools/qca6490_cfr/test_cfrr_inspect.py` | Inspector unit tests |
-| `tools/testing/selftests/net/qca6490_cfr_abi.py` | Golden-byte ABI and source conversion test |
+| `tools/testing/selftests/net/qca6490_cfr_abi.py` | Golden-byte ABI parity test |
+| `wlan_tools/cfr_relay_record.c` | Main-kernel CFRR recorder |
+| `wlan_tools/cfr_relay_parse.py` | Main-kernel CFRR parser and analysis tool |
+| `wlan_tools/wlan_cfr_probe.c` | WLAN CFR capability probe |
 | `drivers/staging/qca-wifi-host-cmn/umac/cfr/` | CFR framing, sessions, and recovery |
 | `drivers/staging/qca-wifi-host-cmn/target_if/cfr/` | QCA6490 DBR and RX PPDU handling |
 | `drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_cfr.c` | Root-only controls and health reporting |
@@ -127,20 +131,11 @@ CONFIG_WLAN_ENH_CFR_ENABLE=y
 CONFIG_WLAN_STREAMFS=y
 ```
 
-The Qualcomm WLAN profile already derives its streamfs setting from
-`CONFIG_DEBUG_FS` and `CONFIG_RELAY`. This branch intentionally does not change
-the production defconfig, so integrators must enable `CONFIG_RELAY` in their
-device configuration and verify the final compiler flags.
-
-For a local feature-build test, enable relay in a private config change before
-compiling:
-
-```bash
-scripts/config --file arch/arm64/configs/marble_defconfig -e RELAY
-```
-
-Do not publish that config change as device support until it has been booted and
-validated on the intended ROM.
+The Qualcomm WLAN profile derives its streamfs setting from `CONFIG_DEBUG_FS`
+and `CONFIG_RELAY`. The Marble defconfig in this branch enables `CONFIG_RELAY=y`
+to match the main patched kernel, so a normal branch build includes the relay
+data plane. Integrators should still verify the final configuration and WLAN
+compiler flags.
 
 Check the generated configuration and WLAN command files after building:
 
@@ -178,8 +173,8 @@ python3 tools/qca6490_cfr/test_cfrr_inspect.py
 The userspace examples require Python 3.8 or newer and have no third-party
 package dependencies.
 
-The golden ABI test checks packed sizes, field declarations, conversion sites,
-and byte-exact little-endian vectors. A successful source build with streamfs
+The golden ABI test checks packed sizes, field declarations, and byte-exact
+vectors for the copied main-kernel ABI. A successful source build with streamfs
 disabled does not validate the relay implementation, so the final feature flags
 must still be inspected.
 
@@ -341,8 +336,8 @@ general performance guarantee.
 
 ## Known limitations
 
-- The final public branch is compile-tested with the real relay feature path,
-  but the post-review audit fixes have not yet been flashed on the device.
+- The pre-transfer RC2 package booted, but the source-parity transfer still
+  requires a new package, boot test, and sustained CFR capture.
 - Live validation used `5.10.258-Bouquet-v4.9`; this public source branch is
   based on `5.10.256-Bouquet-v4.7`.
 - The tested WLAN firmware reports no capture-count support. Duration mode and
