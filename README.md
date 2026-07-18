@@ -28,6 +28,27 @@ replacement kernel and not a universal flash package.
 
 ![QCA6490 CFR validation summary](Documentation/networking/qca6490-cfr-validation.svg)
 
+## Availability and support scope
+
+This repository provides both the `CSI/CFR-PATCH` source branch and the
+prebuilt [`marble-bouquet-4.9-csi`](https://github.com/kruonos/android_kernel_xiaomi_marble/releases/tag/marble-bouquet-4.9-csi)
+release.
+
+The prebuilt release is intended only for POCO F5 (`marble`) custom ROMs that
+support the Bouquet kernel and its module packaging. It is not a universal POCO
+F5 kernel, and compatibility with stock HyperOS, unrelated custom ROMs, other
+regional firmware packages, or different partition layouts must not be assumed.
+
+- Use the published release only on a ROM that supports the Bouquet kernel.
+- Build from source when integrating CFR into an existing verified kernel and
+  module packaging flow.
+- Do not flash a raw `Image` directly or reuse WLAN modules from another build.
+- Back up active-slot `boot`, `vendor_boot`, `dtbo`, and `vendor_dlkm` before
+  installation.
+
+This remains a research prototype. Publishing a release makes installation more
+accessible, but does not make the kernel universally compatible.
+
 ## Why this matters
 
 Qualcomm CFR data normally crosses several asynchronous paths before it is
@@ -63,9 +84,12 @@ userspace research tasks.
 | 180 second sustained capture | Passed on the reference build with zero transport gaps |
 | No-reader relay exhaustion | Passed with counted complete-frame drops |
 | Main-kernel CFRR payload ABI | Source-matched to the validated main tree |
-| Pre-transfer RC2 package boot | Passed on device |
-| Main-kernel parity transfer boot | Not yet tested |
+| Current public source version | `5.10.258-Bouquet-v4.9` |
+| Prebuilt release | `marble-bouquet-4.9-csi` published |
+| Release boot validation | Document tested ROMs and package hashes separately |
+| Release sustained CFR validation | Document separately from source-reference validation |
 | Physical antenna and lane mapping | Unverified |
+| Calibrated CSI reconstruction | Not implemented |
 | Other devices and WLAN chipsets | Unsupported |
 
 The full architecture, ABI, controls, and validation record are documented in
@@ -85,17 +109,16 @@ implicitly supported.
 | Vendor and firmware base | HyperOS `OS3.0.4.0.VMRMIXM` global |
 | Vendor fingerprint | `POCO/marble_global/marble:15/AQ3A.250226.002/OS3.0.4.0.VMRMIXM:user/release-keys` |
 | Active research userspace | Custom `infinity_marble-user`, Android 16, API 36, build ID `BP4A.251205.006` |
-| Public source branch base | `5.10.256-Bouquet-v4.7` |
-| Device validation kernel | `5.10.258-Bouquet-v4.9` |
+| Current source branch build | `5.10.258-Bouquet-v4.9` |
+| Published release | `marble-bouquet-4.9-csi` |
 | Live reference QCA module hash | `c33b14c6acc5d9f2a19d072c62224fcb5cac661e55b6f4e1b81a2e1f121e8188` |
-| Public branch feature-build module hash | `1b36b6d4974c765e114394f95e49d610f7edbe1f826ae859bc19c7caa58865aa` |
 | Firmware capture-count capability | Not advertised, value `0` |
 
-The active system distribution version, internal WLAN firmware version string,
-and `amss20.bin` hash were not archived during the test run. The exact vendor
-package, vendor fingerprint, system build identity, and firmware image path are
-recorded above. This missing firmware identity is a reproducibility limitation,
-not an implied compatibility claim.
+A published release does not automatically extend validation to every ROM or
+vendor firmware combination. Compatibility reports should include complete ROM,
+vendor, firmware, kernel, and module identities. The internal WLAN firmware
+version string and `amss20.bin` hash were not archived during the original test
+run.
 
 ## Repository layout
 
@@ -119,19 +142,25 @@ The original Android common-kernel contribution notes are preserved at
 
 ### Prerequisites
 
-The Bouquet build script expects a Linux build host and an LLVM toolchain. It
-looks for Slim LLVM 22.1.8 at:
+The Bouquet build script expects a Linux host and an LLVM toolchain. It uses the
+LLVM tools available through `PATH`. When the compiler is installed elsewhere,
+set `CLANG_PATH` to the directory containing the LLVM binaries:
 
-```text
-~/build_toolchain/llvm-22.1.8-x86_64/bin
+```bash
+export CLANG_PATH=/path/to/llvm/bin
 ```
 
-The compiler is not downloaded by this repository. Install a compatible LLVM
-toolchain at that path or update `CLANG_PATH` in `build_bouquet.sh`. Common host
-dependencies include `bc`, `bison`, `build-essential`, `flex`, `git`, `libelf`,
-`libssl`, `lld`, `llvm`, `python3`, and standard archive tools.
+The repository does not download an LLVM toolchain automatically. On x86-64
+hosts, the build script also prepends the repository's bundled `build-tools`
+directory for supported host-side utilities. Other host architectures must
+provide compatible DT and AVB tools through `PATH`.
 
-The capture data plane requires these final settings:
+Common build dependencies include `bc`, `bison`, `build-essential`, `flex`,
+`git`, `libelf`, `libssl`, `lld`, `llvm`, `python3`, and standard archive tools.
+
+### Required CFR configuration
+
+The final kernel and WLAN build must provide:
 
 ```text
 CONFIG_DEBUG_FS=y
@@ -141,20 +170,27 @@ CONFIG_WLAN_ENH_CFR_ENABLE=y
 CONFIG_WLAN_STREAMFS=y
 ```
 
-The Qualcomm WLAN profile derives its streamfs setting from `CONFIG_DEBUG_FS`
-and `CONFIG_RELAY`. The Marble defconfig in this branch enables `CONFIG_RELAY=y`
-to match the main patched kernel, so a normal branch build includes the relay
-data plane. Integrators should still verify the final configuration and WLAN
-compiler flags.
+`marble_defconfig` explicitly enables `CONFIG_RELAY=y`. Because WLAN streamfs
+depends on both debugfs and relay support, a successful kernel compilation is
+not proof that CFR relay capture is enabled.
 
-Check the generated configuration and WLAN command files after building:
+Verify the generated kernel configuration:
 
 ```bash
-grep '^CONFIG_RELAY=y' out/.config
-grep '^CONFIG_DEBUG_FS=y' out/.config
-rg --hidden --no-ignore -- '-DWLAN_STREAMFS' \
-  out/drivers/staging/qcacld-3.0 | head
+grep -E '^(CONFIG_DEBUG_FS|CONFIG_RELAY)=y$' out/.config
 ```
+
+Verify that the Qualcomm WLAN compilation received the expected feature
+definitions:
+
+```bash
+rg --hidden --no-ignore \
+  'WLAN_STREAMFS|WLAN_CFR_ENABLE|WLAN_ENH_CFR_ENABLE' \
+  out/drivers/staging/qcacld-3.0
+```
+
+A build should not be described as CFR-capable when any of these settings is
+absent.
 
 ### Compile
 
@@ -162,7 +198,18 @@ rg --hidden --no-ignore -- '-DWLAN_STREAMFS' \
 git clone https://github.com/kruonos/android_kernel_xiaomi_marble.git
 cd android_kernel_xiaomi_marble
 git switch CSI/CFR-PATCH
+
+# Optional when LLVM is not already available through PATH
+export CLANG_PATH=/path/to/llvm/bin
+
 ./build_bouquet.sh --noccache
+```
+
+The default configuration is `marble_defconfig`. The source Makefile and
+default local-version settings produce:
+
+```text
+5.10.258-Bouquet-v4.9
 ```
 
 Important outputs include:
@@ -171,6 +218,12 @@ Important outputs include:
 out/arch/arm64/boot/Image
 out/drivers/staging/qcacld-3.0/qca6490.ko
 out/include/config/kernel.release
+```
+
+Confirm the exact release string after building:
+
+```bash
+cat out/include/config/kernel.release
 ```
 
 Run the included source and parser tests:
@@ -190,14 +243,49 @@ must still be inspected.
 
 ## Installation and flashing
 
-This repository does not ship a universal flashable ZIP. The kernel Image and
-QCA6490 module must be integrated into a package that already matches the exact
-ROM, partition layout, module list, and boot format on the target device.
+### Prebuilt release
 
-There is currently no supported public installation procedure for end users.
-The source branch is intended for kernel developers who already maintain a
-verified Marble boot and vendor module packaging flow. Publishing a reproducible
-installer remains open work.
+The prebuilt
+[`marble-bouquet-4.9-csi`](https://github.com/kruonos/android_kernel_xiaomi_marble/releases/tag/marble-bouquet-4.9-csi)
+release is intended for POCO F5 custom ROMs that support the Bouquet kernel. It
+must not be treated as compatible with every POCO F5 ROM, stock HyperOS
+installation, regional firmware package, or module layout.
+
+Before flashing, record:
+
+```text
+Device codename:
+ROM name and version:
+ROM fingerprint:
+Vendor fingerprint:
+Current kernel release:
+Active slot:
+QCA6490 module path and SHA256:
+```
+
+Back up user data and the active-slot `boot`, `vendor_boot`, `dtbo`, and
+`vendor_dlkm` partitions. Keep a known-good recovery package off-device.
+
+After booting, verify:
+
+```bash
+adb shell uname -a
+adb shell su -c 'test -e /sys/kernel/qca6490/cfr_control && echo CFR_CONTROL_OK'
+adb shell su -c 'test -e /sys/kernel/qca6490/cfr_status && echo CFR_STATUS_OK'
+adb shell su -c 'mount -t debugfs none /sys/kernel/debug 2>/dev/null || true'
+adb shell su -c 'ls -la /sys/kernel/debug/cfrwlan0'
+```
+
+Successful boot and working Wi-Fi do not by themselves validate the CFR data
+path. Run a bounded capture and inspect its framing, session-end record,
+sequence gaps, and drop counters before reporting an installation as
+CFR-validated.
+
+### Custom source builds
+
+Developers integrating the source branch must package the kernel Image and all
+matching modules for the exact ROM, partition layout, module list, boot format,
+and symbol ABI.
 
 For the tested HyperOS layout, the WLAN module is installed as:
 
@@ -205,19 +293,8 @@ For the tested HyperOS layout, the WLAN module is installed as:
 /vendor_dlkm/lib/modules/qca_cld3_qca6490.ko
 ```
 
-Before flashing:
-
-1. Make a complete off-device backup of user data.
-2. Record the active slot and kernel version.
-3. Back up `boot`, `vendor_boot`, `dtbo`, and `vendor_dlkm` for that slot.
-4. Keep a known-good recovery package available off-device.
-5. Verify the flash package changes only the intended Image and WLAN module.
-6. Verify every module still matches the target kernel release and symbol ABI.
-7. Test one patch set at a time.
-
-Do not flash a raw `Image` directly to a partition. Do not reuse a package from
-a different HyperOS release, regional firmware, kernel base, or device variant.
-A mismatched WLAN module can leave the device booted without Wi-Fi, while a
+Do not mix an Image and QCA6490 module produced by different builds. A
+mismatched WLAN module can leave the device booted without Wi-Fi, while a
 mismatched boot or vendor boot image can prevent startup entirely.
 
 ## Capture CFRR data
@@ -346,21 +423,19 @@ general performance guarantee.
 
 ## Known limitations
 
-- The pre-transfer RC2 package booted, but the source-parity transfer still
-  requires a new package, boot test, and sustained CFR capture.
-- Live validation used `5.10.258-Bouquet-v4.9`; this public source branch is
-  based on `5.10.256-Bouquet-v4.7`.
+- The prebuilt release is intended only for compatible Bouquet-based POCO F5
+  custom ROMs.
+- Release-package boot validation and sustained CFR transport validation should
+  be reported separately.
 - The tested WLAN firmware reports no capture-count support. Duration mode and
   host recovery are required.
 - The internal `amss20.bin` firmware version string and file hash were not
   archived during the original run.
-- The exact active Android 16 distribution release name and fingerprint were
-  not archived. Its build flavor and build ID are listed in the support table.
 - The 32 KiB frame limit is specific to this Marble QCA6490 experiment.
-- Physical antenna mapping, lane calibration, and full CSI reconstruction are
-  not implemented here.
-- The example inspector validates CFRR framing but does not decode complex I/Q
-  samples.
+- Physical antenna mapping, lane calibration, phase correction, and full CSI
+  reconstruction are not implemented.
+- The example inspector validates CFRR framing and metadata but does not decode
+  calibrated complex CSI samples.
 - Optional vendor netlink duplication is not intended for sustained high-rate
   capture.
 - Other devices, regional firmware packages, QCA chipsets, and 5.15 kernels are
