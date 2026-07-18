@@ -11,6 +11,9 @@ from pathlib import Path
 
 TYPE_FORMAT = {
     "uint8_t": "B",
+    "uint16_t": "H",
+    "uint32_t": "I",
+    "uint64_t": "Q",
     "__le16": "H",
     "__le32": "I",
     "__le64": "Q",
@@ -34,23 +37,23 @@ HEADER_FIELDS = [
 ]
 
 DBR_META_FIELDS = [
-    ("__le32", "magic"),
-    ("__le16", "version"),
-    ("__le16", "meta_len"),
-    ("__le32", "flags"),
-    ("__le32", "cookie"),
-    ("__le32", "phy_ppdu_id"),
-    ("__le32", "paddr_low32"),
-    ("__le32", "paddr_high32"),
-    ("__le32", "dbr_len"),
-    ("__le32", "parsed_len"),
-    ("__le16", "dma_hdr_bytes"),
-    ("__le16", "dma_hdr_words"),
-    ("__le16", "freeze_tlv_len"),
-    ("__le16", "mu_rx_user_size"),
-    ("__le16", "mu_rx_num_users"),
-    ("__le16", "sample_offset"),
-    ("__le32", "sample_len"),
+    ("uint32_t", "magic"),
+    ("uint16_t", "version"),
+    ("uint16_t", "meta_len"),
+    ("uint32_t", "flags"),
+    ("uint32_t", "cookie"),
+    ("uint32_t", "phy_ppdu_id"),
+    ("uint32_t", "paddr_low32"),
+    ("uint32_t", "paddr_high32"),
+    ("uint32_t", "dbr_len"),
+    ("uint32_t", "parsed_len"),
+    ("uint16_t", "dma_hdr_bytes"),
+    ("uint16_t", "dma_hdr_words"),
+    ("uint16_t", "freeze_tlv_len"),
+    ("uint16_t", "mu_rx_user_size"),
+    ("uint16_t", "mu_rx_num_users"),
+    ("uint16_t", "sample_offset"),
+    ("uint32_t", "sample_len"),
     ("uint8_t", "tag"),
     ("uint8_t", "upload_done"),
     ("uint8_t", "capture_type"),
@@ -59,8 +62,8 @@ DBR_META_FIELDS = [
     ("uint8_t", "num_chains"),
     ("uint8_t", "upload_pkt_bw"),
     ("uint8_t", "sw_peer_id_valid"),
-    ("__le16", "sw_peer_id"),
-    ("__le16", "total_bytes"),
+    ("uint16_t", "sw_peer_id"),
+    ("uint16_t", "total_bytes"),
     ("uint8_t", "header_version"),
     ("uint8_t", "target_id"),
     ("uint8_t", "cfr_fmt"),
@@ -75,35 +78,35 @@ DBR_META_FIELDS = [
     ("uint8_t", "freeze_packet_subtype"),
     ("uint8_t", "freeze_directed"),
     ("uint8_t", "freeze_sw_peer_id_valid"),
-    ("__le16", "freeze_sw_peer_id"),
-    ("__le16", "freeze_phy_ppdu_id"),
-    ("__le16", "packet_ta_lower_16"),
-    ("__le16", "packet_ta_mid_16"),
-    ("__le16", "packet_ta_upper_16"),
-    ("__le16", "packet_ra_lower_16"),
-    ("__le16", "packet_ra_mid_16"),
-    ("__le16", "packet_ra_upper_16"),
-    ("__le16", "tsf_word0"),
-    ("__le16", "tsf_word1"),
-    ("__le16", "tsf_word2"),
-    ("__le16", "tsf_word3_or_user_mask_36_32"),
-    ("__le16", "user_mask_word0"),
-    ("__le16", "user_mask_word1"),
-    ("__le16", "user_mask_word2"),
-    ("__le32", "raw_header_len"),
+    ("uint16_t", "freeze_sw_peer_id"),
+    ("uint16_t", "freeze_phy_ppdu_id"),
+    ("uint16_t", "packet_ta_lower_16"),
+    ("uint16_t", "packet_ta_mid_16"),
+    ("uint16_t", "packet_ta_upper_16"),
+    ("uint16_t", "packet_ra_lower_16"),
+    ("uint16_t", "packet_ra_mid_16"),
+    ("uint16_t", "packet_ra_upper_16"),
+    ("uint16_t", "tsf_word0"),
+    ("uint16_t", "tsf_word1"),
+    ("uint16_t", "tsf_word2"),
+    ("uint16_t", "tsf_word3_or_user_mask_36_32"),
+    ("uint16_t", "user_mask_word0"),
+    ("uint16_t", "user_mask_word1"),
+    ("uint16_t", "user_mask_word2"),
+    ("uint32_t", "raw_header_len"),
 ]
 
 RX_PPDU_FIELDS = [
-    ("__le32", "magic"),
-    ("__le32", "ppdu_id"),
-    ("__le32", "bb_captured_channel"),
-    ("__le32", "rx_location_info_valid"),
-    ("__le32", "chan_capture_status"),
-    ("__le32", "rtt_che_buffer_pointer_low32"),
-    ("__le32", "rtt_che_buffer_pointer_high8"),
-    ("__le32", "buffer_addr_low32"),
-    ("__le32", "buffer_addr_high32"),
-    ("__le32", "srng_id"),
+    ("uint32_t", "magic"),
+    ("uint32_t", "ppdu_id"),
+    ("uint32_t", "bb_captured_channel"),
+    ("uint32_t", "rx_location_info_valid"),
+    ("uint32_t", "chan_capture_status"),
+    ("uint32_t", "rtt_che_buffer_pointer_low32"),
+    ("uint32_t", "rtt_che_buffer_pointer_high8"),
+    ("uint32_t", "buffer_addr_low32"),
+    ("uint32_t", "buffer_addr_high32"),
+    ("uint32_t", "srng_id"),
 ]
 
 HEADER_GOLDEN = bytes.fromhex(
@@ -125,7 +128,8 @@ RX_PPDU_GOLDEN = bytes.fromhex(
 
 def extract_fields(header: str, struct_name: str):
     match = re.search(
-        rf"struct\s+{re.escape(struct_name)}\s*\{{(.*?)\}}\s*__packed;",
+        rf"struct\s+{re.escape(struct_name)}\s*\{{(.*?)\}}\s*"
+        rf"(?:__packed|__attribute__\s*\(\(__packed__\)\))?;",
         header,
         re.S,
     )
@@ -134,7 +138,7 @@ def extract_fields(header: str, struct_name: str):
 
     fields = []
     for field_type, field_name in re.findall(
-        r"^\s*(__le16|__le32|__le64|uint8_t)\s+(\w+)\s*;",
+        r"^\s*(uint8_t|uint16_t|uint32_t|uint64_t|__le16|__le32|__le64)\s+(\w+)\s*;",
         match.group(1),
         re.M,
     ):
@@ -145,11 +149,11 @@ def extract_fields(header: str, struct_name: str):
 def sample_value(field_type: str, index: int):
     if field_type == "uint8_t":
         return (index * 3 + 1) & 0xFF
-    if field_type == "__le16":
+    if field_type in {"uint16_t", "__le16"}:
         return (0x1000 + index) & 0xFFFF
-    if field_type == "__le32":
+    if field_type in {"uint32_t", "__le32"}:
         return 0x10203000 + index
-    if field_type == "__le64":
+    if field_type in {"uint64_t", "__le64"}:
         return 0x0102030405060700 + index
     raise AssertionError(f"unsupported field type {field_type}")
 
@@ -163,7 +167,7 @@ def serialize(fields):
 
 def require_le_assignments(source: str, object_name: str, fields):
     for field_type, field_name in fields:
-        if field_type == "uint8_t" or field_name.startswith("reserved"):
+        if not field_type.startswith("__le") or field_name.startswith("reserved"):
             continue
         pattern = (
             rf"\b{re.escape(object_name)}(?:->|\.){re.escape(field_name)}"
@@ -212,7 +216,7 @@ def main():
 
     declared_header = extract_fields(header, "cfr_streamfs_record_hdr")
     declared_dbr = extract_fields(header, "cfr_streamfs_dbr_meta_v1")
-    declared_rx = extract_fields(header, "cfr_streamfs_rx_ppdu_v1")
+    declared_rx = extract_fields(target, "cfr_rx_ppdu_snapshot")
 
     assert declared_header == HEADER_FIELDS
     assert declared_dbr == DBR_META_FIELDS
