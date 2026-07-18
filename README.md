@@ -10,6 +10,16 @@ transport for the Qualcomm QCA6490 WLAN chipset used by the POCO F5. It is a
 kernel research project for reproducible CFR and CSI collection, not a generic
 replacement kernel and not a universal flash package.
 
+> [!IMPORTANT]
+> The current `CSI/CFR-PATCH` branch is a full sync of the working Bouquet
+> research kernel, not a minimal CFR/CSI-only patch series. It intentionally
+> includes additional changes that are outside the CFR/CSI WLAN transport, such
+> as Gunyah/AVF resource-manager and debug work, GuestVM support scaffolding,
+> and lower-level NFC/NCI control and diagnostic changes. Those files are kept
+> here to preserve app-facing behavior and source parity with the working
+> Bouquet build, but they should be reviewed separately from the CFR/CSI data
+> path when assessing risk or rebasing the branch.
+
 > [!WARNING]
 > Flashing a custom kernel can prevent boot, break Wi-Fi, or make encrypted
 > data permanently inaccessible. Make a complete off-device backup of user
