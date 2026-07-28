@@ -49,6 +49,27 @@ regional firmware packages, or different partition layouts must not be assumed.
 This remains a research prototype. Publishing a release makes installation more
 accessible, but does not make the kernel universally compatible.
 
+## SN100U NFC function gateway
+
+The branch also includes a versioned research gateway for the Marble NXP SN100U
+controller. It provides exclusive sessions on `/dev/nq-nci`, 149 stable catalog
+entries classified as direct, built-in, or backend-payload operations, normal
+NCI and firmware-download transports, controller/eSE/GPIO/trace controls,
+explicit transport fallback, framed `NFCF` records, and a native Android/host
+tool. Payload entries require a generation-specific request and do not imply
+kernel implementation of the high-level vendor behavior. The firmware container
+reader can inspect and submit the signed download record stream from
+`libsn100u_fw.so` without executing the library, then verifies closed session,
+installed version, and controller-reported integrity state.
+
+See
+[`Documentation/nfc/qti-sn100u-function-gateway.rst`](Documentation/nfc/qti-sn100u-function-gateway.rst)
+and build the tool with:
+
+```bash
+make -C nfc_tools
+```
+
 ## Why this matters
 
 Qualcomm CFR data normally crosses several asynchronous paths before it is

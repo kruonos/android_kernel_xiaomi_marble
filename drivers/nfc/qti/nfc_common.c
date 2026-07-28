@@ -22,6 +22,7 @@
 #include <linux/of_gpio.h>
 #include <linux/of_device.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include "nfc_common.h"
 
 #define NCI_RF_MGMT_GID			(0x01)
@@ -34,6 +35,8 @@
 #define NCI_ROUTING_TYPE_PROTOCOL	(0x01)
 #define NCI_ROUTING_TYPE_AID		(0x02)
 #define NCI_ROUTING_TYPE_SYSTEM_CODE	(0x03)
+#define NCI_MT_MASK			(0xE0)
+#define NCI_DATA_HDR_LEN		(0x02)
 #define NCI_ROUTING_QUALIFIER_TYPE_MASK	(0x0F)
 #define NCI_ROUTING_MORE_MAX		(0x01)
 #define NFC_ROUTING_TYPE_AID		(0x01)
@@ -564,12 +567,16 @@ static int nfc_diag_parse_timeout(__s32 timeout_ms, int *timeout)
 static int nfc_diag_trim_nci_frame(const __u8 *rsp, __u32 read_len,
 					  __u32 rsp_max, __u32 *rsp_len)
 {
+	__u32 header_len;
 	__u32 frame_len;
 
-	if (read_len < NCI_HDR_LEN)
+	if (!read_len)
 		return -EIO;
 
-	frame_len = NCI_HDR_LEN + rsp[NCI_PAYLOAD_LEN_IDX];
+	header_len = (rsp[0] & NCI_MT_MASK) ? NCI_HDR_LEN : NCI_DATA_HDR_LEN;
+	if (read_len < header_len)
+		return -EIO;
+	frame_len = header_len + rsp[header_len - 1];
 	if (frame_len > read_len || frame_len > rsp_max)
 		return -EMSGSIZE;
 
@@ -653,6 +660,10 @@ static int nfc_diag_release(struct file *pfile)
 	int ret = 0;
 
 	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (nfc_dev->function_owner == pfile) {
+		ret = -EBUSY;
+		goto out;
+	}
 	if (!nfc_dev->diag_owner)
 		goto out;
 	if (nfc_dev->diag_owner != pfile) {
@@ -938,6 +949,663 @@ static int nfc_get_routing_ioctl(struct nfc_dev *nfc_dev, unsigned long arg)
 	return 0;
 }
 
+static int qti_nfc_function_copy_response(
+		struct qti_nfc_function_call *call, const void *data, size_t len)
+{
+	if (len > QTI_NFC_FUNCTION_MAX_DATA)
+		return -EMSGSIZE;
+
+	call->response_len = len;
+	if (len > call->response_capacity)
+		return -ENOSPC;
+	if (len && data)
+		memcpy(call->response, data, len);
+
+	return 0;
+}
+
+static int qti_nfc_function_timeout(struct nfc_dev *nfc_dev,
+				    const struct qti_nfc_function_call *call)
+{
+	int timeout = call->timeout_ms;
+
+	if (timeout < 0 || timeout > QTI_NFC_FUNCTION_MAX_TIMEOUT_MS)
+		return -EINVAL;
+	if (!timeout)
+		timeout = nfc_dev->function_default_timeout_ms;
+	if (!timeout)
+		timeout = NCI_CMD_RSP_TIMEOUT;
+
+	return timeout;
+}
+
+static u16 qti_nfc_function_crc16(const u8 *data, size_t len)
+{
+	u16 crc = 0xffff;
+	size_t i;
+	int bit;
+
+	for (i = 0; i < len; i++) {
+		crc ^= (u16)data[i] << 8;
+		for (bit = 0; bit < 8; bit++)
+			crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+	}
+
+	return crc;
+}
+
+static int qti_nfc_function_trim_download_frame(u8 *response, u32 read_len,
+						 u32 capacity, u32 *frame_len)
+{
+	u32 payload_len;
+	u32 length;
+	u16 expected_crc;
+	u16 received_crc;
+	u8 status;
+
+	if (read_len < FW_HDR_LEN + FW_CRC_LEN)
+		return -EPROTO;
+	payload_len = ((u32)response[0] << 8) | response[1];
+	length = FW_HDR_LEN + payload_len + FW_CRC_LEN;
+	if (!payload_len || length > read_len || length > capacity)
+		return -EPROTO;
+	expected_crc = qti_nfc_function_crc16(response,
+					       FW_HDR_LEN + payload_len);
+	received_crc = ((u16)response[length - 2] << 8) | response[length - 1];
+	if (expected_crc != received_crc)
+		return -EBADMSG;
+
+	*frame_len = length;
+	status = response[FW_HDR_LEN];
+	switch (status) {
+	case 0x00:
+		return 0;
+	case 0x2d:
+	case 0x2e:
+		/* Fragment acknowledgment, not completion of a full write. */
+		return -EINPROGRESS;
+	case 0x20:
+		return -EBUSY;
+	case 0x21:
+		return -EKEYREJECTED;
+	case 0x24:
+		return -EALREADY;
+	default:
+		return -EREMOTEIO;
+	}
+}
+
+static int qti_nfc_function_xfer(struct nfc_dev *nfc_dev,
+				 struct qti_nfc_function_call *call,
+				 const u8 *request, u32 request_len,
+				 u32 transport, bool expect_response)
+{
+	u32 max_frame;
+	int max_retry;
+	int timeout;
+	int ret;
+	int frame_count;
+
+	if (transport == QTI_NFC_FUNCTION_TRANSPORT_NCI) {
+		ret = validate_nfc_state_nci(nfc_dev);
+		if (ret)
+			return ret;
+		max_frame = MAX_BUFFER_SIZE;
+	} else if (transport == QTI_NFC_FUNCTION_TRANSPORT_FW_DOWNLOAD) {
+		if (nfc_dev->nfc_state != NFC_STATE_FW_DWL &&
+		    nfc_dev->nfc_state != NFC_STATE_FW_TEARED)
+			return -EHOSTDOWN;
+		if (gpio_is_valid(nfc_dev->configs.gpio.dwl_req) &&
+		    !gpio_get_value(nfc_dev->configs.gpio.dwl_req))
+			return -EHOSTDOWN;
+		max_frame = MAX_DL_BUFFER_SIZE;
+	} else {
+		return -EINVAL;
+	}
+
+	if (request_len > max_frame || call->response_capacity > max_frame)
+		return -EMSGSIZE;
+	if (expect_response && !call->response_capacity)
+		return -EINVAL;
+	if (!request_len && !expect_response)
+		return -EINVAL;
+
+	timeout = qti_nfc_function_timeout(nfc_dev, call);
+	if (timeout < 0)
+		return timeout;
+	call->transport = transport;
+
+	ret = mutex_lock_interruptible(&nfc_dev->read_mutex);
+	if (ret)
+		return ret;
+	ret = mutex_lock_interruptible(&nfc_dev->write_mutex);
+	if (ret) {
+		mutex_unlock(&nfc_dev->read_mutex);
+		return ret;
+	}
+
+	if (request_len) {
+		max_retry = (call->flags & QTI_NFC_FUNCTION_CALL_F_RETRY_WRITE) ?
+			MAX_RETRY_COUNT : NO_RETRY;
+		ret = nfc_dev->nfc_write(nfc_dev, (const char *)request,
+					 request_len, max_retry);
+		if (ret != request_len) {
+			if (ret >= 0)
+				ret = -EIO;
+			goto out;
+		}
+
+		if (!expect_response) {
+			ret = 0;
+			goto out;
+		}
+	}
+
+	for (frame_count = 0; frame_count < NFC_ROUTING_MAX_NTF_FRAMES;
+	     frame_count++) {
+		u32 frame_len;
+
+		ret = nfc_dev->nfc_read(nfc_dev, (char *)call->response,
+					call->response_capacity, timeout);
+		if (!ret) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+		if (ret < 0)
+			break;
+		frame_len = ret;
+		if (transport == QTI_NFC_FUNCTION_TRANSPORT_NCI) {
+			ret = nfc_diag_trim_nci_frame(call->response, ret,
+				call->response_capacity, &frame_len);
+			if (ret)
+				break;
+			if (request_len >= 2 &&
+			    (request[0] & NCI_MT_MASK) == NCI_MSG_CMD &&
+			    (call->response[0] !=
+				(NCI_MSG_RSP | (request[0] & ~NCI_MT_MASK)) ||
+			     call->response[1] != request[1]))
+				continue;
+		} else {
+			ret = qti_nfc_function_trim_download_frame(call->response,
+				ret, call->response_capacity, &frame_len);
+		}
+		call->response_len = frame_len;
+		break;
+	}
+	if (frame_count == NFC_ROUTING_MAX_NTF_FRAMES)
+		ret = -EOVERFLOW;
+
+out:
+	mutex_unlock(&nfc_dev->write_mutex);
+	mutex_unlock(&nfc_dev->read_mutex);
+	return ret;
+}
+
+static u32 qti_nfc_function_mode(const struct nfc_dev *nfc_dev)
+{
+	switch (nfc_dev->nfc_state) {
+	case NFC_STATE_NCI:
+		return QTI_NFC_FUNCTION_MODE_NCI;
+	case NFC_STATE_FW_DWL:
+		return QTI_NFC_FUNCTION_MODE_FW_DOWNLOAD;
+	case NFC_STATE_FW_TEARED:
+		return QTI_NFC_FUNCTION_MODE_FW_TORN;
+	default:
+		return QTI_NFC_FUNCTION_MODE_UNKNOWN;
+	}
+}
+
+static void qti_nfc_function_fill_runtime_state(struct nfc_dev *nfc_dev,
+				struct qti_nfc_function_runtime_state *state)
+{
+	struct platform_gpio *gpio = &nfc_dev->configs.gpio;
+
+	memset(state, 0, sizeof(*state));
+	state->mode = qti_nfc_function_mode(nfc_dev);
+	state->controller_state = nfc_dev->nfc_state;
+	state->ven = get_valid_gpio(gpio->ven) > 0;
+	state->firm = get_valid_gpio(gpio->dwl_req) > 0;
+	state->irq = get_valid_gpio(gpio->irq) > 0;
+	state->clkreq = get_valid_gpio(gpio->clkreq) > 0;
+	state->regulator_enabled = nfc_dev->is_vreg_enabled;
+	state->nfc_enabled = nfc_dev->cold_reset.is_nfc_enabled;
+	state->ese_powered = nfc_dev->is_ese_session_active;
+	state->ese_state = nfc_dev->ese_state;
+	state->rf_field = nfc_dev->rf_field;
+	state->interface_type = nfc_dev->interface;
+	state->chip_type = nfc_dev->nqx_info.info.chip_type;
+	state->rom_version = nfc_dev->nqx_info.info.rom_version;
+	state->fw_major = nfc_dev->nqx_info.info.fw_major;
+	state->fw_minor = nfc_dev->nqx_info.info.fw_minor;
+}
+
+static int qti_nfc_function_set_gpio(struct nfc_dev *nfc_dev,
+				     const struct qti_nfc_function_gpio_value *value)
+{
+	if (value->value != 0 && value->value != 1)
+		return -EINVAL;
+
+	switch (value->gpio) {
+	case QTI_NFC_FUNCTION_GPIO_VEN:
+		return nfc_ioctl_power_states(nfc_dev,
+			value->value ? NFC_POWER_ON : NFC_POWER_OFF);
+	case QTI_NFC_FUNCTION_GPIO_FIRM:
+		return nfc_ioctl_power_states(nfc_dev,
+			value->value ? NFC_FW_DWL_HIGH : NFC_FW_DWL_LOW);
+	case QTI_NFC_FUNCTION_GPIO_CLKREQ:
+	case QTI_NFC_FUNCTION_GPIO_IRQ:
+	default:
+		/* CLKREQ and IRQ are NFCC-driven inputs on this platform. */
+		return -EOPNOTSUPP;
+	}
+}
+
+static int qti_nfc_function_get_gpio(struct nfc_dev *nfc_dev,
+				     struct qti_nfc_function_gpio_value *value)
+{
+	int gpio;
+
+	switch (value->gpio) {
+	case QTI_NFC_FUNCTION_GPIO_IRQ:
+		gpio = nfc_dev->configs.gpio.irq;
+		break;
+	case QTI_NFC_FUNCTION_GPIO_VEN:
+		gpio = nfc_dev->configs.gpio.ven;
+		break;
+	case QTI_NFC_FUNCTION_GPIO_FIRM:
+		gpio = nfc_dev->configs.gpio.dwl_req;
+		break;
+	case QTI_NFC_FUNCTION_GPIO_CLKREQ:
+		gpio = nfc_dev->configs.gpio.clkreq;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	value->value = get_valid_gpio(gpio);
+	return value->value < 0 ? value->value : 0;
+}
+
+static int qti_nfc_function_default_transport(u32 function)
+{
+	if ((function >= QTI_NFC_FUNCTION_GET_FIRMWARE_VERSION &&
+	     function <= QTI_NFC_FUNCTION_CHECK_TORN_SESSION) ||
+	    function == QTI_NFC_FUNCTION_FW_DOWNLOAD_TRANSACTION)
+		return QTI_NFC_FUNCTION_TRANSPORT_FW_DOWNLOAD;
+
+	return QTI_NFC_FUNCTION_TRANSPORT_NCI;
+}
+
+static int qti_nfc_function_dispatch(struct nfc_dev *nfc_dev,
+				     struct qti_nfc_function_call *call)
+{
+	static const u8 core_reset[] = { 0x20, 0x00, 0x01, 0x00 };
+	static const u8 dl_get_version[] = {
+		0x00, 0x04, 0xf1, 0x00, 0x00, 0x00, 0x6e, 0xef,
+	};
+	static const u8 dl_get_session[] = {
+		0x00, 0x04, 0xf2, 0x00, 0x00, 0x00, 0xf5, 0x33,
+	};
+	static const u8 dl_check_integrity[] = {
+		0x00, 0x04, 0xe0, 0x00, 0x00, 0x00, 0x03, 0xfc,
+	};
+	struct qti_nfc_function_runtime_state state;
+	struct qti_nfc_function_gpio_value gpio_value;
+	struct qti_nfc_trace_read_record trace_record;
+	struct qti_nfc_trace_info trace_info;
+	struct nfc_routing_info routing;
+	u32 value;
+	u32 transport = call->transport;
+	bool expect_response;
+	int ret;
+
+	switch (call->function) {
+	case QTI_NFC_FUNCTION_GET_CONTROLLER_INFO:
+		return qti_nfc_function_copy_response(call, &nfc_dev->nqx_info,
+					       sizeof(nfc_dev->nqx_info));
+	case QTI_NFC_FUNCTION_GET_RUNTIME_STATE:
+		qti_nfc_function_fill_runtime_state(nfc_dev, &state);
+		return qti_nfc_function_copy_response(call, &state, sizeof(state));
+	case QTI_NFC_FUNCTION_GET_PLATFORM_TYPE:
+		value = nfc_dev->interface;
+		return qti_nfc_function_copy_response(call, &value, sizeof(value));
+	case QTI_NFC_FUNCTION_GET_IRQ_STATE:
+		ret = get_valid_gpio(nfc_dev->configs.gpio.irq);
+		if (ret < 0)
+			return ret;
+		value = ret;
+		return qti_nfc_function_copy_response(call, &value, sizeof(value));
+	case QTI_NFC_FUNCTION_POWER_ON:
+		return nfc_ioctl_power_states(nfc_dev, NFC_POWER_ON);
+	case QTI_NFC_FUNCTION_POWER_OFF:
+		return nfc_ioctl_power_states(nfc_dev, NFC_POWER_OFF);
+	case QTI_NFC_FUNCTION_POWER_CYCLE:
+		ret = nfc_ioctl_power_states(nfc_dev, NFC_POWER_OFF);
+		return ret ? ret : nfc_ioctl_power_states(nfc_dev, NFC_POWER_ON);
+	case QTI_NFC_FUNCTION_HARD_RESET:
+		return nfc_ioctl_power_states(nfc_dev, NFC_VEN_FORCED_HARD_RESET);
+	case QTI_NFC_FUNCTION_ENABLE:
+		return nfc_ioctl_power_states(nfc_dev, NFC_ENABLE);
+	case QTI_NFC_FUNCTION_DISABLE:
+		return nfc_ioctl_power_states(nfc_dev, NFC_DISABLE);
+	case QTI_NFC_FUNCTION_LDO_ENABLE:
+		return nfc_dev->is_vreg_enabled ? 0 : nfc_ldo_vote(nfc_dev);
+	case QTI_NFC_FUNCTION_LDO_DISABLE:
+		return nfc_dev->is_vreg_enabled ? nfc_ldo_unvote(nfc_dev) : 0;
+	case QTI_NFC_FUNCTION_ENTER_DOWNLOAD_MODE:
+		return nfc_ioctl_power_states(nfc_dev, NFC_FW_DWL_VEN_TOGGLE);
+	case QTI_NFC_FUNCTION_EXIT_DOWNLOAD_MODE:
+		return nfc_ioctl_power_states(nfc_dev, NFC_FW_DWL_LOW);
+	case QTI_NFC_FUNCTION_GET_DOWNLOAD_MODE:
+		value = qti_nfc_function_mode(nfc_dev);
+		return qti_nfc_function_copy_response(call, &value, sizeof(value));
+	case QTI_NFC_FUNCTION_ESE_POWER_ON:
+		return nfc_ese_pwr(nfc_dev, ESE_POWER_ON);
+	case QTI_NFC_FUNCTION_ESE_POWER_OFF:
+		return nfc_ese_pwr(nfc_dev, ESE_POWER_OFF);
+	case QTI_NFC_FUNCTION_ESE_GET_POWER:
+		ret = nfc_ese_pwr(nfc_dev, ESE_POWER_STATE);
+		if (ret < 0)
+			return ret;
+		value = ret;
+		return qti_nfc_function_copy_response(call, &value, sizeof(value));
+	case QTI_NFC_FUNCTION_GET_GPIO_STATUS:
+		if (call->request_len != sizeof(gpio_value))
+			return -EINVAL;
+		memcpy(&gpio_value, call->request, sizeof(gpio_value));
+		ret = qti_nfc_function_get_gpio(nfc_dev, &gpio_value);
+		return ret ? ret : qti_nfc_function_copy_response(call,
+				&gpio_value, sizeof(gpio_value));
+	case QTI_NFC_FUNCTION_SET_GPIO:
+		if (call->request_len != sizeof(gpio_value))
+			return -EINVAL;
+		memcpy(&gpio_value, call->request, sizeof(gpio_value));
+		return qti_nfc_function_set_gpio(nfc_dev, &gpio_value);
+	case QTI_NFC_FUNCTION_GET_RF_FIELD_STATE:
+		value = nfc_dev->rf_field;
+		return qti_nfc_function_copy_response(call, &value, sizeof(value));
+	case QTI_NFC_FUNCTION_GET_ROUTING:
+		ret = qti_nfc_function_timeout(nfc_dev, call);
+		if (ret < 0)
+			return ret;
+		memset(&routing, 0, sizeof(routing));
+		routing.status = 0xff;
+		ret = nfc_get_routing_xfer(nfc_dev,
+				(const u8[]){ NCI_RF_GET_ROUTING_CMD_GID,
+					      NCI_RF_GET_ROUTING_OID, 0x00 },
+				NCI_HDR_LEN, ret,
+				&routing);
+		return ret ? ret : qti_nfc_function_copy_response(call, &routing,
+							       sizeof(routing));
+	case QTI_NFC_FUNCTION_TRACE_GET_INFO:
+		ret = qti_nfc_trace_get_info(&trace_info);
+		return ret ? ret : qti_nfc_function_copy_response(call, &trace_info,
+							       sizeof(trace_info));
+	case QTI_NFC_FUNCTION_TRACE_READ:
+		if (call->request_len != sizeof(trace_record.index))
+			return -EINVAL;
+		memset(&trace_record, 0, sizeof(trace_record));
+		memcpy(&trace_record.index, call->request,
+		       sizeof(trace_record.index));
+		ret = qti_nfc_trace_read_record(&trace_record);
+		return ret ? ret : qti_nfc_function_copy_response(call,
+				&trace_record, sizeof(trace_record));
+	case QTI_NFC_FUNCTION_TRACE_CLEAR:
+		return qti_nfc_trace_ioctl(QTI_NFC_TRACE_CLEAR, 0);
+	case QTI_NFC_FUNCTION_TRACE_SET_CAPTURE:
+	case QTI_NFC_FUNCTION_TRACE_SET_MAX_LENGTH:
+	case QTI_NFC_FUNCTION_TRACE_SET_DMESG:
+		if (call->request_len != sizeof(value))
+			return -EINVAL;
+		memcpy(&value, call->request, sizeof(value));
+		if (call->function == QTI_NFC_FUNCTION_TRACE_SET_CAPTURE)
+			return qti_nfc_trace_ioctl(QTI_NFC_TRACE_SET_CAPTURE, value);
+		if (call->function == QTI_NFC_FUNCTION_TRACE_SET_MAX_LENGTH)
+			return qti_nfc_trace_ioctl(QTI_NFC_TRACE_SET_MAX_LEN, value);
+		return qti_nfc_trace_ioctl(QTI_NFC_TRACE_SET_DMESG, value);
+	case QTI_NFC_FUNCTION_CORE_RESET_INIT:
+		transport = QTI_NFC_FUNCTION_TRANSPORT_NCI;
+		return qti_nfc_function_xfer(nfc_dev, call, core_reset,
+					 sizeof(core_reset), transport, true);
+	case QTI_NFC_FUNCTION_GET_FIRMWARE_VERSION:
+		transport = QTI_NFC_FUNCTION_TRANSPORT_FW_DOWNLOAD;
+		return qti_nfc_function_xfer(nfc_dev, call, dl_get_version,
+					 sizeof(dl_get_version), transport, true);
+	case QTI_NFC_FUNCTION_GET_DOWNLOAD_SESSION:
+		transport = QTI_NFC_FUNCTION_TRANSPORT_FW_DOWNLOAD;
+		return qti_nfc_function_xfer(nfc_dev, call, dl_get_session,
+					 sizeof(dl_get_session), transport, true);
+	case QTI_NFC_FUNCTION_DOWNLOAD_CHECK_INTEGRITY:
+		transport = QTI_NFC_FUNCTION_TRANSPORT_FW_DOWNLOAD;
+		return qti_nfc_function_xfer(nfc_dev, call, dl_check_integrity,
+					 sizeof(dl_check_integrity), transport, true);
+	case QTI_NFC_FUNCTION_RECEIVE_FRAME:
+		if (transport == QTI_NFC_FUNCTION_TRANSPORT_AUTO)
+			transport = nfc_dev->nfc_state == NFC_STATE_NCI ?
+				QTI_NFC_FUNCTION_TRANSPORT_NCI :
+				QTI_NFC_FUNCTION_TRANSPORT_FW_DOWNLOAD;
+		return qti_nfc_function_xfer(nfc_dev, call, NULL, 0, transport,
+					 true);
+	default:
+		break;
+	}
+
+	if (transport == QTI_NFC_FUNCTION_TRANSPORT_AUTO)
+		transport = qti_nfc_function_default_transport(call->function);
+	expect_response = !!(call->flags &
+				 QTI_NFC_FUNCTION_CALL_F_EXPECT_RESPONSE);
+	if (call->function == QTI_NFC_FUNCTION_WRITE_ONLY)
+		expect_response = false;
+	if (call->function == QTI_NFC_FUNCTION_READ_ONLY)
+		return qti_nfc_function_xfer(nfc_dev, call, NULL, 0, transport,
+					 true);
+
+	return qti_nfc_function_xfer(nfc_dev, call, call->request,
+				     call->request_len, transport, expect_response);
+}
+
+static int qti_nfc_function_session_open(struct file *pfile,
+					 struct qti_nfc_function_session *session)
+{
+	struct nfc_dev *nfc_dev = pfile->private_data;
+	int ret = 0;
+
+	if (session->abi_major != QTI_NFC_FUNCTION_ABI_MAJOR ||
+	    session->size != sizeof(*session) ||
+	    session->flags & ~QTI_NFC_FUNCTION_SESSION_F_KEEP_MODE ||
+	    session->default_timeout_ms > QTI_NFC_FUNCTION_MAX_TIMEOUT_MS)
+		return -EINVAL;
+
+	ret = mutex_lock_interruptible(&nfc_dev->function_mutex);
+	if (ret)
+		return ret;
+	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (nfc_dev->function_owner == pfile) {
+		session->session_id = nfc_dev->function_session_id;
+		goto out;
+	}
+	if (nfc_dev->function_owner || nfc_dev->diag_owner ||
+	    nfc_dev->dev_ref_count != 1) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	nfc_dev->function_next_session_id++;
+	if (!nfc_dev->function_next_session_id)
+		nfc_dev->function_next_session_id++;
+	nfc_dev->function_session_id = nfc_dev->function_next_session_id;
+	nfc_dev->function_owner = pfile;
+	nfc_dev->diag_owner = pfile;
+	nfc_dev->function_default_timeout_ms = session->default_timeout_ms ?:
+		NCI_CMD_RSP_TIMEOUT;
+	nfc_dev->function_session_flags = session->flags;
+	session->session_id = nfc_dev->function_session_id;
+
+out:
+	mutex_unlock(&nfc_dev->dev_ref_mutex);
+	mutex_unlock(&nfc_dev->function_mutex);
+	return ret;
+}
+
+static int qti_nfc_function_session_close(struct file *pfile,
+					  const struct qti_nfc_function_session *session)
+{
+	struct nfc_dev *nfc_dev = pfile->private_data;
+	int ret = 0;
+
+	if (session->abi_major != QTI_NFC_FUNCTION_ABI_MAJOR ||
+	    session->size != sizeof(*session))
+		return -EINVAL;
+
+	ret = mutex_lock_interruptible(&nfc_dev->function_mutex);
+	if (ret)
+		return ret;
+	mutex_lock(&nfc_dev->dev_ref_mutex);
+	if (nfc_dev->function_owner != pfile ||
+	    nfc_dev->function_session_id != session->session_id) {
+		ret = -EPERM;
+		goto out;
+	}
+	if (!(nfc_dev->function_session_flags &
+	      QTI_NFC_FUNCTION_SESSION_F_KEEP_MODE) &&
+	    nfc_dev->nfc_state != NFC_STATE_NCI)
+		ret = nfc_ioctl_power_states(nfc_dev, NFC_FW_DWL_LOW);
+	nfc_dev->function_owner = NULL;
+	nfc_dev->function_session_id = 0;
+	nfc_dev->function_session_flags = 0;
+	nfc_dev->function_default_timeout_ms = 0;
+	if (nfc_dev->diag_owner == pfile)
+		nfc_dev->diag_owner = NULL;
+out:
+	mutex_unlock(&nfc_dev->dev_ref_mutex);
+	mutex_unlock(&nfc_dev->function_mutex);
+	return ret;
+}
+
+static bool qti_nfc_function_is_owner(struct nfc_dev *nfc_dev,
+				      struct file *pfile, u32 session_id)
+{
+	bool owner;
+
+	mutex_lock(&nfc_dev->dev_ref_mutex);
+	owner = nfc_dev->function_owner == pfile &&
+		nfc_dev->function_session_id == session_id;
+	mutex_unlock(&nfc_dev->dev_ref_mutex);
+
+	return owner;
+}
+
+static bool qti_nfc_function_id_valid(u32 function)
+{
+	return (function >= QTI_NFC_FUNCTION_GET_CONTROLLER_INFO &&
+		function <= QTI_NFC_FUNCTION_GET_IRQ_STATE) ||
+	       (function >= QTI_NFC_FUNCTION_ENTER_DOWNLOAD_MODE &&
+		function <= QTI_NFC_FUNCTION_CONFIGURE_LX_DEBUG) ||
+	       (function >= QTI_NFC_FUNCTION_START_DISCOVERY &&
+		function <= QTI_NFC_FUNCTION_SET_CHINA_TRANSIT) ||
+	       (function >= QTI_NFC_FUNCTION_GET_ROUTING &&
+		function <= QTI_NFC_FUNCTION_T4T_CLEAR) ||
+	       (function >= QTI_NFC_FUNCTION_ESE_POWER_ON &&
+		function <= QTI_NFC_FUNCTION_JCOP_DEINITIALIZE) ||
+	       (function >= QTI_NFC_FUNCTION_TRACE_GET_INFO &&
+		function <= QTI_NFC_FUNCTION_SET_SYSTEM_PROPERTY) ||
+	       (function >= QTI_NFC_FUNCTION_NCI_TRANSACTION &&
+		function <= QTI_NFC_FUNCTION_READ_ONLY);
+}
+
+static long qti_nfc_function_ioctl(struct file *pfile, unsigned int cmd,
+				   unsigned long arg)
+{
+	struct nfc_dev *nfc_dev = pfile->private_data;
+	struct qti_nfc_function_session session;
+	struct qti_nfc_function_call *call;
+	struct qti_nfc_function_abi abi;
+	int ret;
+
+	if (!arg)
+		return -EINVAL;
+
+	switch (cmd) {
+	case QTI_NFC_FUNCTION_GET_ABI:
+		memset(&abi, 0, sizeof(abi));
+		abi.abi_major = QTI_NFC_FUNCTION_ABI_MAJOR;
+		abi.abi_minor = QTI_NFC_FUNCTION_ABI_MINOR;
+		abi.size = sizeof(abi);
+		abi.capabilities = QTI_NFC_FUNCTION_CAP_NCI |
+			QTI_NFC_FUNCTION_CAP_FW_DOWNLOAD |
+			QTI_NFC_FUNCTION_CAP_POWER |
+			QTI_NFC_FUNCTION_CAP_GPIO |
+			QTI_NFC_FUNCTION_CAP_ESE |
+			QTI_NFC_FUNCTION_CAP_TRACE |
+			QTI_NFC_FUNCTION_CAP_RAW_FALLBACK |
+			QTI_NFC_FUNCTION_CAP_NAMED_FUNCTIONS;
+		abi.max_data_len = QTI_NFC_FUNCTION_MAX_DATA;
+		abi.max_nci_frame_len = QTI_NFC_FUNCTION_MAX_NCI_FRAME;
+		abi.max_frame_len = QTI_NFC_FUNCTION_MAX_FRAME;
+		abi.max_timeout_ms = QTI_NFC_FUNCTION_MAX_TIMEOUT_MS;
+		abi.max_function_id = QTI_NFC_FUNCTION_READ_ONLY;
+		if (copy_to_user((void __user *)arg, &abi, sizeof(abi)))
+			return -EFAULT;
+		return 0;
+	case QTI_NFC_FUNCTION_SESSION_OPEN:
+		if (copy_from_user(&session, (void __user *)arg, sizeof(session)))
+			return -EFAULT;
+		ret = qti_nfc_function_session_open(pfile, &session);
+		if (ret)
+			return ret;
+		if (copy_to_user((void __user *)arg, &session, sizeof(session))) {
+			qti_nfc_function_session_close(pfile, &session);
+			return -EFAULT;
+		}
+		return 0;
+	case QTI_NFC_FUNCTION_SESSION_CLOSE:
+		if (copy_from_user(&session, (void __user *)arg, sizeof(session)))
+			return -EFAULT;
+		return qti_nfc_function_session_close(pfile, &session);
+	case QTI_NFC_FUNCTION_CALL:
+		call = memdup_user((void __user *)arg, sizeof(*call));
+		if (IS_ERR(call))
+			return PTR_ERR(call);
+		if (call->abi_major != QTI_NFC_FUNCTION_ABI_MAJOR ||
+		    call->size != sizeof(*call) ||
+		    !qti_nfc_function_id_valid(call->function) ||
+		    call->flags & ~(QTI_NFC_FUNCTION_CALL_F_EXPECT_RESPONSE |
+				    QTI_NFC_FUNCTION_CALL_F_RETRY_WRITE) ||
+		    call->request_len > QTI_NFC_FUNCTION_MAX_DATA ||
+		    call->response_capacity > QTI_NFC_FUNCTION_MAX_DATA) {
+			kfree(call);
+			return -EINVAL;
+		}
+		ret = mutex_lock_interruptible(&nfc_dev->function_mutex);
+		if (ret) {
+			kfree(call);
+			return ret;
+		}
+		if (!qti_nfc_function_is_owner(nfc_dev, pfile,
+					       call->session_id)) {
+			mutex_unlock(&nfc_dev->function_mutex);
+			kfree(call);
+			return -EPERM;
+		}
+		if (!call->sequence)
+			call->sequence = ++nfc_dev->function_next_sequence;
+		call->timestamp_ns = ktime_get_ns();
+		call->response_len = 0;
+		memset(call->response, 0, sizeof(call->response));
+		ret = qti_nfc_function_dispatch(nfc_dev, call);
+		call->status = ret;
+		if (copy_to_user((void __user *)arg, call, sizeof(*call)))
+			ret = -EFAULT;
+		else
+			ret = 0;
+		mutex_unlock(&nfc_dev->function_mutex);
+		kfree(call);
+		return ret;
+	default:
+		return -ENOIOCTLCMD;
+	}
+}
+
 /** @brief   IOCTL function  to be used to set or get data from upper layer.
  *
  *  @param   pfile  fil node for opened device.
@@ -957,6 +1625,12 @@ long nfc_dev_ioctl(struct file *pfile, unsigned int cmd, unsigned long arg)
 	pr_debug("%s cmd = %x arg = %zx\n", __func__, cmd, arg);
 
 	switch (cmd) {
+	case QTI_NFC_FUNCTION_GET_ABI:
+	case QTI_NFC_FUNCTION_SESSION_OPEN:
+	case QTI_NFC_FUNCTION_SESSION_CLOSE:
+	case QTI_NFC_FUNCTION_CALL:
+		ret = qti_nfc_function_ioctl(pfile, cmd, arg);
+		break;
 	case NFC_SET_PWR:
 		ret = nfc_ioctl_power_states(nfc_dev, arg);
 		break;
@@ -1093,13 +1767,22 @@ int nfc_dev_close(struct inode *inode, struct file *filp)
 		pr_debug("%s: current->flags 0x%x.\n", __func__, current->flags);
 	}
 
+	mutex_lock(&nfc_dev->function_mutex);
 	mutex_lock(&nfc_dev->dev_ref_mutex);
 	if (nfc_dev->diag_owner == filp)
 		nfc_dev->diag_owner = NULL;
+	if (nfc_dev->function_owner == filp) {
+		nfc_dev->function_owner = NULL;
+		nfc_dev->function_session_id = 0;
+		nfc_dev->function_session_flags = 0;
+		nfc_dev->function_default_timeout_ms = 0;
+	}
 
 	if (nfc_dev->dev_ref_count == 1) {
 		nfc_dev->nfc_disable_intr(nfc_dev);
 		set_valid_gpio(nfc_dev->configs.gpio.dwl_req, 0);
+		nfc_dev->nfc_state = NFC_STATE_NCI;
+		nfc_i2c_reset_rx_reassembly(nfc_dev);
 	}
 
 	if (nfc_dev->dev_ref_count > 0)
@@ -1108,6 +1791,7 @@ int nfc_dev_close(struct inode *inode, struct file *filp)
 	filp->private_data = NULL;
 
 	mutex_unlock(&nfc_dev->dev_ref_mutex);
+	mutex_unlock(&nfc_dev->function_mutex);
 
 	return 0;
 }

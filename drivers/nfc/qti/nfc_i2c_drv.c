@@ -348,28 +348,60 @@ static void nfc_i2c_trace_fill_user_record(
 		       min_t(size_t, src->dump_len, sizeof(dst->data)));
 }
 
+int qti_nfc_trace_get_info(struct qti_nfc_trace_info *info)
+{
+	if (!info)
+		return -EINVAL;
+
+	memset(info, 0, sizeof(*info));
+	mutex_lock(&nfc_i2c_trace_lock);
+	info->record_count = nfc_i2c_trace_count;
+	info->record_capacity = NFC_TRACE_RECORD_COUNT;
+	info->record_data_len = NFC_TRACE_RECORD_DATA_LEN;
+	info->max_len = nfc_i2c_trace_max_len;
+	info->dropped = nfc_i2c_trace_dropped;
+	info->next_seq = nfc_i2c_trace_next_seq;
+	info->capture = nfc_i2c_trace_capture;
+	info->dmesg = nfc_i2c_trace;
+	mutex_unlock(&nfc_i2c_trace_lock);
+
+	return 0;
+}
+
+int qti_nfc_trace_read_record(struct qti_nfc_trace_read_record *req)
+{
+	unsigned int index;
+	int ret = 0;
+
+	if (!req)
+		return -EINVAL;
+
+	mutex_lock(&nfc_i2c_trace_lock);
+	if (req->index >= nfc_i2c_trace_count) {
+		ret = -ENOENT;
+	} else {
+		index = (nfc_i2c_trace_start + req->index) %
+			NFC_TRACE_RECORD_COUNT;
+		nfc_i2c_trace_fill_user_record(&req->record,
+				&nfc_i2c_trace_records[index]);
+	}
+	mutex_unlock(&nfc_i2c_trace_lock);
+
+	return ret;
+}
+
 long qti_nfc_trace_ioctl(unsigned int cmd, unsigned long arg)
 {
 	struct qti_nfc_trace_info info;
 	struct qti_nfc_trace_read_record req;
-	unsigned int index;
 	unsigned int value;
 	long ret = 0;
 
 	switch (cmd) {
 	case QTI_NFC_TRACE_GET_INFO:
-		memset(&info, 0, sizeof(info));
-		mutex_lock(&nfc_i2c_trace_lock);
-		info.record_count = nfc_i2c_trace_count;
-		info.record_capacity = NFC_TRACE_RECORD_COUNT;
-		info.record_data_len = NFC_TRACE_RECORD_DATA_LEN;
-		info.max_len = nfc_i2c_trace_max_len;
-		info.dropped = nfc_i2c_trace_dropped;
-		info.next_seq = nfc_i2c_trace_next_seq;
-		info.capture = nfc_i2c_trace_capture;
-		info.dmesg = nfc_i2c_trace;
-		mutex_unlock(&nfc_i2c_trace_lock);
-
+		ret = qti_nfc_trace_get_info(&info);
+		if (ret)
+			return ret;
 		if (copy_to_user((void __user *)arg, &info, sizeof(info)))
 			return -EFAULT;
 		return 0;
@@ -377,17 +409,7 @@ long qti_nfc_trace_ioctl(unsigned int cmd, unsigned long arg)
 	case QTI_NFC_TRACE_READ_RECORD:
 		if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
 			return -EFAULT;
-
-		mutex_lock(&nfc_i2c_trace_lock);
-		if (req.index >= nfc_i2c_trace_count) {
-			ret = -ENOENT;
-		} else {
-			index = (nfc_i2c_trace_start + req.index) %
-				NFC_TRACE_RECORD_COUNT;
-			nfc_i2c_trace_fill_user_record(&req.record,
-					&nfc_i2c_trace_records[index]);
-		}
-		mutex_unlock(&nfc_i2c_trace_lock);
+		ret = qti_nfc_trace_read_record(&req);
 		if (ret)
 			return ret;
 
@@ -655,11 +677,18 @@ int i2c_read(struct nfc_dev *nfc_dev, char *buf, size_t count, int timeout)
 
 	pr_debug("%s : reading %zu bytes.\n", __func__, count);
 
-	if (timeout > NCI_CMD_RSP_TIMEOUT)
+	if (nfc_dev->function_owner) {
+		if (timeout > QTI_NFC_FUNCTION_MAX_TIMEOUT_MS)
+			timeout = QTI_NFC_FUNCTION_MAX_TIMEOUT_MS;
+	} else if (timeout > NCI_CMD_RSP_TIMEOUT) {
 		timeout = NCI_CMD_RSP_TIMEOUT;
+	}
 
-	if (count > MAX_BUFFER_SIZE)
-		count = MAX_BUFFER_SIZE;
+	if (nfc_dev->nfc_state == NFC_STATE_FW_DWL ||
+	    nfc_dev->nfc_state == NFC_STATE_FW_TEARED)
+		count = min_t(size_t, count, MAX_DL_BUFFER_SIZE);
+	else
+		count = min_t(size_t, count, MAX_BUFFER_SIZE);
 
 	if (!gpio_get_value(nfc_gpio->irq)) {
 		while (1) {
@@ -853,6 +882,9 @@ static const struct file_operations nfc_i2c_dev_fops = {
 	.flush = nfc_dev_flush,
 	.release = nfc_dev_close,
 	.unlocked_ioctl = nfc_dev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = nfc_dev_ioctl,
+#endif
 };
 
 int nfc_i2c_dev_probe(struct i2c_client *client, const struct i2c_device_id *id)
@@ -940,6 +972,7 @@ int nfc_i2c_dev_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	mutex_init(&nfc_dev->write_mutex);
 	mutex_init(&nfc_dev->rx_reassembly_mutex);
 	mutex_init(&nfc_dev->dev_ref_mutex);
+	mutex_init(&nfc_dev->function_mutex);
 	spin_lock_init(&i2c_dev->irq_enabled_lock);
 	ret = nfc_misc_register(nfc_dev, &nfc_i2c_dev_fops, DEV_COUNT,
 				NFC_CHAR_DEV_NAME, CLASS_NAME);
@@ -993,6 +1026,7 @@ err_ldo_config_failed:
 err_nfc_misc_unregister:
 	nfc_misc_unregister(nfc_dev, DEV_COUNT);
 err_mutex_destroy:
+	mutex_destroy(&nfc_dev->function_mutex);
 	mutex_destroy(&nfc_dev->dev_ref_mutex);
 	mutex_destroy(&nfc_dev->rx_reassembly_mutex);
 	mutex_destroy(&nfc_dev->read_mutex);
@@ -1045,6 +1079,7 @@ int nfc_i2c_dev_remove(struct i2c_client *client)
 	device_init_wakeup(&client->dev, false);
 	free_irq(client->irq, nfc_dev);
 	nfc_misc_unregister(nfc_dev, DEV_COUNT);
+	mutex_destroy(&nfc_dev->function_mutex);
 	mutex_destroy(&nfc_dev->dev_ref_mutex);
 	mutex_destroy(&nfc_dev->rx_reassembly_mutex);
 	mutex_destroy(&nfc_dev->read_mutex);

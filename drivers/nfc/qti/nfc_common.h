@@ -39,6 +39,7 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/nfcinfo.h>
+#include <uapi/linux/nfc/qti_nfc_function.h>
 #include <linux/regulator/consumer.h>
 #include <linux/ipc_logging.h>
 #include "nfc_i2c_drv.h"
@@ -383,8 +384,15 @@ struct nfc_dev {
 	uint8_t *read_kbuf;
 	uint8_t *write_kbuf;
 	struct mutex dev_ref_mutex;
+	struct mutex function_mutex;
 	unsigned int dev_ref_count;
 	struct file *diag_owner;
+	struct file *function_owner;
+	uint32_t function_session_id;
+	uint32_t function_next_session_id;
+	uint32_t function_next_sequence;
+	uint32_t function_default_timeout_ms;
+	uint32_t function_session_flags;
 	struct class *nfc_class;
 	struct device *nfc_device;
 	struct cdev c_dev;
@@ -428,6 +436,8 @@ int nfc_dev_flush(struct file *pfile, fl_owner_t id);
 int nfc_dev_close(struct inode *inode, struct file *filp);
 long nfc_dev_ioctl(struct file *pfile, unsigned int cmd, unsigned long arg);
 long qti_nfc_trace_ioctl(unsigned int cmd, unsigned long arg);
+int qti_nfc_trace_get_info(struct qti_nfc_trace_info *info);
+int qti_nfc_trace_read_record(struct qti_nfc_trace_read_record *req);
 int nfc_parse_dt(struct device *dev, struct platform_configs *nfc_configs,
 			uint8_t interface);
 int nfc_misc_register(struct nfc_dev *nfc_dev,
