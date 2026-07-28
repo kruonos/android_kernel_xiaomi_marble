@@ -1226,6 +1226,30 @@ static int qti_nfc_function_get_gpio(struct nfc_dev *nfc_dev,
 	return value->value < 0 ? value->value : 0;
 }
 
+static u32 nfc_gpio_status_value(int gpio)
+{
+	int value = get_valid_gpio(gpio);
+
+	/* NXP's two-bit GPIO ABI encodes an unavailable GPIO as signed -2. */
+	return value < 0 ? 2 : !!value;
+}
+
+static int nfc_get_gpio_status_ioctl(struct nfc_dev *nfc_dev,
+				     unsigned long arg)
+{
+	struct platform_gpio *gpio = &nfc_dev->configs.gpio;
+	u32 status;
+
+	if (!arg)
+		return -EINVAL;
+	status = nfc_gpio_status_value(gpio->irq) |
+		 nfc_gpio_status_value(gpio->ven) << 2 |
+		 nfc_gpio_status_value(gpio->dwl_req) << 4;
+
+	return copy_to_user((void __user *)arg, &status, sizeof(status)) ?
+		-EFAULT : 0;
+}
+
 static int qti_nfc_function_default_transport(u32 function)
 {
 	if ((function >= QTI_NFC_FUNCTION_GET_FIRMWARE_VERSION &&
@@ -1640,11 +1664,18 @@ long nfc_dev_ioctl(struct file *pfile, unsigned int cmd, unsigned long arg)
 	case ESE_GET_PWR:
 		ret = nfc_ese_pwr(nfc_dev, ESE_POWER_STATE);
 		break;
+	case NFC_SET_RESET_READ_PENDING:
+		/* HAL lifecycle hint; actual blocked reads are tracked per file. */
+		ret = arg <= 1 ? 0 : -EINVAL;
+		break;
 	case NFCC_GET_INFO:
 		ret = nfc_ioctl_nfcc_info(pfile, arg);
 		break;
 	case NFC_GET_PLATFORM_TYPE:
 		ret = nfc_dev->interface;
+		break;
+	case NFC_GET_GPIO_STATUS:
+		ret = nfc_get_gpio_status_ioctl(nfc_dev, arg);
 		break;
 	case ESE_COLD_RESET: {
 		enum nfc_ese_diag_state prev_ese_state = nfc_dev->ese_state;
@@ -1737,16 +1768,22 @@ int nfc_dev_flush(struct file *pfile, fl_owner_t id)
 	 * release blocked user thread waiting for pending read during close
 	 */
 	if (!mutex_trylock(&nfc_dev->read_mutex)) {
-		nfc_dev->release_read = true;
+		if (READ_ONCE(nfc_dev->read_owner) != pfile) {
+			pr_debug("%s: active read belongs to another file\n",
+				 __func__);
+			return 0;
+		}
+		WRITE_ONCE(nfc_dev->release_read, true);
 		nfc_dev->nfc_disable_intr(nfc_dev);
 		wake_up(&nfc_dev->read_wq);
 		pr_debug("%s: waiting for release of blocked read\n", __func__);
 		mutex_lock(&nfc_dev->read_mutex);
-		nfc_dev->release_read = false;
+		WRITE_ONCE(nfc_dev->release_read, false);
+		nfc_i2c_reset_rx_reassembly(nfc_dev);
 	} else {
-		pr_debug("%s: read thread already released\n", __func__);
+		pr_debug("%s: no blocked read owned by closing file\n",
+			 __func__);
 	}
-	nfc_i2c_reset_rx_reassembly(nfc_dev);
 	mutex_unlock(&nfc_dev->read_mutex);
 	return 0;
 }

@@ -182,7 +182,9 @@ struct nfc_routing_info {
 #define NFC_SET_PWR		_IOW(NFC_MAGIC, 0x01, unsigned int)
 #define ESE_SET_PWR		_IOW(NFC_MAGIC, 0x02, unsigned int)
 #define ESE_GET_PWR		_IOR(NFC_MAGIC, 0x03, unsigned int)
+#define NFC_SET_RESET_READ_PENDING _IOW(NFC_MAGIC, 0x04, unsigned int)
 #define NFC_GET_PLATFORM_TYPE	_IO(NFC_MAGIC, 0x04)
+#define NFC_GET_GPIO_STATUS	_IOR(NFC_MAGIC, 0x05, unsigned int)
 
 /* NFC HAL can call this ioctl to get the current IRQ state */
 #define NFC_GET_IRQ_STATE      _IO(NFC_MAGIC, 0x06)
@@ -404,6 +406,7 @@ struct nfc_dev {
 	/* NFC VEN pin state */
 	bool nfc_ven_enabled;
 	bool release_read;
+	struct file *read_owner;
 	/* current firmware major version */
 	uint8_t fw_major_version;
 	bool is_vreg_enabled;

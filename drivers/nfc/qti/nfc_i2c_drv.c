@@ -732,7 +732,7 @@ int i2c_read(struct nfc_dev *nfc_dev, char *buf, size_t count, int timeout)
 			 * eSE HAL in that case the NFC HAL reader thread
 			 * will again call read system call
 			 */
-			if (nfc_dev->release_read) {
+			if (READ_ONCE(nfc_dev->release_read)) {
 				pr_debug("%s: releasing read\n", __func__);
 				return 0;
 			}
@@ -826,6 +826,7 @@ ssize_t nfc_i2c_dev_read(struct file *filp, char __user *buf,
 	count = min_t(size_t, count, MAX_BUFFER_SIZE);
 
 	mutex_lock(&nfc_dev->read_mutex);
+	WRITE_ONCE(nfc_dev->read_owner, filp);
 	if (filp->f_flags & O_NONBLOCK) {
 		ret = i2c_master_recv(nfc_dev->i2c_dev.client, nfc_dev->read_kbuf, count);
 		pr_debug("%s: NONBLOCK read ret = %d\n", __func__, ret);
@@ -846,6 +847,7 @@ ssize_t nfc_i2c_dev_read(struct file *filp, char __user *buf,
 			ret = -EFAULT;
 		}
 	}
+	WRITE_ONCE(nfc_dev->read_owner, NULL);
 	mutex_unlock(&nfc_dev->read_mutex);
 	return ret;
 }

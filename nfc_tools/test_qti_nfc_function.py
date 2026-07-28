@@ -49,6 +49,8 @@ def main():
     header = root / "include/uapi/linux/nfc/qti_nfc_function.h"
     catalog = tools / "qti_nfc_function_catalog.inc"
     source = (root / "drivers/nfc/qti/nfc_common.c").read_text()
+    i2c_source = (root / "drivers/nfc/qti/nfc_i2c_drv.c").read_text()
+    common_header = (root / "drivers/nfc/qti/nfc_common.h").read_text()
     header_text = header.read_text()
 
     enum_match = re.search(
@@ -243,6 +245,18 @@ int main(int argc, char **argv) {{
     )
     require(not missing_dispatch,
             f"kernel-bound catalog entries lack dispatch cases: {missing_dispatch}")
+    require("WRITE_ONCE(nfc_dev->read_owner, filp)" in i2c_source and
+            "WRITE_ONCE(nfc_dev->read_owner, NULL)" in i2c_source and
+            "READ_ONCE(nfc_dev->read_owner) != pfile" in source,
+            "per-file NFC read ownership is not enforced")
+    require("case NFC_SET_RESET_READ_PENDING:" in source and
+            "case NFC_GET_GPIO_STATUS:" in source,
+            "NXP SN100U HAL compatibility ioctls are missing")
+    require("NFC_SET_RESET_READ_PENDING _IOW(NFC_MAGIC, 0x04, unsigned int)" in
+            common_header and
+            "NFC_GET_GPIO_STATUS\t_IOR(NFC_MAGIC, 0x05, unsigned int)" in
+            common_header,
+            "NXP SN100U HAL compatibility ioctl values changed")
     for array_name, command_id in {
         "dl_get_version": 0xF1,
         "dl_get_session": 0xF2,
