@@ -31,7 +31,7 @@ replacement kernel and not a universal flash package.
 ## Availability and support scope
 
 This repository provides both the `CSI/CFR-PATCH` source branch and the
-prebuilt [`marble-bouquet-4.9-csi`](https://github.com/kruonos/android_kernel_xiaomi_marble/releases/tag/marble-bouquet-4.9-csi)
+prebuilt [`marble-bouquet-4.9-csi-r2`](https://github.com/kruonos/android_kernel_xiaomi_marble/releases/tag/marble-bouquet-4.9-csi-r2)
 release.
 
 The prebuilt release is intended only for POCO F5 (`marble`) custom ROMs that
@@ -85,7 +85,7 @@ userspace research tasks.
 | No-reader relay exhaustion | Passed with counted complete-frame drops |
 | Main-kernel CFRR payload ABI | Source-matched to the validated main tree |
 | Current public source version | `5.10.258-Bouquet-v4.9` |
-| Prebuilt release | `marble-bouquet-4.9-csi` published |
+| Prebuilt release | `marble-bouquet-4.9-csi-r2` published |
 | Release boot validation | Document tested ROMs and package hashes separately |
 | Release sustained CFR validation | Document separately from source-reference validation |
 | Physical antenna and lane mapping | Unverified |
@@ -110,7 +110,7 @@ implicitly supported.
 | Vendor fingerprint | `POCO/marble_global/marble:15/AQ3A.250226.002/OS3.0.4.0.VMRMIXM:user/release-keys` |
 | Active research userspace | Custom `infinity_marble-user`, Android 16, API 36, build ID `BP4A.251205.006` |
 | Current source branch build | `5.10.258-Bouquet-v4.9` |
-| Published release | `marble-bouquet-4.9-csi` |
+| Published release | `marble-bouquet-4.9-csi-r2` |
 | Live reference QCA module hash | `c33b14c6acc5d9f2a19d072c62224fcb5cac661e55b6f4e1b81a2e1f121e8188` |
 | Firmware capture-count capability | Not advertised, value `0` |
 
@@ -246,7 +246,7 @@ must still be inspected.
 ### Prebuilt release
 
 The prebuilt
-[`marble-bouquet-4.9-csi`](https://github.com/kruonos/android_kernel_xiaomi_marble/releases/tag/marble-bouquet-4.9-csi)
+[`marble-bouquet-4.9-csi-r2`](https://github.com/kruonos/android_kernel_xiaomi_marble/releases/tag/marble-bouquet-4.9-csi-r2)
 release is intended for POCO F5 custom ROMs that support the Bouquet kernel. It
 must not be treated as compatible with every POCO F5 ROM, stock HyperOS
 installation, regional firmware package, or module layout.
