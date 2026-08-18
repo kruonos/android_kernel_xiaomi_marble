@@ -872,7 +872,7 @@ enum wlan_wds_mode {
  *
  * Monitor mode concurrency supported
  * 0 - No concurrency supported
- * 1 - Allow STA scan + Monitor mode concurrency
+ * 1 - Allow STA scan + Monitor mode concurrency (default)
  *
  * Supported Feature: General
  *
@@ -884,7 +884,7 @@ enum wlan_wds_mode {
 	"monitor_mode_concurrency", \
 	MONITOR_MODE_CONC_NO_SUPPORT, \
 	MONITOR_MODE_CONC_MAX, \
-	MONITOR_MODE_CONC_NO_SUPPORT, \
+	MONITOR_MODE_CONC_STA_SCAN_MON, \
 	CFG_VALUE_OR_DEFAULT, \
 	"Monitor mode concurrency supported")
 
