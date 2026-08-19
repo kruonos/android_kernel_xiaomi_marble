@@ -1168,6 +1168,15 @@ int con_mode_epping;
 
 static int pcie_gen_speed;
 
+#ifdef FEATURE_MONITOR_MODE_SUPPORT
+static bool hdd_monitor_probe_tx;
+
+bool hdd_is_monitor_probe_tx_enabled(void)
+{
+	return READ_ONCE(hdd_monitor_probe_tx);
+}
+#endif
+
 /* Variable to hold connection mode including module parameter con_mode */
 static int curr_con_mode;
 
@@ -6107,6 +6116,7 @@ static const struct net_device_ops wlan_drv_ops = {
 static const struct net_device_ops wlan_mon_drv_ops = {
 	.ndo_open = hdd_mon_open,
 	.ndo_stop = hdd_stop,
+	.ndo_start_xmit = hdd_mon_probe_start_xmit,
 	.ndo_get_stats = hdd_get_stats,
 };
 
@@ -20878,6 +20888,13 @@ module_param_cb(con_mode_ftm, &con_mode_ftm_ops, &con_mode_ftm,
 module_param_cb(pcie_gen_speed, &pcie_gen_speed_ops, &pcie_gen_speed,
 		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
+#ifdef FEATURE_MONITOR_MODE_SUPPORT
+module_param_named(monitor_probe_tx, hdd_monitor_probe_tx, bool,
+			   S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_probe_tx,
+			 "Enable monitor probe-request TX experiment (default: disabled)");
+#endif
+
 #ifdef WLAN_FEATURE_EPPING
 module_param_cb(con_mode_epping, &con_mode_epping_ops,
 		&con_mode_epping, 0644);
@@ -20922,4 +20939,3 @@ static const struct kernel_param_ops timer_multiplier_ops = {
 };
 
 module_param_cb(timer_multiplier, &timer_multiplier_ops, NULL, 0644);
-

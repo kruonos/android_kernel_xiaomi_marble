@@ -93,6 +93,12 @@ struct hdd_context;
 
 netdev_tx_t hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev);
 
+#ifdef FEATURE_MONITOR_MODE_SUPPORT
+netdev_tx_t hdd_mon_probe_start_xmit(struct sk_buff *skb,
+				      struct net_device *dev);
+bool hdd_is_monitor_probe_tx_enabled(void);
+#endif
+
 /**
  * hdd_tx_timeout() - Wrapper function to protect __hdd_tx_timeout from SSR
  * @net_dev: pointer to net_device structure

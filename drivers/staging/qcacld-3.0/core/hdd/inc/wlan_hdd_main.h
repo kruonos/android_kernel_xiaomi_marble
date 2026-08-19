@@ -1569,6 +1569,7 @@ struct hdd_adapter {
 #endif
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
 	bool monitor_mode_vdev_up_in_progress;
+	unsigned long monitor_probe_tx_last_jiffies;
 #endif
 	/* rcpi information */
 	struct rcpi_info rcpi;

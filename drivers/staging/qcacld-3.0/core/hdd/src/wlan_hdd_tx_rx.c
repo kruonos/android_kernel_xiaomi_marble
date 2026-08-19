@@ -74,6 +74,142 @@
 #include <wlan_hdd_sar_limits.h>
 #include "wlan_hdd_object_manager.h"
 #include "wlan_hdd_mlo.h"
+#include <wlan_mgmt_txrx_utils_api.h>
+
+#ifdef FEATURE_MONITOR_MODE_SUPPORT
+#define HDD_MON_RADIOTAP_LEN		8
+#define HDD_MON_PROBE_HDR_LEN		24
+#define HDD_MON_PROBE_SSID_EID		0
+#define HDD_MON_PROBE_SSID_MAX_LEN	32
+#define HDD_MON_PROBE_TX_HEADROOM	64
+#define HDD_MON_PROBE_TX_INTERVAL	(HZ / 4)
+
+static bool hdd_mon_probe_tx_freq_allowed(uint32_t freq)
+{
+	return (freq >= 2412 && freq <= 2462) ||
+	       (freq >= 5180 && freq <= 5240) ||
+	       (freq >= 5745 && freq <= 5825);
+}
+
+static void __hdd_mon_probe_start_xmit(struct sk_buff *skb,
+				       struct net_device *net_dev)
+{
+	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(net_dev);
+	struct hdd_context *hdd_ctx;
+	struct wlan_objmgr_vdev *vdev;
+	struct wlan_objmgr_peer *peer;
+	struct wlan_objmgr_psoc *psoc;
+	struct wmi_mgmt_params mgmt_param = { 0 };
+	qdf_nbuf_t tx_nbuf;
+	uint8_t *frame;
+	uint8_t *ssid;
+	uint32_t frame_len;
+	QDF_STATUS status;
+
+	if (!hdd_is_monitor_probe_tx_enabled() ||
+	    hdd_validate_adapter(adapter) ||
+	    adapter->device_mode != QDF_MONITOR_MODE ||
+	    cds_is_driver_transitioning())
+		goto drop;
+
+	hdd_ctx = adapter->hdd_ctx;
+	if (!hdd_ctx || hdd_ctx->hdd_wlan_suspended ||
+	    hdd_ctx->hdd_wlan_suspend_in_progress ||
+	    !adapter->mon_chan_freq ||
+	    !hdd_mon_probe_tx_freq_allowed(adapter->mon_chan_freq) ||
+	    !wlan_hdd_validate_vdev_id(adapter->vdev_id))
+		goto drop;
+
+	if (skb_is_nonlinear(skb) ||
+	    skb->len < HDD_MON_RADIOTAP_LEN + HDD_MON_PROBE_HDR_LEN + 2 ||
+	    skb->data[0] || skb->data[1] ||
+	    skb->data[2] != HDD_MON_RADIOTAP_LEN || skb->data[3] ||
+	    skb->data[4] || skb->data[5] || skb->data[6] || skb->data[7])
+		goto drop;
+
+	frame = skb->data + HDD_MON_RADIOTAP_LEN;
+	frame_len = skb->len - HDD_MON_RADIOTAP_LEN;
+	/* Only allow a management probe request with no frame-control flags. */
+	if (frame[0] != 0x40 || frame[1] ||
+	    !is_broadcast_ether_addr(frame + 4) ||
+	    !ether_addr_equal(frame + 10, adapter->mac_addr.bytes) ||
+	    !is_broadcast_ether_addr(frame + 16))
+		goto drop;
+
+	ssid = frame + HDD_MON_PROBE_HDR_LEN;
+	if (ssid[0] != HDD_MON_PROBE_SSID_EID ||
+	    ssid[1] > HDD_MON_PROBE_SSID_MAX_LEN ||
+	    frame_len != HDD_MON_PROBE_HDR_LEN + 2 + ssid[1])
+		goto drop;
+
+	if (time_before(jiffies, READ_ONCE(adapter->monitor_probe_tx_last_jiffies) +
+			HDD_MON_PROBE_TX_INTERVAL))
+		goto drop;
+
+	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_OSIF_ID);
+	if (!vdev)
+		goto drop;
+
+	psoc = wlan_vdev_get_psoc(vdev);
+	if (!psoc)
+		goto release_vdev;
+
+	peer = wlan_objmgr_vdev_find_peer_by_mac(vdev, adapter->mac_addr.bytes,
+					 WLAN_OSIF_ID);
+	if (!peer)
+		goto release_vdev;
+
+	tx_nbuf = qdf_nbuf_alloc(NULL,
+		roundup(frame_len + HDD_MON_PROBE_TX_HEADROOM, 4),
+		HDD_MON_PROBE_TX_HEADROOM, sizeof(uint32_t), false);
+	if (!tx_nbuf)
+		goto release_peer;
+
+	qdf_nbuf_put_tail(tx_nbuf, frame_len);
+	qdf_nbuf_set_protocol(tx_nbuf, ETH_P_CONTROL);
+	qdf_mem_copy(qdf_nbuf_data(tx_nbuf), frame, frame_len);
+
+	mgmt_param.tx_frame = tx_nbuf;
+	mgmt_param.frm_len = frame_len;
+	mgmt_param.vdev_id = adapter->vdev_id;
+	mgmt_param.chanfreq = adapter->mon_chan_freq;
+	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
+	mgmt_param.qdf_ctx = wlan_psoc_get_qdf_dev(psoc);
+	if (!mgmt_param.qdf_ctx)
+		goto free_nbuf;
+
+	WRITE_ONCE(adapter->monitor_probe_tx_last_jiffies, jiffies);
+	status = wlan_mgmt_txrx_mgmt_frame_tx(peer, adapter, tx_nbuf,
+					     NULL, NULL, WLAN_UMAC_COMP_MGMT_TXRX,
+					     &mgmt_param);
+	if (QDF_IS_STATUS_ERROR(status))
+		goto free_nbuf;
+
+	++adapter->stats.tx_packets;
+	adapter->stats.tx_bytes += frame_len;
+	netif_trans_update(net_dev);
+	goto release_peer;
+
+free_nbuf:
+	qdf_nbuf_free(tx_nbuf);
+release_peer:
+	wlan_objmgr_peer_release_ref(peer, WLAN_OSIF_ID);
+release_vdev:
+	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
+drop:
+	dev_kfree_skb_any(skb);
+}
+
+netdev_tx_t hdd_mon_probe_start_xmit(struct sk_buff *skb,
+				      struct net_device *net_dev)
+{
+	hdd_dp_ssr_protect();
+	__hdd_mon_probe_start_xmit(skb, net_dev);
+	hdd_dp_ssr_unprotect();
+
+	return NETDEV_TX_OK;
+}
+#endif
 
 #ifdef TX_MULTIQ_PER_AC
 #if defined(QCA_LL_TX_FLOW_CONTROL_V2) || defined(QCA_LL_PDEV_TX_FLOW_CONTROL)
