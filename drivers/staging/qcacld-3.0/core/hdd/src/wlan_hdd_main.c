@@ -20530,6 +20530,14 @@ void hdd_sme_monitor_mode_callback(uint8_t vdev_id)
 
 	hdd_debug("monitor mode vdev up completed");
 	adapter->monitor_mode_vdev_up_in_progress = false;
+
+	if (hdd_is_monitor_probe_tx_enabled() &&
+	    adapter->device_mode == QDF_MONITOR_MODE &&
+	    test_bit(DEVICE_IFACE_OPENED, &adapter->event_flags) &&
+	    adapter->mon_chan_freq)
+		wlan_hdd_netif_queue_control(
+			adapter, WLAN_START_ALL_NETIF_QUEUE_N_CARRIER,
+			WLAN_CONTROL_PATH);
 }
 
 QDF_STATUS hdd_monitor_mode_qdf_create_event(struct hdd_adapter *adapter,
