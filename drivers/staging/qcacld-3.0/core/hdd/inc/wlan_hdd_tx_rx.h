@@ -96,6 +96,8 @@ netdev_tx_t hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev);
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
 netdev_tx_t hdd_mon_probe_start_xmit(struct sk_buff *skb,
 				      struct net_device *dev);
+int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
+			  size_t frame_len, uint32_t chan_freq);
 bool hdd_is_monitor_probe_tx_enabled(void);
 #endif
 

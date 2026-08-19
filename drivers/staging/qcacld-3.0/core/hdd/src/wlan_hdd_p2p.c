@@ -54,6 +54,7 @@
 #include "nan_ucfg_api.h"
 #include "wlan_pkt_capture_ucfg_api.h"
 #include "wlan_hdd_object_manager.h"
+#include "wlan_hdd_tx_rx.h"
 
 /* Ms to Time Unit Micro Sec */
 #define MS_TO_TU_MUS(x)   ((x) * 1024)
@@ -302,6 +303,20 @@ static int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 
 	type = WLAN_HDD_GET_TYPE_FRM_FC(buf[0]);
 	sub_type = WLAN_HDD_GET_SUBTYPE_FRM_FC(buf[0]);
+
+#ifdef FEATURE_MONITOR_MODE_SUPPORT
+	if (adapter->device_mode == QDF_MONITOR_MODE) {
+		if (type != SIR_MAC_MGMT_FRAME ||
+		    sub_type != SIR_MAC_MGMT_PROBE_REQ || !chan || offchan ||
+		    wait || !dont_wait_for_ack ||
+		    chan->center_freq != adapter->mon_chan_freq)
+			return -EINVAL;
+
+		*cookie = 0;
+		return hdd_mon_probe_mgmt_tx(adapter, buf, len,
+					     chan->center_freq);
+	}
+#endif
 
 	/* When frame to be transmitted is auth mgmt, then trigger
 	 * sme_send_mgmt_tx to send auth frame without need for policy manager.

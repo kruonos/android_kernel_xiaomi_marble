@@ -91,79 +91,77 @@ static bool hdd_mon_probe_tx_freq_allowed(uint32_t freq)
 	       (freq >= 5745 && freq <= 5825);
 }
 
-static void __hdd_mon_probe_start_xmit(struct sk_buff *skb,
-				       struct net_device *net_dev)
+int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
+			  size_t frame_len, uint32_t chan_freq)
 {
-	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(net_dev);
 	struct hdd_context *hdd_ctx;
 	struct wlan_objmgr_vdev *vdev;
 	struct wlan_objmgr_peer *peer;
 	struct wlan_objmgr_psoc *psoc;
 	struct wmi_mgmt_params mgmt_param = { 0 };
 	qdf_nbuf_t tx_nbuf;
-	uint8_t *frame;
-	uint8_t *ssid;
-	uint32_t frame_len;
+	const uint8_t *ssid;
 	QDF_STATUS status;
+	int ret = -EINVAL;
 
 	if (!hdd_is_monitor_probe_tx_enabled() ||
 	    hdd_validate_adapter(adapter) ||
 	    adapter->device_mode != QDF_MONITOR_MODE ||
 	    cds_is_driver_transitioning())
-		goto drop;
+		return -EPERM;
 
 	hdd_ctx = adapter->hdd_ctx;
 	if (!hdd_ctx || hdd_ctx->hdd_wlan_suspended ||
 	    hdd_ctx->hdd_wlan_suspend_in_progress ||
-	    !adapter->mon_chan_freq ||
-	    !hdd_mon_probe_tx_freq_allowed(adapter->mon_chan_freq) ||
-	    !wlan_hdd_validate_vdev_id(adapter->vdev_id))
-		goto drop;
+	    !chan_freq || chan_freq != adapter->mon_chan_freq ||
+	    !hdd_mon_probe_tx_freq_allowed(chan_freq) ||
+	    wlan_hdd_validate_vdev_id(adapter->vdev_id))
+		return -EINVAL;
 
-	if (skb_is_nonlinear(skb) ||
-	    skb->len < HDD_MON_RADIOTAP_LEN + HDD_MON_PROBE_HDR_LEN + 2 ||
-	    skb->data[0] || skb->data[1] ||
-	    skb->data[2] != HDD_MON_RADIOTAP_LEN || skb->data[3] ||
-	    skb->data[4] || skb->data[5] || skb->data[6] || skb->data[7])
-		goto drop;
+	if (!frame || frame_len < HDD_MON_PROBE_HDR_LEN + 2)
+		return -EINVAL;
 
-	frame = skb->data + HDD_MON_RADIOTAP_LEN;
-	frame_len = skb->len - HDD_MON_RADIOTAP_LEN;
 	/* Only allow a management probe request with no frame-control flags. */
 	if (frame[0] != 0x40 || frame[1] ||
 	    !is_broadcast_ether_addr(frame + 4) ||
 	    !ether_addr_equal(frame + 10, adapter->mac_addr.bytes) ||
 	    !is_broadcast_ether_addr(frame + 16))
-		goto drop;
+		return -EINVAL;
 
 	ssid = frame + HDD_MON_PROBE_HDR_LEN;
 	if (ssid[0] != HDD_MON_PROBE_SSID_EID ||
 	    ssid[1] > HDD_MON_PROBE_SSID_MAX_LEN ||
 	    frame_len != HDD_MON_PROBE_HDR_LEN + 2 + ssid[1])
-		goto drop;
+		return -EINVAL;
 
 	if (time_before(jiffies, READ_ONCE(adapter->monitor_probe_tx_last_jiffies) +
 			HDD_MON_PROBE_TX_INTERVAL))
-		goto drop;
+		return -EAGAIN;
 
 	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_OSIF_ID);
 	if (!vdev)
-		goto drop;
+		return -ENODEV;
 
 	psoc = wlan_vdev_get_psoc(vdev);
-	if (!psoc)
+	if (!psoc) {
+		ret = -ENODEV;
 		goto release_vdev;
+	}
 
 	peer = wlan_objmgr_vdev_find_peer_by_mac(vdev, adapter->mac_addr.bytes,
 					 WLAN_OSIF_ID);
-	if (!peer)
+	if (!peer) {
+		ret = -ENODEV;
 		goto release_vdev;
+	}
 
 	tx_nbuf = qdf_nbuf_alloc(NULL,
 		roundup(frame_len + HDD_MON_PROBE_TX_HEADROOM, 4),
 		HDD_MON_PROBE_TX_HEADROOM, sizeof(uint32_t), false);
-	if (!tx_nbuf)
+	if (!tx_nbuf) {
+		ret = -ENOMEM;
 		goto release_peer;
+	}
 
 	qdf_nbuf_put_tail(tx_nbuf, frame_len);
 	qdf_nbuf_set_protocol(tx_nbuf, ETH_P_CONTROL);
@@ -172,22 +170,27 @@ static void __hdd_mon_probe_start_xmit(struct sk_buff *skb,
 	mgmt_param.tx_frame = tx_nbuf;
 	mgmt_param.frm_len = frame_len;
 	mgmt_param.vdev_id = adapter->vdev_id;
-	mgmt_param.chanfreq = adapter->mon_chan_freq;
+	mgmt_param.chanfreq = chan_freq;
 	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
 	mgmt_param.qdf_ctx = wlan_psoc_get_qdf_dev(psoc);
-	if (!mgmt_param.qdf_ctx)
+	if (!mgmt_param.qdf_ctx) {
+		ret = -ENODEV;
 		goto free_nbuf;
+	}
 
 	WRITE_ONCE(adapter->monitor_probe_tx_last_jiffies, jiffies);
 	status = wlan_mgmt_txrx_mgmt_frame_tx(peer, adapter, tx_nbuf,
 					     NULL, NULL, WLAN_UMAC_COMP_MGMT_TXRX,
 					     &mgmt_param);
-	if (QDF_IS_STATUS_ERROR(status))
+	if (QDF_IS_STATUS_ERROR(status)) {
+		ret = -EIO;
 		goto free_nbuf;
+	}
 
+	ret = 0;
 	++adapter->stats.tx_packets;
 	adapter->stats.tx_bytes += frame_len;
-	netif_trans_update(net_dev);
+	netif_trans_update(adapter->dev);
 	goto release_peer;
 
 free_nbuf:
@@ -196,6 +199,24 @@ release_peer:
 	wlan_objmgr_peer_release_ref(peer, WLAN_OSIF_ID);
 release_vdev:
 	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
+	return ret;
+}
+
+static void __hdd_mon_probe_start_xmit(struct sk_buff *skb,
+				       struct net_device *net_dev)
+{
+	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(net_dev);
+
+	if (skb_is_nonlinear(skb) ||
+	    skb->len < HDD_MON_RADIOTAP_LEN + HDD_MON_PROBE_HDR_LEN + 2 ||
+	    skb->data[0] || skb->data[1] ||
+	    skb->data[2] != HDD_MON_RADIOTAP_LEN || skb->data[3] ||
+	    skb->data[4] || skb->data[5] || skb->data[6] || skb->data[7])
+		goto drop;
+
+	hdd_mon_probe_mgmt_tx(adapter, skb->data + HDD_MON_RADIOTAP_LEN,
+			      skb->len - HDD_MON_RADIOTAP_LEN,
+			      adapter->mon_chan_freq);
 drop:
 	dev_kfree_skb_any(skb);
 }
