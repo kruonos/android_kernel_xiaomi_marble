@@ -91,6 +91,19 @@ static bool hdd_mon_probe_tx_freq_allowed(uint32_t freq)
 	       (freq >= 5745 && freq <= 5825);
 }
 
+static QDF_STATUS hdd_mon_probe_tx_ota_comp_cb(void *context, qdf_nbuf_t buf,
+					       uint32_t status, void *tx_compl_params)
+{
+	(void)context;
+	(void)tx_compl_params;
+	/* status is the exact WMI_MGMT_TX_COMP_TYPE_* value from firmware. */
+	hdd_dp_info_rl("monitor probe tx firmware completion status:%u len:%zu",
+			   status, (size_t)qdf_nbuf_len(buf));
+	qdf_nbuf_free(buf);
+
+	return QDF_STATUS_SUCCESS;
+}
+
 int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 			  size_t frame_len, uint32_t chan_freq)
 {
@@ -179,8 +192,9 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	}
 
 	WRITE_ONCE(adapter->monitor_probe_tx_last_jiffies, jiffies);
-	status = wlan_mgmt_txrx_mgmt_frame_tx(peer, adapter, tx_nbuf,
-					     NULL, NULL, WLAN_UMAC_COMP_MGMT_TXRX,
+	status = wlan_mgmt_txrx_mgmt_frame_tx(peer, NULL, tx_nbuf,
+					     NULL, hdd_mon_probe_tx_ota_comp_cb,
+					     WLAN_UMAC_COMP_MGMT_TXRX,
 					     &mgmt_param);
 	if (QDF_IS_STATUS_ERROR(status)) {
 		ret = -EIO;
@@ -188,6 +202,8 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	}
 
 	ret = 0;
+	hdd_dp_info_rl("monitor probe tx queued freq:%u len:%zu",
+			   chan_freq, frame_len);
 	++adapter->stats.tx_packets;
 	adapter->stats.tx_bytes += frame_len;
 	netif_trans_update(adapter->dev);
