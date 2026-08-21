@@ -75,6 +75,7 @@
 #include "wlan_hdd_object_manager.h"
 #include "wlan_hdd_mlo.h"
 #include <wlan_mgmt_txrx_utils_api.h>
+#include "wmi_unified.h"
 
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
 #define HDD_MON_RADIOTAP_LEN		8
@@ -83,6 +84,42 @@
 #define HDD_MON_PROBE_SSID_MAX_LEN	32
 #define HDD_MON_PROBE_TX_HEADROOM	64
 #define HDD_MON_PROBE_TX_INTERVAL	(HZ / 4)
+
+static atomic64_t hdd_mon_probe_tx_queued = ATOMIC64_INIT(0);
+static atomic64_t hdd_mon_probe_tx_completed = ATOMIC64_INIT(0);
+static atomic64_t hdd_mon_probe_tx_complete_ok = ATOMIC64_INIT(0);
+static atomic64_t hdd_mon_probe_tx_discard = ATOMIC64_INIT(0);
+static atomic64_t hdd_mon_probe_tx_inspect = ATOMIC64_INIT(0);
+static atomic64_t hdd_mon_probe_tx_no_ack = ATOMIC64_INIT(0);
+static atomic64_t hdd_mon_probe_tx_other = ATOMIC64_INIT(0);
+static atomic_t hdd_mon_probe_tx_last_status = ATOMIC_INIT(-1);
+
+static int hdd_mon_probe_tx_status_get(char *buf,
+				       const struct kernel_param *kp)
+{
+	long long queued = atomic64_read(&hdd_mon_probe_tx_queued);
+	long long completed = atomic64_read(&hdd_mon_probe_tx_completed);
+
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE,
+		"queued=%lld completed=%lld pending=%lld complete_ok=%lld discard=%lld inspect=%lld no_ack=%lld other=%lld last_status=%d\n",
+		queued, completed, max_t(long long, queued - completed, 0),
+		(long long)atomic64_read(&hdd_mon_probe_tx_complete_ok),
+		(long long)atomic64_read(&hdd_mon_probe_tx_discard),
+		(long long)atomic64_read(&hdd_mon_probe_tx_inspect),
+		(long long)atomic64_read(&hdd_mon_probe_tx_no_ack),
+		(long long)atomic64_read(&hdd_mon_probe_tx_other),
+		atomic_read(&hdd_mon_probe_tx_last_status));
+}
+
+static const struct kernel_param_ops hdd_mon_probe_tx_status_ops = {
+	.get = hdd_mon_probe_tx_status_get,
+};
+
+module_param_cb(monitor_probe_tx_status, &hdd_mon_probe_tx_status_ops, NULL,
+		S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(monitor_probe_tx_status,
+		 "Monitor probe-request firmware TX completion counters");
 
 static bool hdd_mon_probe_tx_freq_allowed(uint32_t freq)
 {
@@ -96,6 +133,27 @@ static QDF_STATUS hdd_mon_probe_tx_ota_comp_cb(void *context, qdf_nbuf_t buf,
 {
 	(void)context;
 	(void)tx_compl_params;
+
+	atomic_set(&hdd_mon_probe_tx_last_status, status);
+	atomic64_inc(&hdd_mon_probe_tx_completed);
+	switch (status) {
+	case WMI_MGMT_TX_COMP_TYPE_COMPLETE_OK:
+		atomic64_inc(&hdd_mon_probe_tx_complete_ok);
+		break;
+	case WMI_MGMT_TX_COMP_TYPE_DISCARD:
+		atomic64_inc(&hdd_mon_probe_tx_discard);
+		break;
+	case WMI_MGMT_TX_COMP_TYPE_INSPECT:
+		atomic64_inc(&hdd_mon_probe_tx_inspect);
+		break;
+	case WMI_MGMT_TX_COMP_TYPE_COMPLETE_NO_ACK:
+		atomic64_inc(&hdd_mon_probe_tx_no_ack);
+		break;
+	default:
+		atomic64_inc(&hdd_mon_probe_tx_other);
+		break;
+	}
+
 	/* status is the exact WMI_MGMT_TX_COMP_TYPE_* value from firmware. */
 	hdd_dp_info_rl("monitor probe tx firmware completion status:%u len:%zu",
 			   status, (size_t)qdf_nbuf_len(buf));
@@ -192,11 +250,13 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	}
 
 	WRITE_ONCE(adapter->monitor_probe_tx_last_jiffies, jiffies);
+	atomic64_inc(&hdd_mon_probe_tx_queued);
 	status = wlan_mgmt_txrx_mgmt_frame_tx(peer, NULL, tx_nbuf,
 					     NULL, hdd_mon_probe_tx_ota_comp_cb,
 					     WLAN_UMAC_COMP_MGMT_TXRX,
 					     &mgmt_param);
 	if (QDF_IS_STATUS_ERROR(status)) {
+		atomic64_dec(&hdd_mon_probe_tx_queued);
 		ret = -EIO;
 		goto free_nbuf;
 	}
