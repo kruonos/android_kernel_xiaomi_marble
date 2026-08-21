@@ -99,6 +99,7 @@ netdev_tx_t hdd_mon_probe_start_xmit(struct sk_buff *skb,
 int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 			  size_t frame_len, uint32_t chan_freq);
 bool hdd_is_monitor_probe_tx_enabled(void);
+bool hdd_is_monitor_probe_tx_sta_vdev_enabled(void);
 #endif
 
 /**

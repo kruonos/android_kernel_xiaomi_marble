@@ -74,7 +74,9 @@
 #include <wlan_hdd_sar_limits.h>
 #include "wlan_hdd_object_manager.h"
 #include "wlan_hdd_mlo.h"
+#include "wlan_hdd_cm_api.h"
 #include <wlan_mgmt_txrx_utils_api.h>
+#include <wlan_utility.h>
 #include "wmi_unified.h"
 
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
@@ -82,6 +84,7 @@
 #define HDD_MON_PROBE_HDR_LEN		24
 #define HDD_MON_PROBE_SSID_EID		0
 #define HDD_MON_PROBE_SSID_MAX_LEN	32
+#define HDD_MON_PROBE_SA_OFFSET		10
 #define HDD_MON_PROBE_TX_HEADROOM	64
 #define HDD_MON_PROBE_TX_INTERVAL	(HZ / 4)
 
@@ -93,6 +96,7 @@ static atomic64_t hdd_mon_probe_tx_inspect = ATOMIC64_INIT(0);
 static atomic64_t hdd_mon_probe_tx_no_ack = ATOMIC64_INIT(0);
 static atomic64_t hdd_mon_probe_tx_other = ATOMIC64_INIT(0);
 static atomic_t hdd_mon_probe_tx_last_status = ATOMIC_INIT(-1);
+static atomic_t hdd_mon_probe_tx_last_sta_vdev = ATOMIC_INIT(0);
 
 static int hdd_mon_probe_tx_status_get(char *buf,
 				       const struct kernel_param *kp)
@@ -102,14 +106,15 @@ static int hdd_mon_probe_tx_status_get(char *buf,
 
 	(void)kp;
 	return scnprintf(buf, PAGE_SIZE,
-		"queued=%lld completed=%lld pending=%lld complete_ok=%lld discard=%lld inspect=%lld no_ack=%lld other=%lld last_status=%d\n",
+		"queued=%lld completed=%lld pending=%lld complete_ok=%lld discard=%lld inspect=%lld no_ack=%lld other=%lld last_status=%d last_sta_vdev=%d\n",
 		queued, completed, max_t(long long, queued - completed, 0),
 		(long long)atomic64_read(&hdd_mon_probe_tx_complete_ok),
 		(long long)atomic64_read(&hdd_mon_probe_tx_discard),
 		(long long)atomic64_read(&hdd_mon_probe_tx_inspect),
 		(long long)atomic64_read(&hdd_mon_probe_tx_no_ack),
 		(long long)atomic64_read(&hdd_mon_probe_tx_other),
-		atomic_read(&hdd_mon_probe_tx_last_status));
+		atomic_read(&hdd_mon_probe_tx_last_status),
+		atomic_read(&hdd_mon_probe_tx_last_sta_vdev));
 }
 
 static const struct kernel_param_ops hdd_mon_probe_tx_status_ops = {
@@ -166,6 +171,8 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 			  size_t frame_len, uint32_t chan_freq)
 {
 	struct hdd_context *hdd_ctx;
+	struct hdd_adapter *tx_adapter = adapter;
+	struct hdd_adapter *candidate, *next_adapter = NULL;
 	struct wlan_objmgr_vdev *vdev;
 	struct wlan_objmgr_peer *peer;
 	struct wlan_objmgr_psoc *psoc;
@@ -174,6 +181,9 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	const uint8_t *ssid;
 	QDF_STATUS status;
 	int ret = -EINVAL;
+	bool sta_dev_held = false;
+	bool use_sta_vdev;
+	wlan_net_dev_ref_dbgid dbgid = NET_DEV_HOLD_GET_ADAPTER;
 
 	if (!hdd_is_monitor_probe_tx_enabled() ||
 	    hdd_validate_adapter(adapter) ||
@@ -209,9 +219,39 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 			HDD_MON_PROBE_TX_INTERVAL))
 		return -EAGAIN;
 
-	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_OSIF_ID);
-	if (!vdev)
-		return -ENODEV;
+	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled();
+	if (use_sta_vdev) {
+		hdd_for_each_adapter_dev_held_safe(hdd_ctx, candidate,
+						   next_adapter, dbgid) {
+			if (candidate->device_mode != QDF_STA_MODE ||
+			    !hdd_cm_is_vdev_connected(candidate) ||
+			    !hdd_cm_is_vdev_associated(candidate) ||
+			    chan_freq != hdd_get_adapter_home_channel(candidate)) {
+				hdd_adapter_dev_put_debug(candidate, dbgid);
+				continue;
+			}
+
+			tx_adapter = candidate;
+			sta_dev_held = true;
+			if (next_adapter)
+				hdd_adapter_dev_put_debug(next_adapter, dbgid);
+			break;
+		}
+
+		if (!sta_dev_held)
+			return -ENODEV;
+	}
+
+	vdev = hdd_objmgr_get_vdev_by_user(tx_adapter, WLAN_OSIF_ID);
+	if (!vdev) {
+		ret = -ENODEV;
+		goto release_sta_dev;
+	}
+
+	if (QDF_IS_STATUS_ERROR(wlan_vdev_is_up(vdev))) {
+		ret = -ENETDOWN;
+		goto release_vdev;
+	}
 
 	psoc = wlan_vdev_get_psoc(vdev);
 	if (!psoc) {
@@ -219,7 +259,7 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 		goto release_vdev;
 	}
 
-	peer = wlan_objmgr_vdev_find_peer_by_mac(vdev, adapter->mac_addr.bytes,
+	peer = wlan_objmgr_vdev_find_peer_by_mac(vdev, tx_adapter->mac_addr.bytes,
 					 WLAN_OSIF_ID);
 	if (!peer) {
 		ret = -ENODEV;
@@ -237,10 +277,13 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	qdf_nbuf_put_tail(tx_nbuf, frame_len);
 	qdf_nbuf_set_protocol(tx_nbuf, ETH_P_CONTROL);
 	qdf_mem_copy(qdf_nbuf_data(tx_nbuf), frame, frame_len);
+	if (use_sta_vdev)
+		qdf_mem_copy(qdf_nbuf_data(tx_nbuf) + HDD_MON_PROBE_SA_OFFSET,
+			     tx_adapter->mac_addr.bytes, QDF_MAC_ADDR_SIZE);
 
 	mgmt_param.tx_frame = tx_nbuf;
 	mgmt_param.frm_len = frame_len;
-	mgmt_param.vdev_id = adapter->vdev_id;
+	mgmt_param.vdev_id = tx_adapter->vdev_id;
 	mgmt_param.chanfreq = chan_freq;
 	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
 	mgmt_param.qdf_ctx = wlan_psoc_get_qdf_dev(psoc);
@@ -250,6 +293,7 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	}
 
 	WRITE_ONCE(adapter->monitor_probe_tx_last_jiffies, jiffies);
+	atomic_set(&hdd_mon_probe_tx_last_sta_vdev, use_sta_vdev);
 	atomic64_inc(&hdd_mon_probe_tx_queued);
 	status = wlan_mgmt_txrx_mgmt_frame_tx(peer, NULL, tx_nbuf,
 					     NULL, hdd_mon_probe_tx_ota_comp_cb,
@@ -275,6 +319,9 @@ release_peer:
 	wlan_objmgr_peer_release_ref(peer, WLAN_OSIF_ID);
 release_vdev:
 	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
+release_sta_dev:
+	if (sta_dev_held)
+		hdd_adapter_dev_put_debug(tx_adapter, dbgid);
 	return ret;
 }
 

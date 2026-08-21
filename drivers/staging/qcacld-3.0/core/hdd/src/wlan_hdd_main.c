@@ -1170,10 +1170,16 @@ static int pcie_gen_speed;
 
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
 static bool hdd_monitor_probe_tx;
+static bool hdd_monitor_probe_tx_sta_vdev;
 
 bool hdd_is_monitor_probe_tx_enabled(void)
 {
 	return READ_ONCE(hdd_monitor_probe_tx);
+}
+
+bool hdd_is_monitor_probe_tx_sta_vdev_enabled(void)
+{
+	return READ_ONCE(hdd_monitor_probe_tx_sta_vdev);
 }
 #endif
 
@@ -20901,6 +20907,10 @@ module_param_named(monitor_probe_tx, hdd_monitor_probe_tx, bool,
 			   S_IRUSR | S_IWUSR);
 MODULE_PARM_DESC(monitor_probe_tx,
 			 "Enable monitor probe-request TX experiment (default: disabled)");
+module_param_named(monitor_probe_tx_sta_vdev, hdd_monitor_probe_tx_sta_vdev,
+			   bool, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_probe_tx_sta_vdev,
+			 "Route monitor probe-request TX through connected STA vdev");
 #endif
 
 #ifdef WLAN_FEATURE_EPPING
