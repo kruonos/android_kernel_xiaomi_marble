@@ -305,11 +305,15 @@ static int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	sub_type = WLAN_HDD_GET_SUBTYPE_FRM_FC(buf[0]);
 
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
-	if (adapter->device_mode == QDF_MONITOR_MODE) {
+	if (adapter->device_mode == QDF_MONITOR_MODE ||
+	    (adapter->device_mode == QDF_STA_MODE &&
+	     hdd_is_monitor_probe_tx_enabled() &&
+	     hdd_is_monitor_probe_tx_sta_vdev_enabled())) {
 		if (type != SIR_MAC_MGMT_FRAME ||
 		    sub_type != SIR_MAC_MGMT_PROBE_REQ || !chan || offchan ||
 		    wait || !dont_wait_for_ack ||
-		    chan->center_freq != adapter->mon_chan_freq)
+		    (adapter->device_mode == QDF_MONITOR_MODE &&
+		     chan->center_freq != adapter->mon_chan_freq))
 			return -EINVAL;
 
 		*cookie = 0;

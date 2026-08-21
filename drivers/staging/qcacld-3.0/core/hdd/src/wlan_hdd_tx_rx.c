@@ -185,19 +185,28 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	bool use_sta_vdev;
 	wlan_net_dev_ref_dbgid dbgid = NET_DEV_HOLD_GET_ADAPTER;
 
+	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled();
 	if (!hdd_is_monitor_probe_tx_enabled() ||
 	    hdd_validate_adapter(adapter) ||
-	    adapter->device_mode != QDF_MONITOR_MODE ||
+	    (adapter->device_mode != QDF_MONITOR_MODE &&
+	     !(use_sta_vdev && adapter->device_mode == QDF_STA_MODE)) ||
 	    cds_is_driver_transitioning())
 		return -EPERM;
 
 	hdd_ctx = adapter->hdd_ctx;
 	if (!hdd_ctx || hdd_ctx->hdd_wlan_suspended ||
 	    hdd_ctx->hdd_wlan_suspend_in_progress ||
-	    !chan_freq || chan_freq != adapter->mon_chan_freq ||
-	    !hdd_mon_probe_tx_freq_allowed(chan_freq) ||
+	    !chan_freq || !hdd_mon_probe_tx_freq_allowed(chan_freq) ||
 	    wlan_hdd_validate_vdev_id(adapter->vdev_id))
 		return -EINVAL;
+	if (adapter->device_mode == QDF_MONITOR_MODE &&
+	    chan_freq != adapter->mon_chan_freq)
+		return -EINVAL;
+	if (adapter->device_mode == QDF_STA_MODE &&
+	    (!hdd_cm_is_vdev_connected(adapter) ||
+	     !hdd_cm_is_vdev_associated(adapter) ||
+	     chan_freq != hdd_get_adapter_home_channel(adapter)))
+		return -ENODEV;
 
 	if (!frame || frame_len < HDD_MON_PROBE_HDR_LEN + 2)
 		return -EINVAL;
@@ -219,8 +228,7 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 			HDD_MON_PROBE_TX_INTERVAL))
 		return -EAGAIN;
 
-	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled();
-	if (use_sta_vdev) {
+	if (use_sta_vdev && adapter->device_mode == QDF_MONITOR_MODE) {
 		hdd_for_each_adapter_dev_held_safe(hdd_ctx, candidate,
 						   next_adapter, dbgid) {
 			if (candidate->device_mode != QDF_STA_MODE ||
