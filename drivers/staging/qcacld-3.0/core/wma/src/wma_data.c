@@ -2623,6 +2623,8 @@ QDF_STATUS wma_tx_packet(void *wma_context, void *tx_frame, uint16_t frmLen,
 	mgmt_param.use_6mbps = use_6mbps;
 	mgmt_param.tx_type = tx_frm_index;
 	mgmt_param.peer_rssi = peer_rssi;
+	mgmt_param.tid = tid;
+	mgmt_param.tid_valid = true;
 
 	if (tx_flag & HAL_USE_INCORRECT_KEY_PMF)
 		mgmt_param.tx_flags |= MGMT_TX_USE_INCORRECT_KEY;
@@ -2658,8 +2660,9 @@ QDF_STATUS wma_tx_packet(void *wma_context, void *tx_frame, uint16_t frmLen,
 	if (!peer) {
 		mac_addr = wh->i_addr2;
 		peer = wlan_objmgr_get_peer(psoc, pdev_id, mac_addr,
-					WLAN_MGMT_NB_ID);
+					    WLAN_MGMT_NB_ID);
 	}
+	mgmt_param.macaddr = mac_addr;
 
 	if (ucfg_pkt_capture_get_pktcap_mode(psoc) &
 	    PKT_CAPTURE_MODE_MGMT_ONLY) {

@@ -88,6 +88,235 @@
 #endif
 #include "wlan_cm_roam_api.h"
 #include "wlan_cm_api.h"
+#include <linux/moduleparam.h>
+#include <linux/spinlock.h>
+
+#define WMA_MGMT_TX_COMPARE_ACTIVE_MAX 64
+#define WMA_MGMT_TX_COMPARE_RING_SIZE 12
+
+struct wma_mgmt_tx_compare_entry {
+	uint64_t seq;
+	uint16_t desc_id;
+	uint16_t frame_len;
+	uint16_t chan_freq;
+	uint8_t vdev_id;
+	uint8_t fc0;
+	uint8_t tx_type;
+	uint8_t use_6mbps;
+	uint8_t tx_params_valid;
+	uint8_t tid_valid;
+	uint8_t tid;
+	uint8_t pwr;
+	uint16_t mcs_mask;
+	uint8_t nss_mask;
+	uint8_t retry_limit;
+	uint8_t chain_mask;
+	uint8_t bw_mask;
+	uint8_t preamble_type;
+	uint32_t tx_flags;
+	int8_t peer_rssi;
+	uint8_t da[QDF_MAC_ADDR_SIZE];
+	uint8_t sa[QDF_MAC_ADDR_SIZE];
+	uint8_t bssid[QDF_MAC_ADDR_SIZE];
+	uint8_t peer[QDF_MAC_ADDR_SIZE];
+	int32_t status;
+	uint8_t completion_meta;
+	uint16_t completion_freq;
+	uint32_t completion_rate;
+	uint32_t completion_tx_status;
+	uint8_t completion_retries;
+	bool valid;
+};
+
+static bool wma_mgmt_tx_compare_enable;
+static DEFINE_SPINLOCK(wma_mgmt_tx_compare_lock);
+static struct wma_mgmt_tx_compare_entry
+	wma_mgmt_tx_compare_active[WMA_MGMT_TX_COMPARE_ACTIVE_MAX];
+static struct wma_mgmt_tx_compare_entry
+	wma_mgmt_tx_compare_ring[WMA_MGMT_TX_COMPARE_RING_SIZE];
+static uint64_t wma_mgmt_tx_compare_next_seq;
+static uint8_t wma_mgmt_tx_compare_ring_head;
+static uint8_t wma_mgmt_tx_compare_ring_count;
+
+static int wma_mgmt_tx_compare_enable_set(const char *val,
+					  const struct kernel_param *kp)
+{
+	bool enable;
+
+	if (val[0] == '1' || val[0] == 'Y' || val[0] == 'y')
+		enable = true;
+	else if (val[0] == '0' || val[0] == 'N' || val[0] == 'n')
+		enable = false;
+	else
+		return -EINVAL;
+
+	spin_lock_bh(&wma_mgmt_tx_compare_lock);
+	WRITE_ONCE(wma_mgmt_tx_compare_enable, enable);
+	qdf_mem_zero(wma_mgmt_tx_compare_active,
+		     sizeof(wma_mgmt_tx_compare_active));
+	qdf_mem_zero(wma_mgmt_tx_compare_ring,
+		     sizeof(wma_mgmt_tx_compare_ring));
+	wma_mgmt_tx_compare_next_seq = 0;
+	wma_mgmt_tx_compare_ring_head = 0;
+	wma_mgmt_tx_compare_ring_count = 0;
+	spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+
+	return 0;
+}
+
+static int wma_mgmt_tx_compare_enable_get(char *buf,
+					  const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "%c\n",
+			 READ_ONCE(wma_mgmt_tx_compare_enable) ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops wma_mgmt_tx_compare_enable_ops = {
+	.set = wma_mgmt_tx_compare_enable_set,
+	.get = wma_mgmt_tx_compare_enable_get,
+};
+
+module_param_cb(mgmt_tx_compare_enable, &wma_mgmt_tx_compare_enable_ops,
+		&wma_mgmt_tx_compare_enable, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(mgmt_tx_compare_enable,
+		 "Record management TX WMI fields and completions");
+
+static int wma_mgmt_tx_compare_status_get(char *buf,
+					  const struct kernel_param *kp)
+{
+	struct wma_mgmt_tx_compare_entry snapshot[WMA_MGMT_TX_COMPARE_RING_SIZE];
+	uint8_t count, start, i;
+	int len;
+
+	(void)kp;
+	spin_lock_bh(&wma_mgmt_tx_compare_lock);
+	count = wma_mgmt_tx_compare_ring_count;
+	start = (wma_mgmt_tx_compare_ring_head + WMA_MGMT_TX_COMPARE_RING_SIZE -
+		 wma_mgmt_tx_compare_ring_count) % WMA_MGMT_TX_COMPARE_RING_SIZE;
+	for (i = 0; i < count; i++)
+		snapshot[i] = wma_mgmt_tx_compare_ring[
+			(start + i) % WMA_MGMT_TX_COMPARE_RING_SIZE];
+	spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+
+	len = scnprintf(buf, PAGE_SIZE, "enabled=%d count=%u\n",
+			READ_ONCE(wma_mgmt_tx_compare_enable), count);
+	for (i = 0; i < count && len < PAGE_SIZE - 1; i++) {
+		struct wma_mgmt_tx_compare_entry *e = &snapshot[i];
+
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+			"seq=%llu desc=%u vdev=%u fc=%02x len=%u freq=%u peer=%pM da=%pM sa=%pM bssid=%pM type=%u use6=%u tp=%u flags=%08x tid=%u:%u pwr=%u mcs=%03x nss=%02x retry=%u chain=%02x bw=%02x pre=%02x rssi=%d status=%d meta=%u cfreq=%u crate=%u ctx=%u cretry=%u\n",
+			(unsigned long long)e->seq, e->desc_id, e->vdev_id,
+			e->fc0, e->frame_len, e->chan_freq, e->peer, e->da,
+			e->sa, e->bssid, e->tx_type, e->use_6mbps,
+			e->tx_params_valid, e->tx_flags, e->tid_valid, e->tid,
+			e->pwr, e->mcs_mask, e->nss_mask, e->retry_limit,
+			e->chain_mask, e->bw_mask, e->preamble_type,
+			e->peer_rssi, e->status, e->completion_meta,
+			e->completion_freq, e->completion_rate,
+			e->completion_tx_status, e->completion_retries);
+	}
+
+	return len;
+}
+
+static const struct kernel_param_ops wma_mgmt_tx_compare_status_ops = {
+	.get = wma_mgmt_tx_compare_status_get,
+};
+
+module_param_cb(mgmt_tx_compare_status, &wma_mgmt_tx_compare_status_ops, NULL,
+		S_IRUSR);
+MODULE_PARM_DESC(mgmt_tx_compare_status,
+		 "Recent management TX WMI send/completion records");
+
+static void wma_mgmt_tx_compare_record_send(uint32_t desc_id,
+					    struct wmi_mgmt_params *params)
+{
+	struct wma_mgmt_tx_compare_entry entry = {0};
+	uint8_t *frame;
+
+	if (!READ_ONCE(wma_mgmt_tx_compare_enable) || !params ||
+	    desc_id >= WMA_MGMT_TX_COMPARE_ACTIVE_MAX)
+		return;
+
+	entry.valid = true;
+	entry.desc_id = desc_id;
+	entry.vdev_id = params->vdev_id;
+	entry.frame_len = params->frm_len;
+	entry.chan_freq = params->chanfreq;
+	entry.tx_type = params->tx_type;
+	entry.use_6mbps = params->use_6mbps;
+	entry.tx_params_valid = params->tx_params_valid;
+	entry.tx_flags = params->tx_flags;
+	entry.peer_rssi = params->peer_rssi;
+	entry.tid = params->tid;
+	entry.tid_valid = params->tid_valid;
+	entry.pwr = params->tx_param.pwr;
+	entry.mcs_mask = params->tx_param.mcs_mask;
+	entry.nss_mask = params->tx_param.nss_mask;
+	entry.retry_limit = params->tx_param.retry_limit |
+		(params->tx_param.retry_limit_ext << 4);
+	entry.chain_mask = params->tx_param.chain_mask;
+	entry.bw_mask = params->tx_param.bw_mask;
+	entry.preamble_type = params->tx_param.preamble_type;
+	if (params->macaddr)
+		qdf_mem_copy(entry.peer, params->macaddr, QDF_MAC_ADDR_SIZE);
+
+	frame = params->pdata;
+	if (frame && params->frm_len >= 24) {
+		entry.fc0 = frame[0];
+		qdf_mem_copy(entry.da, frame + 4, QDF_MAC_ADDR_SIZE);
+		qdf_mem_copy(entry.sa, frame + 10, QDF_MAC_ADDR_SIZE);
+		qdf_mem_copy(entry.bssid, frame + 16, QDF_MAC_ADDR_SIZE);
+	}
+	entry.status = -1;
+
+	spin_lock_bh(&wma_mgmt_tx_compare_lock);
+	if (!wma_mgmt_tx_compare_enable) {
+		spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+		return;
+	}
+	entry.seq = ++wma_mgmt_tx_compare_next_seq;
+	wma_mgmt_tx_compare_active[desc_id] = entry;
+	spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+}
+
+static void wma_mgmt_tx_compare_record_completion(uint32_t desc_id,
+						  int32_t status,
+						  wmi_mgmt_hdr *hdr)
+{
+	struct wma_mgmt_tx_compare_entry *entry;
+
+	if (desc_id >= WMA_MGMT_TX_COMPARE_ACTIVE_MAX)
+		return;
+
+	spin_lock_bh(&wma_mgmt_tx_compare_lock);
+	if (!wma_mgmt_tx_compare_enable) {
+		spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+		return;
+	}
+	entry = &wma_mgmt_tx_compare_active[desc_id];
+	if (!entry->valid) {
+		spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+		return;
+	}
+
+	entry->status = status;
+	if (hdr) {
+		entry->completion_meta = 1;
+		entry->completion_freq = hdr->chan_freq;
+		entry->completion_rate = hdr->rate_kbps;
+		entry->completion_tx_status = hdr->tx_status;
+		entry->completion_retries = hdr->tx_retry_cnt;
+	}
+	wma_mgmt_tx_compare_ring[wma_mgmt_tx_compare_ring_head] = *entry;
+	wma_mgmt_tx_compare_ring_head = (wma_mgmt_tx_compare_ring_head + 1) %
+		WMA_MGMT_TX_COMPARE_RING_SIZE;
+	if (wma_mgmt_tx_compare_ring_count < WMA_MGMT_TX_COMPARE_RING_SIZE)
+		wma_mgmt_tx_compare_ring_count++;
+	qdf_mem_zero(entry, sizeof(*entry));
+	spin_unlock_bh(&wma_mgmt_tx_compare_lock);
+}
 
 /**
  * wma_send_bcn_buf_ll() - prepare and send beacon buffer to fw for LL
@@ -2846,6 +3075,9 @@ int wma_mgmt_tx_completion_handler(void *handle, uint8_t *cmpl_event_params,
 		return -EINVAL;
 	}
 	cmpl_params = param_buf->fixed_param;
+	wma_mgmt_tx_compare_record_completion(cmpl_params->desc_id,
+					      cmpl_params->status,
+					      (wmi_mgmt_hdr *)param_buf->mgmt_hdr);
 
 	if ((ucfg_pkt_capture_get_pktcap_mode(wma_handle->psoc) &
 	    PKT_CAPTURE_MODE_MGMT_ONLY) && param_buf->mgmt_hdr) {
@@ -2922,6 +3154,8 @@ int wma_mgmt_tx_bundle_completion_handler(void *handle, uint8_t *buf,
 	}
 
 	for (i = 0; i < num_reports; i++) {
+		wma_mgmt_tx_compare_record_completion(
+			desc_ids[i], status[i], NULL);
 		if ((ucfg_pkt_capture_get_pktcap_mode(wma_handle->psoc) &
 		    PKT_CAPTURE_MODE_MGMT_ONLY) && param_buf->mgmt_hdr) {
 			struct mgmt_offload_event_params params = {0};
@@ -4060,6 +4294,7 @@ QDF_STATUS wma_mgmt_unified_cmd_send(struct wlan_objmgr_vdev *vdev,
 	wma_handle = cds_get_context(QDF_MODULE_ID_WMA);
 	if (!wma_handle)
 		return QDF_STATUS_E_INVAL;
+	wma_mgmt_tx_compare_record_send(desc_id, mgmt_params);
 
 	if (wmi_service_enabled(wma_handle->wmi_handle,
 				   wmi_service_mgmt_tx_wmi)) {
@@ -4077,6 +4312,7 @@ QDF_STATUS wma_mgmt_unified_cmd_send(struct wlan_objmgr_vdev *vdev,
 	}
 
 	if (status != QDF_STATUS_SUCCESS) {
+		wma_mgmt_tx_compare_record_completion(desc_id, -2, NULL);
 		wma_err("mgmt tx failed");
 		return status;
 	}
