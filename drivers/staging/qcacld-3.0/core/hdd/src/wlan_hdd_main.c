@@ -8957,6 +8957,25 @@ bool hdd_is_interface_up(struct hdd_adapter *adapter)
 }
 
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
+static u32 mon_chan_set_stage;
+
+#define MON_CHAN_SET_STAGE(n) WRITE_ONCE(mon_chan_set_stage, (n))
+
+static int mon_chan_set_stage_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "%u\n", mon_chan_set_stage);
+}
+
+static const struct kernel_param_ops mon_chan_set_stage_ops = {
+	.get = mon_chan_set_stage_get,
+};
+
+module_param_cb(mon_chan_set_stage, &mon_chan_set_stage_ops, NULL,
+		S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(mon_chan_set_stage,
+		 "Monitor channel set failure stage debug");
+
 int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 			  uint32_t bandwidth)
 {
@@ -8971,14 +8990,21 @@ int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 	enum phy_ch_width ch_width;
 	int ret;
 
+	MON_CHAN_SET_STAGE(1);
+
 	if ((hdd_get_conparam() != QDF_GLOBAL_MONITOR_MODE) &&
 	    (!policy_mgr_is_sta_mon_concurrency(hdd_ctx->psoc))) {
 		hdd_err("Not supported, device is not in monitor mode");
+		pr_err("mon_chan_set: conparam %d, not monitor/sta+mon\n",
+		       hdd_get_conparam());
+		MON_CHAN_SET_STAGE(2);
 		return -EINVAL;
 	}
 
 	if (adapter->device_mode != QDF_MONITOR_MODE) {
 		hdd_err_rl("Not supported, adapter is not in monitor mode");
+		pr_err("mon_chan_set: adapter mode %d\n", adapter->device_mode);
+		MON_CHAN_SET_STAGE(3);
 		return -EINVAL;
 	}
 
@@ -8988,6 +9014,8 @@ int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 	if (ch_width > CH_WIDTH_10MHZ ||
 	   (!cds_is_sub_20_mhz_enabled() && ch_width > CH_WIDTH_160MHZ)) {
 		hdd_err("invalid BW received %d", ch_width);
+		pr_err("mon_chan_set: invalid bw %d\n", ch_width);
+		MON_CHAN_SET_STAGE(4);
 		return -EINVAL;
 	}
 
@@ -9000,15 +9028,23 @@ int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 	    max_fw_bw <= WNI_CFG_VHT_CHANNEL_WIDTH_160MHZ)) {
 		hdd_err("FW does not support this BW %d max BW supported %d",
 			ch_width, max_fw_bw);
+		pr_err("mon_chan_set: fw bw unsupported %d\n", ch_width);
+		MON_CHAN_SET_STAGE(5);
 		return -EINVAL;
 	}
 
-	if (!hdd_is_target_eht_phy_ch_width_supported(ch_width))
+	if (!hdd_is_target_eht_phy_ch_width_supported(ch_width)) {
+		pr_err("mon_chan_set: eht width unsupported %d\n", ch_width);
+		MON_CHAN_SET_STAGE(6);
 		return -EINVAL;
+	}
 
 	ret = hdd_validate_channel_and_bandwidth(adapter, freq, bandwidth);
 	if (ret) {
 		hdd_err("Invalid CH and BW combo");
+		pr_err("mon_chan_set: invalid ch/bw freq %d ret %d\n",
+		       freq, ret);
+		MON_CHAN_SET_STAGE(7);
 		return ret;
 	}
 
@@ -9028,22 +9064,30 @@ int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 
 	if (ch_params.ch_width == CH_WIDTH_INVALID) {
 		hdd_err("Invalid capture channel or bandwidth for a country");
+		pr_err("mon_chan_set: reg params invalid freq %d\n", freq);
+		MON_CHAN_SET_STAGE(8);
 		return -EINVAL;
 	}
 	if (wlan_hdd_change_hw_mode_for_given_chnl(adapter, freq,
 						   POLICY_MGR_UPDATE_REASON_SET_OPER_CHAN)) {
 		hdd_err("Failed to change hw mode");
+		pr_err("mon_chan_set: hw mode change failed freq %d\n", freq);
+		MON_CHAN_SET_STAGE(9);
 		return -EINVAL;
 	}
 
 	if (adapter->monitor_mode_vdev_up_in_progress) {
 		hdd_err_rl("monitor mode vdev up in progress");
+		pr_err("mon_chan_set: vdev up already in progress\n");
+		MON_CHAN_SET_STAGE(10);
 		return -EBUSY;
 	}
 
 	status = qdf_event_reset(&adapter->qdf_monitor_mode_vdev_up_event);
 	if (QDF_IS_STATUS_ERROR(status)) {
 		hdd_err_rl("failed to reinit monitor mode vdev up event");
+		pr_err("mon_chan_set: event reset failed %d\n", status);
+		MON_CHAN_SET_STAGE(11);
 		return qdf_status_to_os_return(status);
 	}
 	adapter->monitor_mode_vdev_up_in_progress = true;
@@ -9055,7 +9099,9 @@ int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 	if (status) {
 		hdd_err("Status: %d Failed to set sme_roam Channel for monitor mode",
 			status);
+		pr_err("mon_chan_set: roam channel change failed %d\n", status);
 		adapter->monitor_mode_vdev_up_in_progress = false;
+		MON_CHAN_SET_STAGE(12);
 		return qdf_status_to_os_return(status);
 	}
 
@@ -9082,7 +9128,11 @@ int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq,
 				  status);
 
 		adapter->monitor_mode_vdev_up_in_progress = false;
+		pr_err("mon_chan_set: vdev up wait failed %d\n", status);
+		MON_CHAN_SET_STAGE(13);
 	}
+
+	MON_CHAN_SET_STAGE(20);
 
 	return qdf_status_to_os_return(status);
 }

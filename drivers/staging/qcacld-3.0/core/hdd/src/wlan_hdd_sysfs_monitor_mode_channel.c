@@ -27,6 +27,27 @@
 #include <wlan_hdd_sysfs.h>
 #include <wlan_hdd_sysfs_monitor_mode_channel.h>
 
+static u32 mon_chan_store_stage;
+static u32 mon_chan_store_ret;
+
+#define MON_CHAN_STAGE(n) WRITE_ONCE(mon_chan_store_stage, (n))
+
+static int mon_chan_store_stage_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "stage=%u ret=%u\n",
+			 mon_chan_store_stage, mon_chan_store_ret);
+}
+
+static const struct kernel_param_ops mon_chan_store_stage_ops = {
+	.get = mon_chan_store_stage_get,
+};
+
+module_param_cb(mon_chan_store_stage, &mon_chan_store_stage_ops, NULL,
+		S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(mon_chan_store_stage,
+		 "Monitor channel sysfs store failure stage debug");
+
 static ssize_t
 __hdd_sysfs_monitor_mode_channel_store(struct net_device *net_dev,
 				       char const *buf, size_t count)
@@ -38,22 +59,34 @@ __hdd_sysfs_monitor_mode_channel_store(struct net_device *net_dev,
 	uint32_t val1, val2;
 	int ret;
 
-	if (hdd_validate_adapter(adapter))
+	MON_CHAN_STAGE(9);
+
+	if (hdd_validate_adapter(adapter)) {
+		pr_err("mon_chan: adapter invalid\n");
+		MON_CHAN_STAGE(2);
 		return -EINVAL;
+	}
 
 	hdd_ctx = WLAN_HDD_GET_CTX(adapter);
 	ret = wlan_hdd_validate_context(hdd_ctx);
-	if (ret != 0)
+	if (ret != 0) {
+		pr_err("mon_chan: ctx invalid ret %d\n", ret);
+		MON_CHAN_STAGE(3);
 		return ret;
+	}
 
-	if (!wlan_hdd_validate_modules_state(hdd_ctx))
+	if (!wlan_hdd_validate_modules_state(hdd_ctx)) {
+		pr_err("mon_chan: modules state invalid\n");
+		MON_CHAN_STAGE(4);
 		return -EINVAL;
+	}
 
 	ret = hdd_sysfs_validate_and_copy_buf(buf_local, sizeof(buf_local),
 					      buf, count);
 
 	if (ret) {
-		hdd_err_rl("invalid input");
+		pr_err("mon_chan: copy buf invalid ret %d\n", ret);
+		MON_CHAN_STAGE(5);
 		return ret;
 	}
 
@@ -63,17 +96,27 @@ __hdd_sysfs_monitor_mode_channel_store(struct net_device *net_dev,
 
 	/* Get val1 */
 	token = strsep(&sptr, " ");
-	if (!token)
+	if (!token) {
+		MON_CHAN_STAGE(6);
 		return -EINVAL;
-	if (kstrtou32(token, 0, &val1))
+	}
+	if (kstrtou32(token, 0, &val1)) {
+		pr_err("mon_chan: bad val1\n");
+		MON_CHAN_STAGE(6);
 		return -EINVAL;
+	}
 
 	/* Get val2 */
 	token = strsep(&sptr, " ");
-	if (!token)
+	if (!token) {
+		MON_CHAN_STAGE(7);
 		return -EINVAL;
-	if (kstrtou32(token, 0, &val2))
+	}
+	if (kstrtou32(token, 0, &val2)) {
+		pr_err("mon_chan: bad val2\n");
+		MON_CHAN_STAGE(7);
 		return -EINVAL;
+	}
 
 	if (val1 > 256)
 		ret = wlan_hdd_set_mon_chan(adapter, val1, val2);
@@ -82,6 +125,10 @@ __hdd_sysfs_monitor_mode_channel_store(struct net_device *net_dev,
 					    wlan_reg_legacy_chan_to_freq(
 							hdd_ctx->pdev, val1),
 					    val2);
+
+	WRITE_ONCE(mon_chan_store_ret, ret);
+	pr_err("mon_chan: set_mon_chan ret %d (count %zu)\n", ret, count);
+	MON_CHAN_STAGE(ret ? 10 : 11);
 
 	return count;
 }
@@ -95,9 +142,14 @@ hdd_sysfs_monitor_mode_channel_store(struct device *dev,
 	struct osif_vdev_sync *vdev_sync;
 	ssize_t errno_size;
 
+	MON_CHAN_STAGE(1);
+
 	errno_size = osif_vdev_sync_op_start(net_dev, &vdev_sync);
-	if (errno_size)
+	if (errno_size) {
+		pr_err("mon_chan: vdev sync start failed %zd\n", errno_size);
+		MON_CHAN_STAGE(8);
 		return errno_size;
+	}
 
 	errno_size = __hdd_sysfs_monitor_mode_channel_store(net_dev,
 							    buf, count);
