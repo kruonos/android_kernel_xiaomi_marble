@@ -292,7 +292,9 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	mgmt_param.tx_frame = tx_nbuf;
 	mgmt_param.frm_len = frame_len;
 	mgmt_param.vdev_id = tx_adapter->vdev_id;
-	mgmt_param.chanfreq = chan_freq;
+	/* Firmware derives the in-band STA channel from the active vdev. */
+	mgmt_param.chanfreq = tx_adapter->device_mode == QDF_STA_MODE ? 0 :
+		chan_freq;
 	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
 	mgmt_param.macaddr = tx_adapter->mac_addr.bytes;
 	mgmt_param.qdf_ctx = wlan_psoc_get_qdf_dev(psoc);
