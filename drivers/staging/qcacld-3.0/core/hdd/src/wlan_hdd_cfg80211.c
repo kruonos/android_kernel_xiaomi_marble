@@ -581,7 +581,7 @@ static const struct ieee80211_txrx_stypes
 		      BIT(SIR_MAC_MGMT_ACTION),
 	},
 	[NL80211_IFTYPE_MONITOR] = {
-		.tx = BIT(SIR_MAC_MGMT_PROBE_REQ),
+		.tx = 0xffff,
 	},
 };
 

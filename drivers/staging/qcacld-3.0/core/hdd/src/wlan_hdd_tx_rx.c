@@ -100,6 +100,61 @@ static atomic64_t hdd_mon_probe_tx_other = ATOMIC64_INIT(0);
 static atomic_t hdd_mon_probe_tx_last_status = ATOMIC_INIT(-1);
 static atomic_t hdd_mon_probe_tx_last_sta_vdev = ATOMIC_INIT(0);
 
+static u32 mon_xmit_stage;
+static int mon_xmit_ret;
+
+#define MON_XMIT_STAGE(n) WRITE_ONCE(mon_xmit_stage, (n))
+
+static int mon_xmit_stage_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "stage=%u ret=%d\n",
+			 mon_xmit_stage, mon_xmit_ret);
+}
+
+static const struct kernel_param_ops mon_xmit_stage_ops = {
+	.get = mon_xmit_stage_get,
+};
+
+module_param_cb(mon_xmit_stage, &mon_xmit_stage_ops, NULL,
+		S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(mon_xmit_stage,
+		 "Monitor netdev TX path failure stage debug");
+
+static u32 monitor_mgmt_tx_chanfreq;
+
+static int monitor_mgmt_tx_chanfreq_set(const char *val,
+					const struct kernel_param *kp)
+{
+	int ret;
+	u32 v;
+
+	(void)kp;
+	ret = kstrtou32(val, 0, &v);
+	if (ret)
+		return ret;
+	WRITE_ONCE(monitor_mgmt_tx_chanfreq, v);
+	return 0;
+}
+
+static int monitor_mgmt_tx_chanfreq_get(char *buf,
+					const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 READ_ONCE(monitor_mgmt_tx_chanfreq));
+}
+
+static const struct kernel_param_ops monitor_mgmt_tx_chanfreq_ops = {
+	.set = monitor_mgmt_tx_chanfreq_set,
+	.get = monitor_mgmt_tx_chanfreq_get,
+};
+
+module_param_cb(monitor_mgmt_tx_chanfreq, &monitor_mgmt_tx_chanfreq_ops, NULL,
+		S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_mgmt_tx_chanfreq,
+		 "Explicit WMI chanfreq for monitor vdev mgmt TX (0 = vdev derived)");
+
 static int hdd_mon_probe_tx_status_get(char *buf,
 				       const struct kernel_param *kp)
 {
@@ -313,8 +368,11 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	mgmt_param.frm_len = frame_len;
 	mgmt_param.vdev_id = tx_adapter->vdev_id;
 	/* Firmware derives the TX channel from the active vdev; explicit
-	 * channel values are rejected by the target firmware. */
-	mgmt_param.chanfreq = 0;
+	 * channel values are rejected by the target firmware. The monitor
+	 * vdev chanfreq is selectable through monitor_mgmt_tx_chanfreq. */
+	mgmt_param.chanfreq =
+		tx_adapter->device_mode == QDF_STA_MODE ? 0 :
+		monitor_mgmt_tx_chanfreq;
 	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
 	mgmt_param.macaddr = tx_adapter->mac_addr.bytes;
 	mgmt_param.qdf_ctx = wlan_psoc_get_qdf_dev(psoc);
@@ -361,19 +419,34 @@ static void __hdd_mon_probe_start_xmit(struct sk_buff *skb,
 {
 	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(net_dev);
 	uint16_t radiotap_len;
+	int ret;
 
-	if (skb_is_nonlinear(skb) || skb->len < 8)
+	MON_XMIT_STAGE(1);
+
+	if (skb_is_nonlinear(skb) || skb->len < 8) {
+		pr_err("mon_xmit: nonlinear/len drop\n");
+		MON_XMIT_STAGE(2);
 		goto drop;
+	}
 
 	radiotap_len = skb->data[2] | (skb->data[3] << 8);
 	if (skb->data[0] || skb->data[1] ||
 	    radiotap_len < HDD_MON_RADIOTAP_LEN ||
-	    radiotap_len > skb->len - 10)
+	    radiotap_len > skb->len - 10) {
+		pr_err("mon_xmit: radiotap bad v=%u len=%u skb=%u\n",
+		       skb->data[0], radiotap_len, skb->len);
+		MON_XMIT_STAGE(3);
 		goto drop;
+	}
 
-	hdd_mon_probe_mgmt_tx(adapter, skb->data + radiotap_len,
-			      skb->len - radiotap_len,
-			      adapter->mon_chan_freq);
+	ret = hdd_mon_probe_mgmt_tx(adapter, skb->data + radiotap_len,
+				    skb->len - radiotap_len,
+				    adapter->mon_chan_freq);
+	WRITE_ONCE(mon_xmit_ret, ret);
+	if (ret)
+		pr_err("mon_xmit: mgmt_tx ret %d chan %u\n", ret,
+		       adapter->mon_chan_freq);
+	MON_XMIT_STAGE(ret ? 5 : 4);
 drop:
 	dev_kfree_skb_any(skb);
 }

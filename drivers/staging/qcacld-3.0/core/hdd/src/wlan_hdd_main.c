@@ -3130,6 +3130,11 @@ static int __hdd_mon_open(struct net_device *dev)
 		hdd_bbm_apply_independent_policy(hdd_ctx, &param);
 		hdd_set_current_throughput_level(hdd_ctx,
 						 PLD_BUS_WIDTH_VERY_HIGH);
+		/* The monitor vdev has no carrier/queue control event like
+		 * STA does, so the qdisc would otherwise hold injected frames
+		 * forever. Start the queues and carrier explicitly. */
+		netif_tx_start_all_queues(dev);
+		netif_carrier_on(dev);
 	}
 
 	return ret;
