@@ -243,15 +243,13 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	wlan_net_dev_ref_dbgid dbgid = NET_DEV_HOLD_GET_ADAPTER;
 
 	unrestricted = hdd_is_monitor_mgmt_tx_unrestricted();
-	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled() &&
-		       !unrestricted;
+	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled() ||
+		       (unrestricted && adapter->device_mode == QDF_STA_MODE);
 	if (!hdd_is_monitor_probe_tx_enabled() ||
 	    hdd_validate_adapter(adapter) ||
 	    (adapter->device_mode != QDF_MONITOR_MODE &&
 	     !(use_sta_vdev && adapter->device_mode == QDF_STA_MODE)) ||
 	    cds_is_driver_transitioning())
-		return -EPERM;
-	if (unrestricted && adapter->device_mode != QDF_MONITOR_MODE)
 		return -EPERM;
 
 	hdd_ctx = adapter->hdd_ctx;

@@ -308,16 +308,21 @@ static int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	if (adapter->device_mode == QDF_MONITOR_MODE ||
 	    (adapter->device_mode == QDF_STA_MODE &&
 	     hdd_is_monitor_probe_tx_enabled() &&
-	     hdd_is_monitor_probe_tx_sta_vdev_enabled())) {
-		bool unrestricted = adapter->device_mode == QDF_MONITOR_MODE &&
-				    hdd_is_monitor_mgmt_tx_unrestricted();
+	     (hdd_is_monitor_probe_tx_sta_vdev_enabled() ||
+	      hdd_is_monitor_mgmt_tx_unrestricted()))) {
+		bool unrestricted = hdd_is_monitor_mgmt_tx_unrestricted() &&
+				    (adapter->device_mode == QDF_MONITOR_MODE ||
+				     adapter->device_mode == QDF_STA_MODE);
 
 		if (type != SIR_MAC_MGMT_FRAME || !chan || offchan ||
 		    (!unrestricted &&
 		     (sub_type != SIR_MAC_MGMT_PROBE_REQ || wait ||
 		      !dont_wait_for_ack)) ||
 		    (adapter->device_mode == QDF_MONITOR_MODE &&
-		     chan->center_freq != adapter->mon_chan_freq))
+		     chan->center_freq != adapter->mon_chan_freq) ||
+		    (adapter->device_mode == QDF_STA_MODE &&
+		     chan->center_freq !=
+		     hdd_get_adapter_home_channel(adapter)))
 			return -EINVAL;
 
 		*cookie = 0;
