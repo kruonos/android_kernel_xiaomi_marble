@@ -87,6 +87,8 @@
 #define HDD_MON_PROBE_SA_OFFSET		10
 #define HDD_MON_PROBE_TX_HEADROOM	64
 #define HDD_MON_PROBE_TX_INTERVAL	(HZ / 4)
+#define HDD_MON_RAW_TX_MAX_LEN		2048
+#define HDD_MON_RAW_TX_MAX_PENDING	64
 
 static atomic64_t hdd_mon_probe_tx_queued = ATOMIC64_INIT(0);
 static atomic64_t hdd_mon_probe_tx_completed = ATOMIC64_INIT(0);
@@ -178,19 +180,23 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	struct wlan_objmgr_psoc *psoc;
 	struct wmi_mgmt_params mgmt_param = { 0 };
 	qdf_nbuf_t tx_nbuf;
-	const uint8_t *ssid;
 	QDF_STATUS status;
 	int ret = -EINVAL;
 	bool sta_dev_held = false;
 	bool use_sta_vdev;
+	bool unrestricted;
 	wlan_net_dev_ref_dbgid dbgid = NET_DEV_HOLD_GET_ADAPTER;
 
-	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled();
+	unrestricted = hdd_is_monitor_mgmt_tx_unrestricted();
+	use_sta_vdev = hdd_is_monitor_probe_tx_sta_vdev_enabled() &&
+		       !unrestricted;
 	if (!hdd_is_monitor_probe_tx_enabled() ||
 	    hdd_validate_adapter(adapter) ||
 	    (adapter->device_mode != QDF_MONITOR_MODE &&
 	     !(use_sta_vdev && adapter->device_mode == QDF_STA_MODE)) ||
 	    cds_is_driver_transitioning())
+		return -EPERM;
+	if (unrestricted && adapter->device_mode != QDF_MONITOR_MODE)
 		return -EPERM;
 
 	hdd_ctx = adapter->hdd_ctx;
@@ -208,25 +214,39 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	     chan_freq != hdd_get_adapter_home_channel(adapter)))
 		return -ENODEV;
 
-	if (!frame || frame_len < HDD_MON_PROBE_HDR_LEN + 2)
+	if (!frame ||
+	    (unrestricted ?
+	     (frame_len < 10 || frame_len > HDD_MON_RAW_TX_MAX_LEN) :
+	     (frame_len < HDD_MON_PROBE_HDR_LEN + 2)))
 		return -EINVAL;
 
-	/* Only allow a management probe request with no frame-control flags. */
-	if (frame[0] != 0x40 || frame[1] ||
-	    !is_broadcast_ether_addr(frame + 4) ||
-	    !ether_addr_equal(frame + 10, adapter->mac_addr.bytes) ||
-	    !is_broadcast_ether_addr(frame + 16))
-		return -EINVAL;
+	if (!unrestricted) {
+		const uint8_t *ssid;
 
-	ssid = frame + HDD_MON_PROBE_HDR_LEN;
-	if (ssid[0] != HDD_MON_PROBE_SSID_EID ||
-	    ssid[1] > HDD_MON_PROBE_SSID_MAX_LEN ||
-	    frame_len != HDD_MON_PROBE_HDR_LEN + 2 + ssid[1])
-		return -EINVAL;
+		/* Only allow a management probe request with no frame-control
+		 * flags. */
+		if (frame[0] != 0x40 || frame[1] ||
+		    !is_broadcast_ether_addr(frame + 4) ||
+		    !ether_addr_equal(frame + 10, adapter->mac_addr.bytes) ||
+		    !is_broadcast_ether_addr(frame + 16))
+			return -EINVAL;
 
-	if (time_before(jiffies, READ_ONCE(adapter->monitor_probe_tx_last_jiffies) +
+		ssid = frame + HDD_MON_PROBE_HDR_LEN;
+		if (ssid[0] != HDD_MON_PROBE_SSID_EID ||
+		    ssid[1] > HDD_MON_PROBE_SSID_MAX_LEN ||
+		    frame_len != HDD_MON_PROBE_HDR_LEN + 2 + ssid[1])
+			return -EINVAL;
+	}
+
+	if (!unrestricted &&
+	    time_before(jiffies, READ_ONCE(adapter->monitor_probe_tx_last_jiffies) +
 			HDD_MON_PROBE_TX_INTERVAL))
 		return -EAGAIN;
+	if (unrestricted &&
+	    atomic64_read(&hdd_mon_probe_tx_queued) -
+	    atomic64_read(&hdd_mon_probe_tx_completed) >
+	    HDD_MON_RAW_TX_MAX_PENDING)
+		return -EBUSY;
 
 	if (use_sta_vdev && adapter->device_mode == QDF_MONITOR_MODE) {
 		hdd_for_each_adapter_dev_held_safe(hdd_ctx, candidate,
@@ -292,9 +312,9 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	mgmt_param.tx_frame = tx_nbuf;
 	mgmt_param.frm_len = frame_len;
 	mgmt_param.vdev_id = tx_adapter->vdev_id;
-	/* Firmware derives the in-band STA channel from the active vdev. */
-	mgmt_param.chanfreq = tx_adapter->device_mode == QDF_STA_MODE ? 0 :
-		chan_freq;
+	/* Firmware derives the TX channel from the active vdev; explicit
+	 * channel values are rejected by the target firmware. */
+	mgmt_param.chanfreq = 0;
 	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
 	mgmt_param.macaddr = tx_adapter->mac_addr.bytes;
 	mgmt_param.qdf_ctx = wlan_psoc_get_qdf_dev(psoc);
@@ -340,16 +360,19 @@ static void __hdd_mon_probe_start_xmit(struct sk_buff *skb,
 				       struct net_device *net_dev)
 {
 	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(net_dev);
+	uint16_t radiotap_len;
 
-	if (skb_is_nonlinear(skb) ||
-	    skb->len < HDD_MON_RADIOTAP_LEN + HDD_MON_PROBE_HDR_LEN + 2 ||
-	    skb->data[0] || skb->data[1] ||
-	    skb->data[2] != HDD_MON_RADIOTAP_LEN || skb->data[3] ||
-	    skb->data[4] || skb->data[5] || skb->data[6] || skb->data[7])
+	if (skb_is_nonlinear(skb) || skb->len < 8)
 		goto drop;
 
-	hdd_mon_probe_mgmt_tx(adapter, skb->data + HDD_MON_RADIOTAP_LEN,
-			      skb->len - HDD_MON_RADIOTAP_LEN,
+	radiotap_len = skb->data[2] | (skb->data[3] << 8);
+	if (skb->data[0] || skb->data[1] ||
+	    radiotap_len < HDD_MON_RADIOTAP_LEN ||
+	    radiotap_len > skb->len - 10)
+		goto drop;
+
+	hdd_mon_probe_mgmt_tx(adapter, skb->data + radiotap_len,
+			      skb->len - radiotap_len,
 			      adapter->mon_chan_freq);
 drop:
 	dev_kfree_skb_any(skb);

@@ -309,9 +309,13 @@ static int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	    (adapter->device_mode == QDF_STA_MODE &&
 	     hdd_is_monitor_probe_tx_enabled() &&
 	     hdd_is_monitor_probe_tx_sta_vdev_enabled())) {
-		if (type != SIR_MAC_MGMT_FRAME ||
-		    sub_type != SIR_MAC_MGMT_PROBE_REQ || !chan || offchan ||
-		    wait || !dont_wait_for_ack ||
+		bool unrestricted = adapter->device_mode == QDF_MONITOR_MODE &&
+				    hdd_is_monitor_mgmt_tx_unrestricted();
+
+		if (type != SIR_MAC_MGMT_FRAME || !chan || offchan ||
+		    (!unrestricted &&
+		     (sub_type != SIR_MAC_MGMT_PROBE_REQ || wait ||
+		      !dont_wait_for_ack)) ||
 		    (adapter->device_mode == QDF_MONITOR_MODE &&
 		     chan->center_freq != adapter->mon_chan_freq))
 			return -EINVAL;

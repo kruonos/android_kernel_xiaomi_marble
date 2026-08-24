@@ -1171,6 +1171,7 @@ static int pcie_gen_speed;
 #ifdef FEATURE_MONITOR_MODE_SUPPORT
 static bool hdd_monitor_probe_tx;
 static bool hdd_monitor_probe_tx_sta_vdev;
+static bool hdd_monitor_mgmt_tx_unrestricted;
 
 bool hdd_is_monitor_probe_tx_enabled(void)
 {
@@ -1180,6 +1181,11 @@ bool hdd_is_monitor_probe_tx_enabled(void)
 bool hdd_is_monitor_probe_tx_sta_vdev_enabled(void)
 {
 	return READ_ONCE(hdd_monitor_probe_tx_sta_vdev);
+}
+
+bool hdd_is_monitor_mgmt_tx_unrestricted(void)
+{
+	return READ_ONCE(hdd_monitor_mgmt_tx_unrestricted);
 }
 #endif
 
@@ -20911,6 +20917,10 @@ module_param_named(monitor_probe_tx_sta_vdev, hdd_monitor_probe_tx_sta_vdev,
 			   bool, S_IRUSR | S_IWUSR);
 MODULE_PARM_DESC(monitor_probe_tx_sta_vdev,
 			 "Route monitor probe-request TX through connected STA vdev");
+module_param_named(monitor_mgmt_tx_unrestricted,
+		   hdd_monitor_mgmt_tx_unrestricted, bool, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_mgmt_tx_unrestricted,
+		 "Allow arbitrary 802.11 frames from the monitor vdev (default: disabled)");
 #endif
 
 #ifdef WLAN_FEATURE_EPPING
