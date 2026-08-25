@@ -1172,6 +1172,7 @@ static int pcie_gen_speed;
 static bool hdd_monitor_probe_tx;
 static bool hdd_monitor_probe_tx_sta_vdev;
 static bool hdd_monitor_mgmt_tx_unrestricted;
+static bool hdd_monitor_mgmt_tx_spoof_sa;
 
 bool hdd_is_monitor_probe_tx_enabled(void)
 {
@@ -1186,6 +1187,11 @@ bool hdd_is_monitor_probe_tx_sta_vdev_enabled(void)
 bool hdd_is_monitor_mgmt_tx_unrestricted(void)
 {
 	return READ_ONCE(hdd_monitor_mgmt_tx_unrestricted);
+}
+
+bool hdd_is_monitor_mgmt_tx_spoof_sa(void)
+{
+	return READ_ONCE(hdd_monitor_mgmt_tx_spoof_sa);
 }
 #endif
 
@@ -20976,6 +20982,10 @@ module_param_named(monitor_mgmt_tx_unrestricted,
 		   hdd_monitor_mgmt_tx_unrestricted, bool, S_IRUSR | S_IWUSR);
 MODULE_PARM_DESC(monitor_mgmt_tx_unrestricted,
 		 "Allow arbitrary 802.11 frames from the monitor vdev (default: disabled)");
+module_param_named(monitor_mgmt_tx_spoof_sa, hdd_monitor_mgmt_tx_spoof_sa,
+		   bool, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_mgmt_tx_spoof_sa,
+		 "Keep caller source MAC on STA vdev mgmt TX (default: disabled)");
 #endif
 
 #ifdef WLAN_FEATURE_EPPING

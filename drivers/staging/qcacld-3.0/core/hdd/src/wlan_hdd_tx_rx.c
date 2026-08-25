@@ -155,6 +155,78 @@ module_param_cb(monitor_mgmt_tx_chanfreq, &monitor_mgmt_tx_chanfreq_ops, NULL,
 MODULE_PARM_DESC(monitor_mgmt_tx_chanfreq,
 		 "Explicit WMI chanfreq for monitor vdev mgmt TX (0 = vdev derived)");
 
+static int monitor_spoof_tx_ret;
+
+static int monitor_spoof_tx_set(const char *val, const struct kernel_param *kp)
+{
+	struct hdd_context *hdd_ctx;
+	struct hdd_adapter *adapter;
+	static u8 frame[HDD_MON_RAW_TX_MAX_LEN];
+	char freq_buf[12];
+	const char *hex;
+	size_t hex_len, freq_len;
+	u32 freq;
+	int ret;
+
+	(void)kp;
+
+	hex = strchr(val, ':');
+	if (!hex)
+		return -EINVAL;
+	freq_len = hex - val;
+	if (!freq_len || freq_len >= sizeof(freq_buf))
+		return -EINVAL;
+	memcpy(freq_buf, val, freq_len);
+	freq_buf[freq_len] = '\0';
+	if (kstrtou32(freq_buf, 0, &freq))
+		return -EINVAL;
+
+	hex++;
+	hex_len = strlen(hex);
+	if (!hex_len || (hex_len & 1) ||
+	    hex_len / 2 > HDD_MON_RAW_TX_MAX_LEN)
+		return -EINVAL;
+	if (hex2bin(frame, hex, hex_len / 2))
+		return -EINVAL;
+
+	hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	if (!hdd_ctx) {
+		ret = -ENODEV;
+		goto out;
+	}
+	adapter = hdd_get_adapter(hdd_ctx, QDF_STA_MODE);
+	if (!adapter) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = hdd_mon_probe_mgmt_tx(adapter, frame, hex_len / 2, freq);
+out:
+	WRITE_ONCE(monitor_spoof_tx_ret, ret);
+	if (ret)
+		pr_err("mon_spoof_tx: ret %d freq %u len %zu\n", ret, freq,
+		       hex_len / 2);
+
+	return ret;
+}
+
+static int monitor_spoof_tx_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "ret=%d\n",
+			 READ_ONCE(monitor_spoof_tx_ret));
+}
+
+static const struct kernel_param_ops monitor_spoof_tx_ops = {
+	.set = monitor_spoof_tx_set,
+	.get = monitor_spoof_tx_get,
+};
+
+module_param_cb(monitor_spoof_tx, &monitor_spoof_tx_ops, NULL,
+		S_IWUSR | S_IRUSR);
+MODULE_PARM_DESC(monitor_spoof_tx,
+		 "Direct STA vdev mgmt TX trigger: write 'freq:hex-frame'");
+
 static int hdd_mon_probe_tx_status_get(char *buf,
 				       const struct kernel_param *kp)
 {
@@ -358,7 +430,7 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	qdf_nbuf_put_tail(tx_nbuf, frame_len);
 	qdf_nbuf_set_protocol(tx_nbuf, ETH_P_CONTROL);
 	qdf_mem_copy(qdf_nbuf_data(tx_nbuf), frame, frame_len);
-	if (use_sta_vdev)
+	if (use_sta_vdev && !hdd_is_monitor_mgmt_tx_spoof_sa())
 		qdf_mem_copy(qdf_nbuf_data(tx_nbuf) + HDD_MON_PROBE_SA_OFFSET,
 			     tx_adapter->mac_addr.bytes, QDF_MAC_ADDR_SIZE);
 

@@ -101,6 +101,7 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 bool hdd_is_monitor_probe_tx_enabled(void);
 bool hdd_is_monitor_probe_tx_sta_vdev_enabled(void);
 bool hdd_is_monitor_mgmt_tx_unrestricted(void);
+bool hdd_is_monitor_mgmt_tx_spoof_sa(void);
 #endif
 
 /**
