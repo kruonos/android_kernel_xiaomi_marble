@@ -5,7 +5,9 @@
 With the custom kernel gates enabled by root, a connected `wlan0` STA vdev
 can submit crafted IEEE 802.11 management frames through
 `NL80211_CMD_FRAME` to the QCA6490 firmware management-TX path. The device
-telemetry recorded three firmware `COMPLETE_OK` completions on the STA vdev.
+telemetry initially recorded three firmware `COMPLETE_OK` completions on the
+STA vdev. The later v16/v17 direct-trigger experiment recorded four successful
+completions, including foreign-source probe and deauthentication frames.
 
 This includes management subtypes such as authentication, deauthentication,
 and probe requests, provided the device is associated and the request uses its
@@ -15,16 +17,20 @@ current home channel.
 
 This is not unrestricted raw Wi-Fi injection.
 
-- It cannot inject normal 802.11 data frames through the working route.
+- The normal `NL80211_CMD_FRAME` route rejects non-management frames. The
+  root-only `monitor_spoof_tx` test hook can pass non-management-looking
+  802.11 bytes into the WMI management-TX path with unrestricted gates
+  enabled, but over-air data-frame injection is not established.
 - It cannot transmit off-channel. The STA must be connected, associated, and
   use its exact current home channel.
-- It cannot use an arbitrary source MAC through the working STA/cfg80211
-  route. The driver replaces the source address with the connected STA MAC,
-  and cfg80211 rejects invalid management-frame source addresses.
-  Note: a root-only direct trigger (`monitor_spoof_tx`) bypasses cfg80211
-  for firmware acceptance testing; the firmware accepted a foreign source
-  MAC with `COMPLETE_OK` (v16/v17 experiment, 2026-08-25). The nl80211
-  route still enforces the interface MAC.
+- The normal STA/cfg80211 route cannot use an arbitrary source MAC: cfg80211
+  rejects invalid management-frame source addresses and the driver replaces
+  the source address with the connected STA MAC. A separate root-only direct
+  trigger (`monitor_spoof_tx`) bypasses cfg80211, and
+  `monitor_mgmt_tx_spoof_sa` preserves the caller-provided source address.
+  The v16/v17 experiment recorded firmware `COMPLETE_OK` for foreign-source
+  probe and deauthentication frames. The nl80211 route still enforces the
+  interface MAC.
 - It cannot transmit arbitrary monitor-mode frames over the air. The host
   monitor path can accept raw radiotap-framed input, but production QCA6490
   firmware returns `WMI_MGMT_TX_COMP_TYPE_DISCARD` for monitor-vdev TX.
@@ -32,29 +38,36 @@ This is not unrestricted raw Wi-Fi injection.
   `DONT_WAIT_FOR_ACK`; `COMPLETE_OK` means firmware accepted and completed
   the WMI management-TX request, not that an independent receiver observed
   the frame or responded to it.
-  Note: over-air transmission of the deauthentication frame was indirectly
-  observed (the AP dropped the client and the station reconnected with a new
-  MAC address), but no ACK-level telemetry exists.
+  Note: earlier own-source deauthentication testing indirectly showed an
+  AP-side effect when the client disconnected and reconnected. In the later
+  foreign-source test, firmware returned `COMPLETE_OK`, but the AP rejected
+  the unassociated source and the phone stayed connected.
 - It is not available to ordinary Android applications. The controls are
   root-only module parameters in a custom QCA driver.
 
 ## Effective Security Boundary
 
 The effective capability is: a root operator of this modified phone can cause
-its already-associated Wi-Fi station to emit selected management frames on its
-current channel using its own station identity. This can be disruptive to that
-station's connection and is useful for controlled AP/firmware testing, but it
-is not a general-purpose wireless spoofing, arbitrary-client impersonation,
-or raw data-packet injection platform.
+its already-associated Wi-Fi station to submit selected same-channel frames to
+the WMI management-TX path, including caller-provided source addresses when
+the direct spoof trigger and spoof-SA gate are enabled. Firmware accepted
+foreign-source management frames in the documented v16/v17 test.
+
+This remains constrained by root-only controls, association, the STA home
+channel, firmware and AP behavior, and the lack of ACK-level proof. It has not
+established a general raw data-packet injection capability, but it is a real
+management-frame source-address spoofing capability for controlled testing.
 
 ## Source Evidence
 
 - STA routing and same-channel management-only checks:
-  `WIFI-MONITOR-EXPERIMENT/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c:307-330`
-- Frame bounds, connected-STA checks, source-address replacement, and WMI TX
-  submission:
-  `WIFI-MONITOR-EXPERIMENT/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_tx_rx.c:245-388`
+  `drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c:304-330`
+- Direct spoof trigger:
+  `drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_tx_rx.c:160-232`
+- Frame bounds, connected-STA checks, optional source-address replacement,
+  and WMI TX submission:
+  `drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_tx_rx.c:303-488`
 - Firmware completion telemetry:
-  `WIFI-MONITOR-EXPERIMENT/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_tx_rx.c:158-224`
+  `drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_tx_rx.c:269-300`
 - Observed monitor-vdev firmware discard and successful STA-vdev tests:
-  `WIFI-MONITOR-EXPERIMENT/Documentation/qca6490-mgmt-tx-firmware-map.md:483-538`
+  `Documentation/qca6490-mgmt-tx-firmware-map.md:483-568`
