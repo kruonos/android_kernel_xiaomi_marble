@@ -183,6 +183,10 @@ static int monitor_spoof_tx_set(const char *val, const struct kernel_param *kp)
 
 	hex++;
 	hex_len = strlen(hex);
+	while (hex_len &&
+	       (hex[hex_len - 1] == '\n' || hex[hex_len - 1] == '\r' ||
+		hex[hex_len - 1] == ' ' || hex[hex_len - 1] == '\t'))
+		hex_len--;
 	if (!hex_len || (hex_len & 1) ||
 	    hex_len / 2 > HDD_MON_RAW_TX_MAX_LEN)
 		return -EINVAL;
