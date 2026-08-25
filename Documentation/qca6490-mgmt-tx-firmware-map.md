@@ -568,7 +568,6 @@ not disconnect the station. AP-impersonation frames toward other
 clients remain within the same capability envelope.
 
 ### Step J — non-management bytes on the STA WMI TX path
-
 Executed through the direct STA trigger on 5745 MHz (2026-08-25):
 
 ```text
@@ -583,6 +582,32 @@ The firmware management TX engine accepts data-shaped bytes and reports
 available), so over-air emission of data-shaped frames is unproven and
 remains classified inconclusive, not supported. The RTS result is not a
 valid control-frame datapoint due to the mangled record.
+
+### Step K — AP-impersonation deauth against a second client
+
+Executed 2026-08-25 with a second authorized device (the operator's
+Linux notebook) associated to the same owned AP and channel:
+
+- Phone and notebook both associated to VIVOFIBRA-2250-5G, 5240 MHz,
+  BSSID `d8:c6:78:f5:22:57`.
+- Forged deauthentication frame sent through the direct STA trigger:
+  `SA = AP BSSID`, `DA = notebook MAC`, `BSSID = AP`, reason 7.
+- Firmware verdict: `COMPLETE_OK`.
+- Notebook kernel log recorded the attack:
+
+```text
+wlp0s20f3: deauthenticated from d8:c6:78:f5:22:57
+(Reason: 7=CLASS3_FRAME_FROM_NONASSOC_STA)
+```
+
+- NetworkManager transitioned `authenticating -> disconnected ->
+  scanning` and reconnected automatically.
+
+This is definitive independent-receiver proof that the STA vdev
+management-TX path emits crafted frames over the air with a spoofed
+source MAC, and that a real client accepts an AP-impersonated deauth.
+The capability is a working deauthentication platform against clients
+of an AP whose channel the phone can share in-band.
 
 ### Step D — firmware dbglog observer (only if comparison is inconclusive)
 
