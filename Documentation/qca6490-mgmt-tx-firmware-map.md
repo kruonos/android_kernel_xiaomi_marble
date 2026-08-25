@@ -567,6 +567,23 @@ source address, so client-impersonation toward a well-behaved AP does
 not disconnect the station. AP-impersonation frames toward other
 clients remain within the same capability envelope.
 
+### Step J — non-management bytes on the STA WMI TX path
+
+Executed through the direct STA trigger on 5745 MHz (2026-08-25):
+
+```text
+QoS data-shaped frame (fc=0x8800, DA=AP/SA=own/BSSID=AP):
+    COMPLETE_OK (status=0)
+RTS control frame (fc=0xb400, 16 bytes):
+    COMPLETE_NO_ACK (status=3); recorded WMI bytes zeroed/mangled
+```
+
+The firmware management TX engine accepts data-shaped bytes and reports
+`COMPLETE_OK`, but no over-air capture exists (no independent receiver
+available), so over-air emission of data-shaped frames is unproven and
+remains classified inconclusive, not supported. The RTS result is not a
+valid control-frame datapoint due to the mangled record.
+
 ### Step D — firmware dbglog observer (only if comparison is inconclusive)
 
 Add read-only QCA telemetry around the existing dbglog receive path, not a
