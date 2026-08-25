@@ -21,6 +21,10 @@ This is not unrestricted raw Wi-Fi injection.
 - It cannot use an arbitrary source MAC through the working STA/cfg80211
   route. The driver replaces the source address with the connected STA MAC,
   and cfg80211 rejects invalid management-frame source addresses.
+  Note: a root-only direct trigger (`monitor_spoof_tx`) bypasses cfg80211
+  for firmware acceptance testing; the firmware accepted a foreign source
+  MAC with `COMPLETE_OK` (v16/v17 experiment, 2026-08-25). The nl80211
+  route still enforces the interface MAC.
 - It cannot transmit arbitrary monitor-mode frames over the air. The host
   monitor path can accept raw radiotap-framed input, but production QCA6490
   firmware returns `WMI_MGMT_TX_COMP_TYPE_DISCARD` for monitor-vdev TX.

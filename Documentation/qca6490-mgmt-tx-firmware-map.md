@@ -516,7 +516,6 @@ Viable route:
   vdev mgmt engine is firmware-validated (v11 `COMPLETE_OK`).
 
 v15 runtime results, 2026-08-24 (connected to VIVOFIBRA-2250-5G, 5200 MHz):
-
 ```text
 auth   (fc=b0, own SA, DA=AP):  COMPLETE_OK status=0
 deauth (fc=c0, own SA, DA=AP):  COMPLETE_OK status=0
@@ -536,6 +535,37 @@ Constraints:
 - Data frames cannot use these routes: cfg80211 rejects non-management
   frames on `NL80211_CMD_FRAME`, and the monitor vdev firmware discards
   them.
+
+### Step I — source-MAC spoofing experiment (v16/v17)
+
+The one purely host-side wall was tested by bypassing cfg80211 with a
+direct trigger instead of modifying the shared cfg80211 module:
+
+- v16 `7507da9520d2`: `monitor_mgmt_tx_spoof_sa` gate (skips the driver
+  SA rewrite) and `monitor_spoof_tx` root-only trigger
+  (`freq:hex-frame`) that submits directly to the STA-vdev management
+  TX path.
+- v17 `48720fa632a0`: trailing-whitespace tolerance in the trigger
+  parser.
+
+Runtime result, 2026-08-25 (connected to PRINT POST 5G, 5745 MHz):
+
+```text
+own-SA probe (control):        COMPLETE_OK
+foreign-SA probe (02:00:...):  COMPLETE_OK
+foreign-SA deauth to AP:       COMPLETE_OK
+queued=4 completed=4 complete_ok=4 discard=0
+```
+
+Conclusion: **the QCA6490 firmware does not enforce the source address
+on the STA-vdev management-TX path.** MAC spoofing on management frames
+is possible once the host-side cfg80211 SA check is bypassed.
+
+Real-world validation: the phone stayed connected after the foreign-SA
+deauth — the AP correctly rejected the deauth from an unassociated
+source address, so client-impersonation toward a well-behaved AP does
+not disconnect the station. AP-impersonation frames toward other
+clients remain within the same capability envelope.
 
 ### Step D — firmware dbglog observer (only if comparison is inconclusive)
 
