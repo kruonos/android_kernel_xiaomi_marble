@@ -32,6 +32,8 @@
 #define DEFAULT_UNISO_TIMEOUT_MS 12000
 #define GUESTVM_READY_TIMEOUT_MS 30000
 #define CPUSYS_AUTOSTART_DELAY_MS 10000
+#define GUESTVM_RM_PROBE_TIMEOUT_MS 1000
+#define GUESTVM_RM_VM_INIT_MSG_ID 0x5600000B
 #define NUM_RESERVED_CPUS 2
 #define GUESTVM_DIAG_STAGE_LEN 48
 
@@ -48,6 +50,11 @@ static bool guestvm_cpusys_autostart_enabled = true;
 module_param_named(cpusys_autostart, guestvm_cpusys_autostart_enabled, bool, 0644);
 MODULE_PARM_DESC(cpusys_autostart,
 		 "Start cpusys_vm from the GuestVM loader after module probe");
+
+static bool guestvm_probe_vm_init = true;
+module_param_named(probe_vm_init, guestvm_probe_vm_init, bool, 0644);
+MODULE_PARM_DESC(probe_vm_init,
+		 "Probe legacy RM VM_INIT support once with an invalid VMID");
 
 #define guestvm_diag(priv, fmt, ...) \
 	do { \
@@ -103,6 +110,10 @@ struct guestvm_loader_private {
 	bool ext_region_supported;
 	bool cpusys_autostart_scheduled;
 	int cpusys_autostart_ret;
+	bool vm_init_probe_done;
+	int vm_init_probe_ret;
+	int vm_init_probe_rm_error;
+	size_t vm_init_probe_resp_size;
 	u32 boot_seq;
 	int last_ret;
 	int last_error;
@@ -745,12 +756,40 @@ unlock:
 static void guestvm_cpusys_autostart(struct work_struct *work)
 {
 	struct guestvm_loader_private *priv;
+	struct {
+		__le16 vmid;
+		__le16 reserved;
+	} __packed req = {
+		.vmid = cpu_to_le16(U16_MAX),
+	};
+	size_t resp_size = 0;
+	void *resp;
 
 	priv = container_of(to_delayed_work(work),
 			    struct guestvm_loader_private, cpusys_autostart_work);
 	priv->cpusys_autostart_ret = guestvm_loader_start_vm(priv);
 	guestvm_diag(priv, "cpusys autostart completed ret=%d\n",
 		priv->cpusys_autostart_ret);
+
+	if (!guestvm_probe_vm_init)
+		return;
+
+	resp = gh_rm_call_raw_timeout(GUESTVM_RM_VM_INIT_MSG_ID, &req,
+				      sizeof(req), &resp_size,
+				      &priv->vm_init_probe_rm_error,
+				      GUESTVM_RM_PROBE_TIMEOUT_MS);
+	priv->vm_init_probe_done = true;
+	priv->vm_init_probe_resp_size = resp_size;
+	if (IS_ERR(resp)) {
+		priv->vm_init_probe_ret = PTR_ERR(resp);
+	} else {
+		priv->vm_init_probe_ret = 0;
+		kfree(resp);
+	}
+	guestvm_diag(priv,
+		"VM_INIT capability probe invalid_vmid=%u ret=%d rm_error=%d resp=%zu\n",
+		U16_MAX, priv->vm_init_probe_ret,
+		priv->vm_init_probe_rm_error, priv->vm_init_probe_resp_size);
 }
 
 static ssize_t guestvm_loader_start(struct kobject *kobj,
@@ -789,6 +828,10 @@ static ssize_t guestvm_loader_status(struct kobject *kobj,
 		"vmid_allocated=%d\n"
 		"cpusys_autostart_scheduled=%d\n"
 		"cpusys_autostart_ret=%d\n"
+		"vm_init_probe_done=%d\n"
+		"vm_init_probe_ret=%d\n"
+		"vm_init_probe_rm_error=%d\n"
+		"vm_init_probe_resp_size=%zu\n"
 		"vm_status=%u/%s\n"
 		"os_status=%u/%s\n"
 		"app_status=%u\n"
@@ -809,6 +852,8 @@ static ssize_t guestvm_loader_status(struct kobject *kobj,
 		priv->vm_name, priv->vmid, priv->pas_id, priv->boot_seq,
 		priv->vm_loaded, priv->vmid_allocated,
 		priv->cpusys_autostart_scheduled, priv->cpusys_autostart_ret,
+		priv->vm_init_probe_done, priv->vm_init_probe_ret,
+		priv->vm_init_probe_rm_error, priv->vm_init_probe_resp_size,
 		priv->vm_status,
 		guestvm_vm_status_str(priv->vm_status), priv->os_status,
 		guestvm_os_status_str(priv->os_status), priv->app_status,
