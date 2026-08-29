@@ -226,6 +226,12 @@ export CLANG_PATH=/path/to/llvm/bin
 ./build_bouquet.sh --noccache
 ```
 
+To compile the camera-compatible Marble image, build the `CSI/CFR-PATCH`
+branch with this script. The camera buffer change is already included in the
+branch: it restores the behavior used by the working Bouquet builds after the
+stricter validation change caused camera crashes on Marble. No separate camera
+patch or compiler flag is required.
+
 The default configuration is `marble_defconfig`. The source Makefile and
 default local-version settings produce:
 
