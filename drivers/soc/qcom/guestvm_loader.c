@@ -8,6 +8,7 @@
 #include <linux/list.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -29,6 +30,8 @@
 
 #define MAX_LEN 256
 #define DEFAULT_UNISO_TIMEOUT_MS 12000
+#define GUESTVM_READY_TIMEOUT_MS 30000
+#define CPUSYS_AUTOSTART_DELAY_MS 10000
 #define NUM_RESERVED_CPUS 2
 #define GUESTVM_DIAG_STAGE_LEN 48
 
@@ -36,10 +39,15 @@ static bool guestvm_loader_diag = true;
 module_param_named(diag, guestvm_loader_diag, bool, 0644);
 MODULE_PARM_DESC(diag, "Enable verbose GuestVM PAS/PIL boot diagnostics");
 
-static bool guestvm_cleanup_on_failure;
+static bool guestvm_cleanup_on_failure = true;
 module_param_named(cleanup_on_failure, guestvm_cleanup_on_failure, bool, 0644);
 MODULE_PARM_DESC(cleanup_on_failure,
 		 "Try VM_RESET/VM_DEALLOCATE after a VMID was allocated but VM load failed");
+
+static bool guestvm_cpusys_autostart_enabled = true;
+module_param_named(cpusys_autostart, guestvm_cpusys_autostart_enabled, bool, 0644);
+MODULE_PARM_DESC(cpusys_autostart,
+		 "Start cpusys_vm from the GuestVM loader after module probe");
 
 #define guestvm_diag(priv, fmt, ...) \
 	do { \
@@ -76,6 +84,7 @@ struct guestvm_loader_private {
 	ktime_t request_vm_start_time;
 	char vm_name[MAX_LEN];
 	bool vm_loaded;
+	bool vmid_allocated;
 	bool iso_needed;
 	int pas_id;
 	int vmid;
@@ -85,15 +94,20 @@ struct guestvm_loader_private {
 	struct timer_list guestvm_cpu_isolate_timer;
 	struct completion isolation_done;
 	struct work_struct unisolation_work;
+	struct delayed_work cpusys_autostart_work;
+	struct mutex vm_boot_lock;
 	cpumask_t guestvm_isolated_cpus;
 	cpumask_t guestvm_reserve_cpus;
 	u32 guestvm_unisolate_timeout;
 	struct gh_sec_ext_region ext_region;
 	bool ext_region_supported;
+	bool cpusys_autostart_scheduled;
+	int cpusys_autostart_ret;
 	u32 boot_seq;
 	int last_ret;
 	int last_error;
 	char last_stage[GUESTVM_DIAG_STAGE_LEN];
+	char failure_stage[GUESTVM_DIAG_STAGE_LEN];
 	s64 loaded_us;
 	s64 ready_us;
 	s64 started_us;
@@ -167,8 +181,10 @@ static void guestvm_set_stage(struct guestvm_loader_private *priv,
 {
 	strlcpy(priv->last_stage, stage, sizeof(priv->last_stage));
 	priv->last_ret = ret;
-	if (ret)
+	if (ret && !priv->last_error) {
 		priv->last_error = ret;
+		strlcpy(priv->failure_stage, stage, sizeof(priv->failure_stage));
+	}
 }
 
 static void guestvm_cleanup_allocated_vmid(struct guestvm_loader_private *priv,
@@ -188,6 +204,8 @@ static void guestvm_cleanup_allocated_vmid(struct guestvm_loader_private *priv,
 		reason, priv->vmid, ret);
 	if (ret)
 		guestvm_set_stage(priv, "cleanup_vm_dealloc_failed", ret);
+	else
+		priv->vmid_allocated = false;
 }
 
 static void guestvm_isolate_cpu(struct guestvm_loader_private *priv)
@@ -596,112 +614,162 @@ release_firmware:
 	return ret;
 }
 
-static ssize_t guestvm_loader_start(struct kobject *kobj,
-	struct kobj_attribute *attr,
-	const char *buf,
-	size_t count)
+static void guestvm_cleanup_failed_boot(struct guestvm_loader_private *priv,
+					const char *reason)
 {
-	struct guestvm_loader_private *priv;
+	int ret;
+
+	if (!guestvm_cleanup_on_failure) {
+		guestvm_diag(priv,
+			"cleanup after %s skipped cleanup_on_failure=0 vmid=%d\n",
+			reason, priv->vmid);
+		return;
+	}
+
+	if (priv->vm_loaded) {
+		guestvm_set_stage(priv, "cleanup_pas_shutdown", 0);
+		ret = qcom_scm_pas_shutdown(priv->pas_id);
+		guestvm_diag(priv,
+			"cleanup after %s: qcom_scm_pas_shutdown pas_id=%d ret=%d\n",
+			reason, priv->pas_id, ret);
+		if (ret)
+			guestvm_set_stage(priv, "cleanup_pas_shutdown_failed", ret);
+		priv->vm_loaded = false;
+	}
+
+	if (priv->vmid_allocated)
+		guestvm_cleanup_allocated_vmid(priv, reason);
+
+	priv->vm_status = GH_RM_VM_STATUS_NO_STATE;
+}
+
+static int guestvm_loader_start_vm(struct guestvm_loader_private *priv)
+{
 	int ret = 0;
-	bool boot = false;
 	ktime_t now;
 	s64 delta;
 	enum gh_vm_names vm_name_val;
 
+	mutex_lock(&priv->vm_boot_lock);
+	if (priv->vm_loaded || priv->vmid_allocated) {
+		dev_err(priv->dev, "VM load has already been started\n");
+		ret = -EBUSY;
+		goto unlock;
+	}
+
+	priv->boot_seq++;
+	priv->request_vm_start_time = ktime_get();
+	priv->last_ret = 0;
+	priv->last_error = 0;
+	priv->failure_stage[0] = '\0';
+	priv->loaded_us = 0;
+	priv->ready_us = 0;
+	priv->started_us = 0;
+	priv->booted_us = 0;
+	reinit_completion(&priv->vm_start);
+
+	priv->vm_status = GH_RM_VM_STATUS_INIT;
+	vm_name_val = get_gh_vm_name(priv->vm_name);
+	guestvm_set_stage(priv, "gh_rm_vm_alloc_vmid", 0);
+	guestvm_diag(priv,
+		"boot_seq=%u begin vm=%s enum=%d/%s dt_vmid=%d iso_needed=%d\n",
+		priv->boot_seq, priv->vm_name, vm_name_val,
+		guestvm_name_str(vm_name_val), priv->vmid, priv->iso_needed);
+	ret = gh_rm_vm_alloc_vmid(vm_name_val, &priv->vmid);
+	guestvm_diag(priv, "gh_rm_vm_alloc_vmid done ret=%d vmid=%d\n",
+		ret, priv->vmid);
+	guestvm_set_stage(priv, "gh_rm_vm_alloc_vmid_done", ret);
+	if (ret < 0) {
+		dev_err(priv->dev, "Couldn't allocate VMID.\n");
+		goto start_failed;
+	}
+	priv->vmid_allocated = true;
+
+	guestvm_set_stage(priv, "vm_load", 0);
+	ret = vm_load(priv);
+	guestvm_diag(priv, "vm_load done ret=%d vmid=%d\n", ret, priv->vmid);
+	if (ret) {
+		dev_err(priv->dev, "vm_load failed with error %d\n", ret);
+		guestvm_set_stage(priv, "vm_load_failed", ret);
+		guestvm_cleanup_failed_boot(priv, "vm_load_failure");
+		goto unlock;
+	}
+	priv->vm_loaded = true;
+	now = ktime_get();
+	delta = ktime_to_us(ktime_sub(now, priv->request_vm_start_time));
+	priv->loaded_us = delta;
+	dev_info(priv->dev, "VM(%d) loaded in %lld us\n", priv->vmid, delta);
+
+	guestvm_set_stage(priv, "wait_for_ready", 0);
+	if (!wait_for_completion_timeout(&priv->vm_start,
+			msecs_to_jiffies(GUESTVM_READY_TIMEOUT_MS))) {
+		ret = -ETIMEDOUT;
+		dev_err(priv->dev, "VM ready notification timed out\n");
+		guestvm_set_stage(priv, "wait_for_ready_timeout", ret);
+		guestvm_cleanup_failed_boot(priv, "ready_timeout");
+		goto unlock;
+	}
+	guestvm_diag(priv,
+		"wait_for_ready done vmid=%d vm_status=%u/%s ready_us=%lld\n",
+		priv->vmid, priv->vm_status,
+		guestvm_vm_status_str(priv->vm_status), priv->ready_us);
+
+	if (priv->iso_needed) {
+		INIT_WORK(&priv->unisolation_work, guestvm_unisolate_work);
+		schedule_work(&priv->unisolation_work);
+		guestvm_isolate_cpu(priv);
+		mod_timer(&priv->guestvm_cpu_isolate_timer, jiffies +
+				msecs_to_jiffies(priv->guestvm_unisolate_timeout));
+	}
+
+	guestvm_set_stage(priv, "gh_rm_vm_start", 0);
+	guestvm_diag(priv, "gh_rm_vm_start begin vmid=%d\n", priv->vmid);
+	ret = gh_rm_vm_start(priv->vmid);
+	guestvm_diag(priv, "gh_rm_vm_start done vmid=%d ret=%d\n", priv->vmid,
+		ret);
+	guestvm_set_stage(priv, "gh_rm_vm_start_done", ret);
+	if (ret) {
+		dev_err(priv->dev, "VM start failed for vmid = %d ret = %d\n",
+			priv->vmid, ret);
+		guestvm_cleanup_failed_boot(priv, "vm_start_failure");
+	}
+	goto unlock;
+
+start_failed:
+	priv->vm_status = GH_RM_VM_STATUS_NO_STATE;
+unlock:
+	mutex_unlock(&priv->vm_boot_lock);
+	return ret;
+}
+
+static void guestvm_cpusys_autostart(struct work_struct *work)
+{
+	struct guestvm_loader_private *priv;
+
+	priv = container_of(to_delayed_work(work),
+			    struct guestvm_loader_private, cpusys_autostart_work);
+	priv->cpusys_autostart_ret = guestvm_loader_start_vm(priv);
+	guestvm_diag(priv, "cpusys autostart completed ret=%d\n",
+		priv->cpusys_autostart_ret);
+}
+
+static ssize_t guestvm_loader_start(struct kobject *kobj,
+	struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	struct guestvm_loader_private *priv;
+	bool boot;
+	int ret;
+
 	ret = kstrtobool(buf, &boot);
 	if (ret)
 		return -EINVAL;
+	if (!boot)
+		return count;
 
 	priv = container_of(kobj, struct guestvm_loader_private,
 				vm_loader_kobj);
-	if (priv->vm_loaded) {
-		dev_err(priv->dev, "VM load has already been started\n");
-		return -EINVAL;
-	}
-
-	if (boot) {
-		priv->boot_seq++;
-		priv->request_vm_start_time = ktime_get();
-		priv->last_ret = 0;
-		priv->last_error = 0;
-		priv->loaded_us = 0;
-		priv->ready_us = 0;
-		priv->started_us = 0;
-		priv->booted_us = 0;
-		reinit_completion(&priv->vm_start);
-
-		priv->vm_status = GH_RM_VM_STATUS_INIT;
-		vm_name_val = get_gh_vm_name(priv->vm_name);
-		guestvm_set_stage(priv, "gh_rm_vm_alloc_vmid", 0);
-		guestvm_diag(priv,
-			"boot_seq=%u begin vm=%s enum=%d/%s dt_vmid=%d iso_needed=%d\n",
-			priv->boot_seq, priv->vm_name, vm_name_val,
-			guestvm_name_str(vm_name_val), priv->vmid,
-			priv->iso_needed);
-		ret = gh_rm_vm_alloc_vmid(vm_name_val,
-							&priv->vmid);
-		guestvm_diag(priv, "gh_rm_vm_alloc_vmid done ret=%d vmid=%d\n",
-			ret, priv->vmid);
-		guestvm_set_stage(priv, "gh_rm_vm_alloc_vmid_done", ret);
-		if (ret < 0) {
-			dev_err(priv->dev, "Couldn't allocate VMID.\n");
-			return count;
-		}
-
-		guestvm_set_stage(priv, "vm_load", 0);
-		ret = vm_load(priv);
-		guestvm_diag(priv, "vm_load done ret=%d vmid=%d\n", ret,
-			priv->vmid);
-		if (ret) {
-			dev_err(priv->dev,
-				"vm_load failed with error %d\n", ret);
-			guestvm_set_stage(priv, "vm_load_failed", ret);
-			if (guestvm_cleanup_on_failure)
-				guestvm_cleanup_allocated_vmid(priv, "vm_load_failure");
-			else
-				guestvm_diag(priv,
-					"cleanup after vm_load_failure skipped cleanup_on_failure=0 vmid=%d\n",
-					priv->vmid);
-			priv->vm_status = GH_RM_VM_STATUS_NO_STATE;
-			return ret;
-		}
-		priv->vm_loaded = true;
-		now = ktime_get();
-		delta = ktime_to_us(ktime_sub(now, priv->request_vm_start_time));
-		priv->loaded_us = delta;
-		dev_info(priv->dev, "VM(%d) loaded in %lld us\n", priv->vmid, delta);
-
-		guestvm_set_stage(priv, "wait_for_ready", 0);
-		if (wait_for_completion_interruptible(&priv->vm_start)) {
-			dev_err(priv->dev, "VM start completion interrupted\n");
-			guestvm_set_stage(priv, "wait_for_ready_interrupted", -EINTR);
-			return count;
-		}
-		guestvm_diag(priv,
-			"wait_for_ready done vmid=%d vm_status=%u/%s ready_us=%lld\n",
-			priv->vmid, priv->vm_status,
-			guestvm_vm_status_str(priv->vm_status), priv->ready_us);
-
-		if (priv->iso_needed) {
-			INIT_WORK(&priv->unisolation_work, guestvm_unisolate_work);
-			schedule_work(&priv->unisolation_work);
-			guestvm_isolate_cpu(priv);
-			mod_timer(&priv->guestvm_cpu_isolate_timer, jiffies +
-					msecs_to_jiffies(priv->guestvm_unisolate_timeout));
-		}
-
-		guestvm_set_stage(priv, "gh_rm_vm_start", 0);
-		guestvm_diag(priv, "gh_rm_vm_start begin vmid=%d\n", priv->vmid);
-		ret = gh_rm_vm_start(priv->vmid);
-		guestvm_diag(priv, "gh_rm_vm_start done vmid=%d ret=%d\n",
-			priv->vmid, ret);
-		guestvm_set_stage(priv, "gh_rm_vm_start_done", ret);
-		if (ret)
-			dev_err(priv->dev, "VM start failed for vmid = %d ret = %d\n",
-				priv->vmid, ret);
-	}
-
-	return count;
+	ret = guestvm_loader_start_vm(priv);
+	return ret ? ret : count;
 }
 
 static ssize_t guestvm_loader_status(struct kobject *kobj,
@@ -718,6 +786,9 @@ static ssize_t guestvm_loader_status(struct kobject *kobj,
 		"pas_id=%d\n"
 		"boot_seq=%u\n"
 		"vm_loaded=%d\n"
+		"vmid_allocated=%d\n"
+		"cpusys_autostart_scheduled=%d\n"
+		"cpusys_autostart_ret=%d\n"
 		"vm_status=%u/%s\n"
 		"os_status=%u/%s\n"
 		"app_status=%u\n"
@@ -730,18 +801,22 @@ static ssize_t guestvm_loader_status(struct kobject *kobj,
 		"last_stage=%s\n"
 		"last_ret=%d\n"
 		"last_error=%d\n"
+		"failure_stage=%s\n"
 		"loaded_us=%lld\n"
 		"ready_us=%lld\n"
 		"started_us=%lld\n"
 		"booted_us=%lld\n",
 		priv->vm_name, priv->vmid, priv->pas_id, priv->boot_seq,
-		priv->vm_loaded, priv->vm_status,
+		priv->vm_loaded, priv->vmid_allocated,
+		priv->cpusys_autostart_scheduled, priv->cpusys_autostart_ret,
+		priv->vm_status,
 		guestvm_vm_status_str(priv->vm_status), priv->os_status,
 		guestvm_os_status_str(priv->os_status), priv->app_status,
 		priv->iso_needed, priv->ext_region_supported,
 		&priv->ext_region.ext_phys, priv->ext_region.ext_size,
 		priv->ext_region.ext_label, priv->ext_region.ext_mem_handle,
 		priv->last_stage, priv->last_ret, priv->last_error,
+		priv->failure_stage,
 		priv->loaded_us, priv->ready_us, priv->started_us,
 		priv->booted_us);
 }
@@ -774,6 +849,9 @@ static int guestvm_loader_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, priv);
 	priv->dev = &pdev->dev;
+	mutex_init(&priv->vm_boot_lock);
+	INIT_DELAYED_WORK(&priv->cpusys_autostart_work,
+			  guestvm_cpusys_autostart);
 
 	ret = of_property_read_string(pdev->dev.of_node, "qcom,firmware-name",
 				      &sub_sys);
@@ -837,6 +915,15 @@ static int guestvm_loader_probe(struct platform_device *pdev)
 
 no_iso:
 	priv->vm_status = GH_RM_VM_STATUS_NO_STATE;
+	if (guestvm_cpusys_autostart_enabled &&
+	    get_gh_vm_name(priv->vm_name) == GH_CPUSYS_VM) {
+		priv->cpusys_autostart_scheduled = true;
+		schedule_delayed_work(&priv->cpusys_autostart_work,
+			msecs_to_jiffies(CPUSYS_AUTOSTART_DELAY_MS));
+		guestvm_diag(priv,
+			"scheduled cpusys autostart after %d ms\n",
+			CPUSYS_AUTOSTART_DELAY_MS);
+	}
 	return 0;
 
 error_return:
@@ -854,6 +941,8 @@ static int guestvm_loader_remove(struct platform_device *pdev)
 {
 	struct guestvm_loader_private *priv = platform_get_drvdata(pdev);
 	int ret;
+
+	cancel_delayed_work_sync(&priv->cpusys_autostart_work);
 
 	ret = gh_rm_unregister_notifier(&priv->guestvm_nb);
 	if (ret)
