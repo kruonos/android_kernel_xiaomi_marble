@@ -609,6 +609,62 @@ source MAC, and that a real client accepts an AP-impersonated deauth.
 The capability is a working deauthentication platform against clients
 of an AP whose channel the phone can share in-band.
 
+### Step L — unassociated AP-role escape (v18/v19)
+
+The full escape: inject without being connected to any network.
+
+- v18 `ac79ebaa8855`: `monitor_spoof_tx_sap` routes the direct trigger
+  through the SAP vdev; SAP TX keeps the caller source address.
+- v19 `c6958605885f`: `monitor_sap_force_channel` moves the SAP vdev
+  to a chosen frequency through the existing (E)CSA machinery
+  (`hdd_switch_sap_chan_freq`, the driver DCS path). The DO_ACS vendor
+  command proved unusable (strict nested policy, opaque EINVAL), and
+  the ROM hostapd lacks the `CHAN_SWITCH` ctrl command, so the sysfs
+  control reuses proven driver code instead.
+
+Runtime result, 2026-09-02:
+
+```text
+phone:  Wi-Fi STA OFF, hotspot on wlan2, forced to 5745 MHz
+victim: Linux notebook on PRINT POST 5G, 5745 MHz, BSSID 78:3e:a1:d4:fa:3d
+attack: SA = 78:3e:a1:d4:fa:3d (victim AP), DA = notebook, reason 7
+
+firmware verdict: COMPLETE_OK
+victim kernel log:
+  wlp0s20f3: deauthenticated from 78:3e:a1:d4:fa:3d
+  (Reason: 7=CLASS3_FRAME_FROM_NONASSOC_STA)
+```
+
+Confirmed: an unassociated phone acting only as a soft-AP on the
+victim's channel can forge the victim AP's identity and kick its
+clients. Channel control is coarse (SAP CSA, seconds) but real. This
+is the pocket-Pineapple architecture: AP role + channel choice +
+identity forging, with no station connection required.
+
+SAP-vdev firmware observations:
+
+- probe with own BSSID: `COMPLETE_OK`
+- broadcast deauth with own BSSID: `DISCARD`
+- unicast forged deauth: `COMPLETE_OK` (transmitted; `NO_ACK` when the
+  victim was on another channel)
+
+The DO_ACS channel-selection ABI discovered: vendor command 54,
+`NUM_CHANNELS` in this build is 102, attributes HW_MODE(3) u8,
+FREQ_LIST(11) NLA_BINARY of 102 u32, CHWIDTH(7) u16, flags VHT(6)
+EHT(19); the registered nested policy requires the exact list length.
+
+Sustained-flood demonstration, 2026-09-02:
+
+```text
+15 deauth frames at 200 ms intervals through the SAP trigger
+firmware: queued=16 completed=16 complete_ok=3 no_ack=13
+victim:   ping outage ~8 seconds (Destination Host Unreachable),
+          two fresh reason-7 deauth entries in its kernel log
+```
+
+The ACK pattern (first kicks ACKed, later unanswered while the victim
+is down) is receiver-level proof of the flood hitting its target.
+
 ### Step D — firmware dbglog observer (only if comparison is inconclusive)
 
 Add read-only QCA telemetry around the existing dbglog receive path, not a
