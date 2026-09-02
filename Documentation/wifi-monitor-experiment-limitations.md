@@ -21,6 +21,10 @@ This is not unrestricted raw Wi-Fi injection.
   root-only `monitor_spoof_tx` test hook can pass non-management-looking
   802.11 bytes into the WMI management-TX path with unrestricted gates
   enabled, but over-air data-frame injection is not established.
+  Note: the v20 DP exception path (`monitor_spoof_tx_data`) DID establish
+  raw unencrypted data-frame transmission with caller-chosen headers on
+  the associated STA vdev, proven by victim-side iwlwifi counter deltas
+  (2026-09-02). See the firmware map, Step M.
 - It cannot transmit off-channel. The STA must be connected, associated, and
   use its exact current home channel.
 - The normal STA/cfg80211 route cannot use an arbitrary source MAC: cfg80211

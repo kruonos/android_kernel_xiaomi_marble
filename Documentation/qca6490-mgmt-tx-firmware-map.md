@@ -665,6 +665,41 @@ victim:   ping outage ~8 seconds (Destination Host Unreachable),
 The ACK pattern (first kicks ACKed, later unanswered while the victim
 is down) is receiver-level proof of the flood hitting its target.
 
+### Step M — raw data-frame injection via the DP exception path (v20)
+
+The data engine has no WMI command: data TX is the DP/TCL hardware
+path. The in-tree door is `cdp_tx_send_exc()` (dp_tx.c:2735), which
+accepts per-frame `tx_encap_type` and `sec_type` and had no in-tree
+caller. v20 `f3c5bfaa5239` routes the direct trigger through it with
+`tx_encap_type=htt_cmn_pkt_type_raw` and `sec_type=cdp_sec_type_none`
+on an associated STA vdev, gated by `monitor_data_tx` and
+`monitor_spoof_tx_data` (both default off), kernel-detail-reviewed GO
+with SSR hardening applied.
+
+Runtime result, 2026-09-02 (VIVOFIBRA-2250-5G, 5200 MHz):
+
+```text
+own-SA data frame to AP:        enqueued, ret=0
+notebook-SA data frame to AP:   enqueued, ret=0
+AP-impersonated data frame to notebook: enqueued, ret=0
+
+victim iwlwifi "rx drop misc":
+  baseline 1180 -> 1188 after five AP-impersonated
+  unencrypted frames sent 300 ms apart
+```
+
+The frames were received by the victim's radio and dropped by
+mac80211 (unencrypted on a WPA2 BSS) — the expected reception path,
+proven by the counter delta. Conclusion: **raw unencrypted data-frame
+injection with arbitrary 802.11 headers, including foreign source
+MACs and AP impersonation, is real on this chipset through the DP
+exception path**, bounded in-band on the associated channel.
+
+Caveat: these frames are NOT valid WPA2 traffic — a real AP or client
+drops them at the crypto layer. The capability is raw frame emission,
+not authenticated data transmission; cracking or bypassing WPA2
+remains out of scope.
+
 ### Step D — firmware dbglog observer (only if comparison is inconclusive)
 
 Add read-only QCA telemetry around the existing dbglog receive path, not a

@@ -230,3 +230,22 @@ Status: parked until operator requests assembly.
   because it needs the P2P remain-on-channel machinery, which stays
   untouched per this backlog.
 - Item 5 fence respected: no further monitor-vdev TX changes made.
+
+### 2026-09-02 (data path)
+
+- Item 3 executed: v20 `f3c5bfaa5239` routes the direct trigger through
+  `cdp_tx_send_exc` (DP exception path) with `tx_encap_type=raw` and
+  `sec_type=none` on an associated STA vdev. Kernel-detail review: GO
+  with SSR hardening applied.
+- Three raw unencrypted QoS-data frames enqueued to the TCL ring
+  (`ret=0`): own SA, notebook SA (client impersonation), and
+  AP-impersonated to the notebook. No crash, no SSR, association stable.
+- Over-air proof via the victim's iwlwifi `rx drop misc` counter:
+  baseline 1180, after five AP-impersonated unencrypted frames 1188.
+  The victim radio received the caller-crafted frames; mac80211
+  dropped them (no key), as expected on a WPA2 BSS.
+- Conclusion: the data path DOES accept and transmit caller-crafted
+  raw unencrypted 802.11 data frames with arbitrary headers, including
+  foreign source MACs. Data-frame injection is real on this chipset
+  through the exception path. This closes the "data frames" limitation
+  for the associated in-band case.
