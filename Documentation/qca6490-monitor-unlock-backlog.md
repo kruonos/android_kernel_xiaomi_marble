@@ -184,11 +184,33 @@ only when one of these exists:
 - Monitor-vdev discard and STA-vdev experiment results:
   `Documentation/qca6490-mgmt-tx-firmware-map.md`
 
+## Publication And Distribution Plan (parked)
+
+Planned standalone repository `qca6490-mgmt-inject`:
+
+- `patches/`: clean `git format-patch` series (experiment telemetry commits
+  squashed out), applicable to any qcacld-3.0 tree.
+- `module/`: KernelSU module template (module.prop + service.sh +
+  prebuilt qca_cld3_qca6490.ko for the Bouquet 5.10.258-v4.9 kernel).
+- `tools/`: existing userspace tools and device scripts.
+- `docs/`: firmware map, limitations, backlog, README with build recipe
+  for other kernels and the own-hardware scope framing.
+
+KernelSU module notes:
+
+- All feature changes live inside qca_cld3_qca6490.ko; the boot Image and
+  cfg80211 stay untouched, so a module-only install is sufficient for
+  matching-kernel users.
+- Cross-kernel portability requires rebuilding the module per kernel
+  (vermagic and symbol CRCs); the patchset is the portable artifact.
+- Module reload mechanics: disable Wi-Fi, unload/load the driver module,
+  re-enable (or reboot with early mount).
+
+Status: parked until operator requests assembly.
+
 ## Progress Log
 
-### 2026-08-25
-
-- Item 2 executed on the connected STA (PRINT POST 5G, 5745 MHz) through
+### 2026-08-25- Item 2 executed on the connected STA (PRINT POST 5G, 5745 MHz) through
   the direct trigger:
   - QoS data-shaped frame (fc=0x8800, 26 bytes, DA=AP, SA=own, BSSID=AP):
     firmware `COMPLETE_OK` (`status=0`). The management TX engine accepted
