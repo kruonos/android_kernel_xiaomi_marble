@@ -163,6 +163,18 @@ module_param_named(monitor_spoof_tx_sap, monitor_spoof_tx_sap, bool,
 MODULE_PARM_DESC(monitor_spoof_tx_sap,
 		 "Route monitor_spoof_tx through the SAP vdev (default: STA)");
 
+static bool monitor_spoof_tx_data;
+
+module_param_named(monitor_spoof_tx_data, monitor_spoof_tx_data, bool,
+		   S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_spoof_tx_data,
+		 "Route monitor_spoof_tx through the DP exception data path (raw, unencrypted)");
+
+static bool hdd_mon_probe_tx_freq_allowed(uint32_t freq);
+
+static int hdd_data_exc_tx(struct hdd_adapter *adapter, const uint8_t *frame,
+			   size_t frame_len, uint32_t chan_freq);
+
 static int monitor_spoof_tx_set(const char *val, const struct kernel_param *kp)
 {
 	struct hdd_context *hdd_ctx;
@@ -211,6 +223,11 @@ static int monitor_spoof_tx_set(const char *val, const struct kernel_param *kp)
 		goto out;
 	}
 
+	if (READ_ONCE(monitor_spoof_tx_data)) {
+		ret = hdd_data_exc_tx(adapter, frame, hex_len / 2, freq);
+		goto out;
+	}
+
 	ret = hdd_mon_probe_mgmt_tx(adapter, frame, hex_len / 2, freq);
 out:
 	WRITE_ONCE(monitor_spoof_tx_ret, ret);
@@ -237,6 +254,68 @@ module_param_cb(monitor_spoof_tx, &monitor_spoof_tx_ops, NULL,
 		S_IWUSR | S_IRUSR);
 MODULE_PARM_DESC(monitor_spoof_tx,
 		 "Direct STA vdev mgmt TX trigger: write 'freq:hex-frame'");
+
+static int hdd_data_exc_tx(struct hdd_adapter *adapter, const uint8_t *frame,
+			   size_t frame_len, uint32_t chan_freq)
+{
+	struct cdp_tx_exception_metadata tx_exc = { 0 };
+	void *soc;
+	qdf_nbuf_t nbuf;
+
+	if (!hdd_is_monitor_data_tx_enabled() ||
+	    hdd_validate_adapter(adapter) ||
+	    adapter->device_mode != QDF_STA_MODE ||
+	    cds_is_driver_transitioning())
+		return -EPERM;
+
+	if (!chan_freq || !hdd_mon_probe_tx_freq_allowed(chan_freq))
+		return -EINVAL;
+	if (!hdd_cm_is_vdev_connected(adapter) ||
+	    !hdd_cm_is_vdev_associated(adapter) ||
+	    chan_freq != hdd_get_adapter_home_channel(adapter))
+		return -ENODEV;
+
+	if (!frame || frame_len < 26 || frame_len > HDD_MON_RAW_TX_MAX_LEN)
+		return -EINVAL;
+	/* The raw DP path only accepts DATA-type 802.11 frames. */
+	if ((frame[0] & 0x0c) != 0x08)
+		return -EINVAL;
+
+	nbuf = qdf_nbuf_alloc(NULL,
+			      roundup(frame_len + HDD_MON_PROBE_TX_HEADROOM, 4),
+			      HDD_MON_PROBE_TX_HEADROOM, sizeof(uint32_t),
+			      false);
+	if (!nbuf)
+		return -ENOMEM;
+	qdf_nbuf_put_tail(nbuf, frame_len);
+	qdf_mem_copy(qdf_nbuf_data(nbuf), frame, frame_len);
+
+	soc = cds_get_context(QDF_MODULE_ID_SOC);
+	if (!soc) {
+		qdf_nbuf_free(nbuf);
+		return -ENODEV;
+	}
+
+	tx_exc.peer_id = 0xffff; /* HTT_INVALID_PEER: normal vdev routing */
+	tx_exc.tid = 0;
+	tx_exc.tx_encap_type = htt_cmn_pkt_type_raw;
+	tx_exc.sec_type = cdp_sec_type_none;
+	tx_exc.is_tx_sniffer = 0;
+	tx_exc.ppdu_cookie = 0;
+
+	hdd_dp_ssr_protect();
+	nbuf = cdp_tx_send_exc(soc, adapter->vdev_id, nbuf, &tx_exc);
+	hdd_dp_ssr_unprotect();
+
+	if (nbuf) {
+		qdf_nbuf_free(nbuf);
+		pr_err("mon_data_tx: send_exc rejected frame\n");
+		return -EIO;
+	}
+
+	pr_err("mon_data_tx: raw frame submitted len %zu\n", frame_len);
+	return 0;
+}
 
 static u32 monitor_sap_force_channel;
 

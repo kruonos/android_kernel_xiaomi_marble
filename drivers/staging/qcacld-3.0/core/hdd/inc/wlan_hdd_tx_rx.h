@@ -102,6 +102,7 @@ bool hdd_is_monitor_probe_tx_enabled(void);
 bool hdd_is_monitor_probe_tx_sta_vdev_enabled(void);
 bool hdd_is_monitor_mgmt_tx_unrestricted(void);
 bool hdd_is_monitor_mgmt_tx_spoof_sa(void);
+bool hdd_is_monitor_data_tx_enabled(void);
 #endif
 
 /**
