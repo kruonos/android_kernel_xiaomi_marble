@@ -238,6 +238,55 @@ module_param_cb(monitor_spoof_tx, &monitor_spoof_tx_ops, NULL,
 MODULE_PARM_DESC(monitor_spoof_tx,
 		 "Direct STA vdev mgmt TX trigger: write 'freq:hex-frame'");
 
+static u32 monitor_sap_force_channel;
+
+static int monitor_sap_force_channel_set(const char *val,
+					 const struct kernel_param *kp)
+{
+	struct hdd_context *hdd_ctx;
+	struct hdd_adapter *adapter;
+	u32 freq;
+	int ret;
+
+	(void)kp;
+	ret = kstrtou32(val, 0, &freq);
+	if (ret)
+		return ret;
+
+	hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	if (!hdd_ctx)
+		return -ENODEV;
+	adapter = hdd_get_adapter(hdd_ctx, QDF_SAP_MODE);
+	if (!adapter) {
+		pr_err("sap_force_channel: no SAP adapter\n");
+		return -ENODEV;
+	}
+
+	hdd_switch_sap_chan_freq(adapter, freq, true);
+	WRITE_ONCE(monitor_sap_force_channel, freq);
+	pr_err("sap_force_channel: switch to %u requested\n", freq);
+
+	return 0;
+}
+
+static int monitor_sap_force_channel_get(char *buf,
+					 const struct kernel_param *kp)
+{
+	(void)kp;
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 READ_ONCE(monitor_sap_force_channel));
+}
+
+static const struct kernel_param_ops monitor_sap_force_channel_ops = {
+	.set = monitor_sap_force_channel_set,
+	.get = monitor_sap_force_channel_get,
+};
+
+module_param_cb(monitor_sap_force_channel, &monitor_sap_force_channel_ops,
+		NULL, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_sap_force_channel,
+		 "Move the SAP vdev to a frequency in MHz via (E)CSA");
+
 static int hdd_mon_probe_tx_status_get(char *buf,
 				       const struct kernel_param *kp)
 {
