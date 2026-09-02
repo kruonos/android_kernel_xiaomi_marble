@@ -156,6 +156,12 @@ MODULE_PARM_DESC(monitor_mgmt_tx_chanfreq,
 		 "Explicit WMI chanfreq for monitor vdev mgmt TX (0 = vdev derived)");
 
 static int monitor_spoof_tx_ret;
+static bool monitor_spoof_tx_sap;
+
+module_param_named(monitor_spoof_tx_sap, monitor_spoof_tx_sap, bool,
+		   S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(monitor_spoof_tx_sap,
+		 "Route monitor_spoof_tx through the SAP vdev (default: STA)");
 
 static int monitor_spoof_tx_set(const char *val, const struct kernel_param *kp)
 {
@@ -198,7 +204,8 @@ static int monitor_spoof_tx_set(const char *val, const struct kernel_param *kp)
 		ret = -ENODEV;
 		goto out;
 	}
-	adapter = hdd_get_adapter(hdd_ctx, QDF_STA_MODE);
+	adapter = hdd_get_adapter(hdd_ctx, READ_ONCE(monitor_spoof_tx_sap) ?
+				  QDF_SAP_MODE : QDF_STA_MODE);
 	if (!adapter) {
 		ret = -ENODEV;
 		goto out;
@@ -323,8 +330,9 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 		       (unrestricted && adapter->device_mode == QDF_STA_MODE);
 	if (!hdd_is_monitor_probe_tx_enabled() ||
 	    hdd_validate_adapter(adapter) ||
-	    (adapter->device_mode != QDF_MONITOR_MODE &&
-	     !(use_sta_vdev && adapter->device_mode == QDF_STA_MODE)) ||
+	    (adapter->device_mode == QDF_MONITOR_MODE ? false :
+	     adapter->device_mode == QDF_STA_MODE ? !use_sta_vdev :
+	     adapter->device_mode == QDF_SAP_MODE ? !unrestricted : true) ||
 	    cds_is_driver_transitioning())
 		return -EPERM;
 
@@ -445,7 +453,8 @@ int hdd_mon_probe_mgmt_tx(struct hdd_adapter *adapter, const uint8_t *frame,
 	 * channel values are rejected by the target firmware. The monitor
 	 * vdev chanfreq is selectable through monitor_mgmt_tx_chanfreq. */
 	mgmt_param.chanfreq =
-		tx_adapter->device_mode == QDF_STA_MODE ? 0 :
+		(tx_adapter->device_mode == QDF_STA_MODE ||
+		 tx_adapter->device_mode == QDF_SAP_MODE) ? 0 :
 		monitor_mgmt_tx_chanfreq;
 	mgmt_param.pdata = qdf_nbuf_data(tx_nbuf);
 	mgmt_param.macaddr = tx_adapter->mac_addr.bytes;
