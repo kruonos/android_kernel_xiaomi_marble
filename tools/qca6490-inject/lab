@@ -250,6 +250,56 @@ act_monitor() {                          # $1 freq, $2 seconds
     say "restore with: lab wifi-restore"
 }
 
+# act_honeypot <ssid> <pass|-> <duration-sec> <out-name|->
+# repeater honeypot: STA stays connected (uplink), AP on top,
+# all client traffic captured on the AP interface as pcap.
+act_honeypot() {
+    ssid=${1:-LabAP}
+    pass=${2:--}
+    dur=${3:-60}
+    name=${4:-}
+    if [ "$pass" = "-" ] || [ -z "$pass" ]; then pass=""; fi
+    [ "$name" = "-" ] && name=""
+    out="$P/${name:-honey_$(date +%Y%m%d_%H%M%S)}.pcap"
+    freq=$(cur_freq); bssid=$(cur_bssid)
+    hdr "honeypot: '$ssid'"
+    if [ -z "$freq" ]; then
+        warn "no uplink (STA not connected) - clients get no internet, capture still works"
+    else
+        ok "uplink: $bssid @ ${freq} MHz - client traffic routes through this phone"
+    fi
+    cmd wifi stop-softap >/dev/null 2>&1
+    sleep 1
+    if [ -z "$pass" ]; then
+        say "starting OPEN AP (no password)..."
+        cmd wifi start-softap "$ssid" open >/dev/null 2>&1
+    else
+        say "starting WPA2 AP (pass: $pass)..."
+        cmd wifi start-softap "$ssid" wpa2 "$pass" >/dev/null 2>&1
+    fi
+    sleep 9
+    iface=$(cmd wifi status 2>/dev/null | grep -oE "wlan[0-9]+=SoftApInfo" | head -1 | cut -d= -f1)
+    [ -z "$iface" ] && iface=wlan2
+    got=$(cmd wifi status 2>/dev/null | grep -o "frequency= *[0-9]*" | head -1 | tr -dc 0-9)
+    if [ -z "$got" ]; then
+        sleep 4
+        got=$(cmd wifi status 2>/dev/null | grep -o "frequency= *[0-9]*" | head -1 | tr -dc 0-9)
+    fi
+    say "AP interface : $iface"
+    say "AP channel   : ${got:-?} MHz"
+    if [ -z "$pass" ]; then
+        warn "OPEN network - anyone can join; their traffic is unencrypted to the phone"
+    fi
+    warn "capture sees: DNS + HTTP fully, HTTPS destinations (SNI); TLS content stays sealed"
+    hdr "capturing $iface for ${dur}s -> $out"
+    "$P/eth_dump" "$iface" "$dur" "$out"
+    sz=$(ls -la "$out" 2>/dev/null | awk '{print $5}')
+    ok "saved: $out (${sz:-?} bytes)"
+    say "pull with:  adb pull $out"
+    say "open in Wireshark directly (Ethernet linktype)"
+    warn "Android auto-stops the AP after ~10 min with no clients joined"
+}
+
 cmd_status() {
     hdr "status"
     say "kernel    : $(uname -r)"
@@ -342,23 +392,31 @@ flow_main_menu() {
         hdr "main menu"
         echo "   1) scan + pick a target (guided)"
         echo "   2) status"
-        echo "   3) monitor capture (any channel)"
-        echo "   4) raw mgmt frame (direct)"
-        echo "   5) raw data frame (direct)"
-        echo "   6) restore normal wifi (gates off)"
+        echo "   3) honeypot - open AP repeater + full capture"
+        echo "   4) monitor capture (any channel)"
+        echo "   5) raw mgmt frame (direct)"
+        echo "   6) raw data frame (direct)"
+        echo "   7) restore normal wifi (gates off)"
         echo "   q) quit"
         ask "choose: "
         read m || m=q
         case "$m" in
         1) if pick_ap; then flow_attack_menu; fi ;;
         2) cmd_status ;;
-        3) ask "freq [2412]: "; read f; ask "seconds [20]: "; read s
+        3)
+            ask "AP SSID [LabAP]: "; read s || s=""
+            ask "passphrase ('-' = open network): "; read pw || pw=""
+            ask "capture duration seconds [60]: "; read d || d=""
+            ask "output name (optional): "; read o || o=""
+            act_honeypot "${s:-LabAP}" "${pw:--}" "${d:-60}" "${o:--}"
+            ;;
+        4) ask "freq [2412]: "; read f; ask "seconds [20]: "; read s
            act_monitor "${f:-2412}" "${s:-20}" ;;
-        4) ask "freq: "; read f; ask "hex frame: "; read hx
+        5) ask "freq: "; read f; ask "hex frame: "; read hx
            [ -n "$f" ] && [ -n "$hx" ] && act_mgmt "$f" "$hx" ;;
-        5) ask "freq: "; read f; ask "hex data frame: "; read hx
+        6) ask "freq: "; read f; ask "hex data frame: "; read hx
            [ -n "$f" ] && [ -n "$hx" ] && act_data "$f" "$hx" ;;
-        6) gates_all_off; cmd wifi stop-softap >/dev/null 2>&1
+        7) gates_all_off; cmd wifi stop-softap >/dev/null 2>&1
            echo 0 > /sys/module/qca6490/parameters/con_mode
            svc wifi enable; sleep 4
            ok "restored (reboot if wifi did not come back)" ;;
@@ -389,6 +447,8 @@ cmd_help() {
     echo "    mgmt <freq> <hex>               raw management frame"
     echo "    data <freq> <hex>               raw data frame (v20 DP path)"
     echo "    monitor <freq> [seconds]        true monitor + capture"
+    echo "    honeypot <ssid> <pass|-> <sec>  repeater: STA up + AP + pcap"
+    echo "               [name]               capture of all client traffic"
     echo "    wifi-restore                    gates off, normal wifi"
     echo "    gates-off                       all gates N"
 }
@@ -405,6 +465,7 @@ case "${1:-menu}" in
     mgmt)         shift; act_mgmt "$@" ;;
     data)         shift; act_data "$@" ;;
     monitor)      shift; act_monitor "$@" ;;
+    honeypot)     shift; act_honeypot "$@" ;;
     wifi-restore) gates_all_off; cmd wifi stop-softap >/dev/null 2>&1
                   echo 0 > /sys/module/qca6490/parameters/con_mode
                   svc wifi enable; sleep 5; cmd wifi status | head -3
