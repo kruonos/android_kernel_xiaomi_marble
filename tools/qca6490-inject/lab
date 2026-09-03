@@ -387,7 +387,9 @@ flow_attack_menu() {
         4)
             ask "seconds [20]: "
             read s || s=""
-            act_monitor "$T_FREQ" "${s:-20}"
+            ask "save pcap as (empty = count only): "
+            read o || o=""
+            act_monitor "$T_FREQ" "${s:-20}" "${o:--}"
             ;;
         5)
             ask "hex data frame (fc 0x8800 + da + sa + bssid + seq + qos): "
