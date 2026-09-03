@@ -27,15 +27,46 @@ static const char *mac_str(const unsigned char *m)
     return out;
 }
 
+static void put32(FILE *f, uint32_t v)
+{
+    fwrite(&v, 4, 1, f);
+}
+
+static void put16(FILE *f, uint16_t v)
+{
+    fwrite(&v, 2, 1, f);
+}
+
+/* pcap linktype 127 = LINKTYPE_IEEE802_11_RADIOTAP */
+static FILE *pcap_open(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        perror("fopen");
+        return NULL;
+    }
+    put32(f, 0xa1b2c3d4);
+    put16(f, 2);
+    put16(f, 4);
+    put32(f, 0);
+    put32(f, 0);
+    put32(f, 65535);
+    put32(f, 127);
+    fflush(f);
+    return f;
+}
+
 int main(int argc, char **argv)
 {
     const char *ifname = argc > 1 ? argv[1] : "mon0";
     int seconds = argc > 2 ? atoi(argv[2]) : 15;
-    int fd, ifindex, count = 0, radiotap = 0;
+    const char *outpath = argc > 3 ? argv[3] : NULL;
+    int fd, ifindex, count = 0, radiotap = 0, saved = 0;
     unsigned char buf[8192];
     struct sockaddr_ll sll = {0};
     struct timeval timeout = {.tv_sec = 1, .tv_usec = 0};
     time_t deadline;
+    FILE *out = NULL;
 
     /* per-type counters */
     unsigned long beacon = 0, probe_req = 0, probe_resp = 0, auth = 0;
@@ -47,6 +78,12 @@ int main(int argc, char **argv)
     int i;
 
     memset(sa_table, 0, sizeof(sa_table));
+
+    if (outpath) {
+        out = pcap_open(outpath);
+        if (!out)
+            return 7;
+    }
 
     ifindex = if_nametoindex(ifname);
     if (!ifindex) {
@@ -96,6 +133,17 @@ int main(int argc, char **argv)
             continue;
         radiotap++;
 
+        if (out) {
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            put32(out, (uint32_t)tv.tv_sec);
+            put32(out, (uint32_t)tv.tv_usec);
+            put32(out, (uint32_t)len);
+            put32(out, (uint32_t)len);
+            fwrite(buf, 1, (size_t)len, out);
+            saved++;
+        }
+
         f = buf + hdrlen;
         if ((size_t)len < hdrlen + 10)
             continue;
@@ -142,8 +190,14 @@ int main(int argc, char **argv)
                    count, len, hdrlen, fc0, fc1);
     }
 
+    if (out) {
+        fflush(out);
+        fclose(out);
+    }
     printf("\ncapture: %d s  frames=%d  radiotap=%d  bytes=%lu\n",
            seconds, count, radiotap, bytes_total);
+    if (outpath)
+        printf("  saved %d frames -> %s\n", saved, outpath);
     printf("  beacons        : %lu\n", beacon);
     printf("  probe requests : %lu\n", probe_req);
     printf("  probe responses: %lu\n", probe_resp);

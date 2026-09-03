@@ -231,8 +231,12 @@ act_mgmt() {                             # $1 freq, $2 hex
     show_counters
 }
 
-act_monitor() {                          # $1 freq, $2 seconds
-    freq=${1:-2412}; secs=${2:-20}
+act_monitor() {                          # $1 freq, $2 seconds, $3 out-name|-|""=ask-no
+    freq=${1:-2412}; secs=${2:-20}; name=${3:--}
+    out=""
+    if [ -n "$name" ] && [ "$name" != "-" ]; then
+        out="$P/${name%.pcap}.pcap"
+    fi
     hdr "true monitor conparam: $freq MHz for ${secs}s"
     cmd wifi stop-softap >/dev/null 2>&1
     svc wifi disable
@@ -245,8 +249,17 @@ act_monitor() {                          # $1 freq, $2 seconds
     printf '%s 0\n' "$freq" > /sys/class/net/wlan0/monitor_mode_channel 2>/dev/null
     stage=$(cat "$Q/mon_chan_set_stage" 2>/dev/null)
     [ "$stage" = "20" ] && ok "channel set (stage 20)" || warn "channel stage=$stage (20 = ok)"
-    say "capturing ${secs}s ..."
-    "$P/mon_capture" wlan0 "$secs" 2>/dev/null || "$P/mon_capture" mon0 "$secs"
+    say "capturing ${secs}s on $freq ..."
+    if [ -n "$out" ]; then
+        "$P/mon_capture" wlan0 "$secs" "$out" 2>/dev/null || \
+            "$P/mon_capture" mon0 "$secs" "$out"
+        sz=$(ls -la "$out" 2>/dev/null | awk '{print $5}')
+        ok "saved: $out (${sz:-?} bytes)"
+        say "pull with:  adb pull $out"
+        say "open in Wireshark directly (radiotap + 802.11)"
+    else
+        "$P/mon_capture" wlan0 "$secs" 2>/dev/null || "$P/mon_capture" mon0 "$secs"
+    fi
     say "restore with: lab wifi-restore"
 }
 
@@ -411,7 +424,8 @@ flow_main_menu() {
             act_honeypot "${s:-LabAP}" "${pw:--}" "${d:-60}" "${o:--}"
             ;;
         4) ask "freq [2412]: "; read f; ask "seconds [20]: "; read s
-           act_monitor "${f:-2412}" "${s:-20}" ;;
+           ask "save pcap as (empty = count only): "; read o
+           act_monitor "${f:-2412}" "${s:-20}" "${o:--}" ;;
         5) ask "freq: "; read f; ask "hex frame: "; read hx
            [ -n "$f" ] && [ -n "$hx" ] && act_mgmt "$f" "$hx" ;;
         6) ask "freq: "; read f; ask "hex data frame: "; read hx
@@ -446,7 +460,8 @@ cmd_help() {
     echo "    eviltwin <ssid> <pass> <freq>   clone an SSID on a channel"
     echo "    mgmt <freq> <hex>               raw management frame"
     echo "    data <freq> <hex>               raw data frame (v20 DP path)"
-    echo "    monitor <freq> [seconds]        true monitor + capture"
+    echo "    monitor <freq> [seconds] [name] true monitor + capture"
+    echo "                                    (name given = save Wireshark pcap)"
     echo "    honeypot <ssid> <pass|-> <sec>  repeater: STA up + AP + pcap"
     echo "               [name]               capture of all client traffic"
     echo "    wifi-restore                    gates off, normal wifi"
