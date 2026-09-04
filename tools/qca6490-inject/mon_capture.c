@@ -13,11 +13,73 @@
 #include <unistd.h>
 
 #define MAX_SA 256
+#define MAX_CLIENTS 256
 
 struct sa_entry {
     unsigned char mac[6];
     unsigned long count;
 };
+
+static unsigned char filter_bssid[6];
+static int filter_active = 0;
+static struct sa_entry clients[MAX_CLIENTS];
+static int client_count = 0;
+
+static int is_multicast(const unsigned char *m)
+{
+    return m[0] & 0x01;
+}
+
+static int is_zero(const unsigned char *m)
+{
+    return m[0] == 0 && m[1] == 0 && m[2] == 0 &&
+           m[3] == 0 && m[4] == 0 && m[5] == 0;
+}
+
+static int is_bcast(const unsigned char *m)
+{
+    return m[0] == 0xff && m[1] == 0xff && m[2] == 0xff &&
+           m[3] == 0xff && m[4] == 0xff && m[5] == 0xff;
+}
+
+/* record a candidate client MAC if it is new */
+static void add_client(const unsigned char *m)
+{
+    int i;
+    if (!filter_active || client_count >= MAX_CLIENTS)
+        return;
+    if (is_multicast(m) || is_zero(m) || is_bcast(m))
+        return;
+    if (!memcmp(m, filter_bssid, 6))
+        return;
+    for (i = 0; i < client_count; i++) {
+        if (!memcmp(clients[i].mac, m, 6)) {
+            clients[i].count++;
+            return;
+        }
+    }
+    memcpy(clients[client_count].mac, m, 6);
+    clients[client_count].count = 1;
+    client_count++;
+}
+
+/* correlate: which transmitters/receivers belong to the filter BSSID */
+static void correlate(const unsigned char *a1, const unsigned char *a2,
+                      const unsigned char *a3)
+{
+    /* uplink or mgmt from a client: addr2 = client, addr1/addr3 = bssid */
+    if (!memcmp(a1, filter_bssid, 6) || !memcmp(a3, filter_bssid, 6))
+        add_client(a2);
+    /* downlink: addr2 = bssid, addr1 = the receiving client */
+    else if (!memcmp(a2, filter_bssid, 6))
+        add_client(a1);
+}
+
+static int parse_bssid(const char *text, unsigned char *out)
+{
+    return sscanf(text, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
+                  &out[0], &out[1], &out[2], &out[3], &out[4], &out[5]) == 6;
+}
 
 static const char *mac_str(const unsigned char *m)
 {
@@ -60,7 +122,8 @@ int main(int argc, char **argv)
 {
     const char *ifname = argc > 1 ? argv[1] : "mon0";
     int seconds = argc > 2 ? atoi(argv[2]) : 15;
-    const char *outpath = argc > 3 ? argv[3] : NULL;
+    const char *outpath = argc > 3 && strcmp(argv[3], "-") ? argv[3] : NULL;
+    const char *clients_out = argc > 5 && strcmp(argv[5], "-") ? argv[5] : NULL;
     int fd, ifindex, count = 0, radiotap = 0, saved = 0;
     unsigned char buf[8192];
     struct sockaddr_ll sll = {0};
@@ -78,6 +141,15 @@ int main(int argc, char **argv)
     int i;
 
     memset(sa_table, 0, sizeof(sa_table));
+
+    if (argc > 4 && strcmp(argv[4], "-")) {
+        if (parse_bssid(argv[4], filter_bssid))
+            filter_active = 1;
+        else {
+            fprintf(stderr, "bad bssid filter: %s\n", argv[4]);
+            return 8;
+        }
+    }
 
     if (outpath) {
         out = pcap_open(outpath);
@@ -170,6 +242,10 @@ int main(int argc, char **argv)
                 data_other++;
         }
 
+        /* client correlation for the filter BSSID (mgmt/data have 3 addrs) */
+        if (filter_active && type != 1 && (size_t)len >= hdrlen + 16)
+            correlate(f + 4, f + 10, f + 16);
+
         /* unique transmitters (address 2) */
         found = 0;
         for (i = 0; i < sa_count; i++) {
@@ -215,6 +291,21 @@ int main(int argc, char **argv)
     }
     if (sa_count > 20)
         printf("    ... %d more\n", sa_count - 20);
+    if (filter_active) {
+        printf("  clients of %s : %d\n", mac_str(filter_bssid),
+               client_count);
+        for (i = 0; i < client_count; i++)
+            printf("    %s  x%lu\n", mac_str(clients[i].mac),
+                   clients[i].count);
+    }
+    if (clients_out) {
+        FILE *cf = fopen(clients_out, "w");
+        if (cf) {
+            for (i = 0; i < client_count; i++)
+                fprintf(cf, "%s\n", mac_str(clients[i].mac));
+            fclose(cf);
+        }
+    }
     close(fd);
     return radiotap ? 0 : 1;
 }
