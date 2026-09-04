@@ -77,8 +77,14 @@ static void correlate(const unsigned char *a1, const unsigned char *a2,
 
 static int parse_bssid(const char *text, unsigned char *out)
 {
-    return sscanf(text, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
-                  &out[0], &out[1], &out[2], &out[3], &out[4], &out[5]) == 6;
+    if (sscanf(text, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
+               &out[0], &out[1], &out[2], &out[3], &out[4], &out[5]) == 6)
+        return 1;
+    if (strlen(text) == 12 &&
+        sscanf(text, "%2hhx%2hhx%2hhx%2hhx%2hhx%2hhx",
+               &out[0], &out[1], &out[2], &out[3], &out[4], &out[5]) == 6)
+        return 1;
+    return 0;
 }
 
 static const char *mac_str(const unsigned char *m)
