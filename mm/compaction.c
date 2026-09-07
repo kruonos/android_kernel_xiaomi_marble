@@ -9,6 +9,7 @@
  * Copyright IBM Corp. 2007-2010 Mel Gorman <mel@csn.ul.ie>
  */
 #include <linux/cpu.h>
+#include <linux/init.h>
 #include <linux/swap.h>
 #include <linux/migrate.h>
 #include <linux/compaction.h>
@@ -2693,17 +2694,43 @@ int sysctl_compact_memory;
  * background. It takes values in the range [0, 100].
  */
 unsigned int __read_mostly sysctl_compaction_proactiveness = 20;
+static unsigned int __read_mostly sysctl_compaction_proactiveness_floor = 10;
+
+static int __init compaction_proactiveness_floor_setup(char *str)
+{
+	unsigned int value;
+
+	if (kstrtouint(str, 0, &value))
+		return 0;
+
+	sysctl_compaction_proactiveness_floor = min(value, 100U);
+	return 1;
+}
+__setup("compaction_proactiveness_floor=",
+	compaction_proactiveness_floor_setup);
 
 int compaction_proactiveness_sysctl_handler(struct ctl_table *table, int write,
 		void *buffer, size_t *length, loff_t *ppos)
 {
+	unsigned int floor, new, old;
 	int rc, nid;
 
+	old = READ_ONCE(sysctl_compaction_proactiveness);
 	rc = proc_dointvec_minmax(table, write, buffer, length, ppos);
 	if (rc)
 		return rc;
 
-	if (write && sysctl_compaction_proactiveness) {
+	if (!write)
+		return 0;
+
+	new = READ_ONCE(sysctl_compaction_proactiveness);
+	floor = READ_ONCE(sysctl_compaction_proactiveness_floor);
+	if (floor && new < floor) {
+		new = floor;
+		WRITE_ONCE(sysctl_compaction_proactiveness, new);
+	}
+
+	if (new && new != old) {
 		for_each_online_node(nid) {
 			pg_data_t *pgdat = NODE_DATA(nid);
 
