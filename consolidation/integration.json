@@ -1,0 +1,27 @@
+{
+  "canonical_directory": "android_kernel_xiaomi_marble-bouquet",
+  "active_branch": "unified/all-features-20260907",
+  "original_states": {
+    "baseline": "preserve/baseline-20260907",
+    "csi": "preserve/csi-20260907",
+    "mglru": "preserve/mglru-20260907",
+    "wifi": "wifi/monitor-mode"
+  },
+  "integration": {
+    "base": "wifi/monitor-mode",
+    "merged": ["preserve/csi-20260907", "preserve/mglru-20260907"],
+    "baseline_policy": "MGLRU default-on retained exactly in marble_defconfig; the default-off experiment remains on its preservation branch",
+    "camera": "Keep the CSI camera validation revert; original baseline version remains preserved",
+    "core_memory_bluetooth_thermal": "Source-identical to preserve/mglru-20260907",
+    "original_feature_union_tracked_paths": 82460
+  },
+  "preservation": {
+    "archives": "archives/",
+    "original_file_inventories": "manifests/",
+    "source_to_archive_comparison": "logs/verify-archives-serial.log",
+    "source_to_git_verification": "manifests/snapshot-verification.json",
+    "prior_release_outputs": "releases/",
+    "reflog_history_refs": "refs/preserve/reflog/"
+  },
+  "validation_boundary": "Source preservation and integration are not a device-runtime proof. No device flashing is performed by these procedures."
+}

@@ -5,15 +5,31 @@ white='\033[0m'
 red='\033[0;31m'
 gre='\e[0;32m'
 
-cd ${0%/*}
+cd -- "${0%/*}" || exit 1
 
-KDIR=$(pwd)
+KDIR=$(pwd -P)
 DEFCONFIG=marble_defconfig
 IMAGE=${KDIR}/out/arch/arm64/boot/Image
-OUTPUT_DIR=${KDIR}/../Bouquet_marble_release
+OUTPUT_DIR=${KDIR}/release
 KERNELSU_REPO=${KDIR}/../KernelSU
 SUSFS_REPO=${KDIR}/../susfs4ksu
 DEVICETREE="arch/arm64/boot/dts/vendor/qcom"
+
+# Keep writes inside this checkout, never the preserved workspace release.
+export TMPDIR="${KDIR}/consolidation/scratch/build"
+for path in "$OUTPUT_DIR" "$TMPDIR"; do
+	case "$(realpath -m -- "$path")/" in
+		"$KDIR/"*) ;;
+		*) echo "refusing output outside kernel checkout: $path" >&2; exit 1 ;;
+	esac
+done
+if [ -e "$OUTPUT_DIR" ] && [ -n "$(find "$OUTPUT_DIR" -type l -print -quit)" ]; then
+	echo "refusing symlinked release write targets" >&2
+	exit 1
+fi
+mkdir -p "$TMPDIR" || exit 1
+JOBS=${JOBS:-4}
+case "$JOBS" in 1|2|3|4) ;; *) echo 'JOBS must be 1, 2, 3, or 4' >&2; exit 1;; esac
 
 mkdir -p $OUTPUT_DIR
 mkdir -p ${OUTPUT_DIR}/vendor_boot_modules
@@ -27,7 +43,7 @@ no_mkclean=false
 no_ccache=false
 with_ksu=false
 with_susfs=false
-make_target=
+make_target=()
 
 while [ $# != 0 ]; do
 	case $1 in
@@ -44,7 +60,7 @@ while [ $# != 0 ]; do
 		};;
 		"--") {
 			shift
-			make_target=$*
+			make_target=("$@")
 			break
 		};;
 		*) {
@@ -62,6 +78,13 @@ EOF
 		};;
 	esac
 	shift
+done
+
+for arg in "${make_target[@]}"; do
+	case "$arg" in
+		--|O=*|KBUILD_OUTPUT=*|MAKEFLAGS=*|-C*|--directory*|-f*|--file*)
+			echo "unsupported make override in isolated build: $arg" >&2; exit 1 ;;
+	esac
 done
 
 ########## Preparation Phase ##########
@@ -156,8 +179,10 @@ if ${with_ksu}; then
 	fi
 fi
 
-$no_mkclean || make $make_flags KCFLAGS="$make_kcflags" KBUILD_LDFLAGS="$make_kbuild_ldflags" mrproper
-make $make_flags KCFLAGS="$make_kcflags" KBUILD_LDFLAGS="$make_kbuild_ldflags" "$use_defconfig"
+if ! $no_mkclean; then
+	make $make_flags KCFLAGS="$make_kcflags" KBUILD_LDFLAGS="$make_kbuild_ldflags" mrproper -j"$JOBS" || exit 1
+fi
+make $make_flags KCFLAGS="$make_kcflags" KBUILD_LDFLAGS="$make_kbuild_ldflags" "$use_defconfig" -j"$JOBS" || exit 1
 
 if [ -d "${KDIR}/${DEVICETREE}" ] && [ -d "${KDIR}/out/${DEVICETREE}" ]; then
 	rm -rf "${KDIR}/out/${DEVICETREE}"
@@ -174,7 +199,7 @@ fi
 
 t_start=$(date +"%s")
 
-make $make_flags KCFLAGS="$make_kcflags" KBUILD_LDFLAGS="$make_kbuild_ldflags" -j$(nproc --all) $make_target
+make $make_flags KCFLAGS="$make_kcflags" KBUILD_LDFLAGS="$make_kbuild_ldflags" "${make_target[@]}" -j"$JOBS"
 
 if [ $? != 0 ]; then
 	echo -e "$red << Failed to compile, fix the errors first >>$white"
@@ -616,14 +641,14 @@ t_diff=$(($t_end - $t_start))
 echo -e "$gre << Build completed in $(($t_diff / 60)) minutes and $(($t_diff % 60)) seconds >> \n $white"
 
 if [ -d ${KDIR}/${DEVICETREE} ] && [ -d ${KDIR}/out/${DEVICETREE} ]; then
-	mkdir -p /tmp/devicetree_base
-	mkdir -p /tmp/devicetree_techpack
+	dt_stage=$(mktemp -d "${TMPDIR}/devicetree.XXXXXXXX") || exit 1
+	mkdir -p "$dt_stage/base" "$dt_stage/techpack" || exit 1
 	mkdir -p ${OUTPUT_DIR}/devicetree
 	rm ${OUTPUT_DIR}/devicetree/* 2>/dev/null
 
 	# Only keep marble's
-	cp ${KDIR}/out/${DEVICETREE}/ukee.dtb /tmp/devicetree_base/
-	cp ${KDIR}/out/${DEVICETREE}/marble-sm7475-pm8008-overlay.dtbo /tmp/devicetree_base/
+	cp "${KDIR}/out/${DEVICETREE}/ukee.dtb" "$dt_stage/base/" || exit 1
+	cp "${KDIR}/out/${DEVICETREE}/marble-sm7475-pm8008-overlay.dtbo" "$dt_stage/base/" || exit 1
 
 	for d in \
 	    ${KDIR}/out/${DEVICETREE}/audio \
@@ -633,8 +658,8 @@ if [ -d ${KDIR}/${DEVICETREE} ] && [ -d ${KDIR}/out/${DEVICETREE} ]; then
 	    ${KDIR}/out/${DEVICETREE}/eva \
 	    ${KDIR}/out/${DEVICETREE}/mmrm \
 	    ${KDIR}/out/${DEVICETREE}/video; do
-		mkdir -p /tmp/devicetree_techpack/$(basename $d)
-		cp ${d}/*.dtbo /tmp/devicetree_techpack/$(basename $d)/
+		mkdir -p "$dt_stage/techpack/$(basename "$d")" || exit 1
+		cp "${d}"/*.dtbo "$dt_stage/techpack/$(basename "$d")/" || exit 1
 	done
 
 	echo ""
@@ -645,7 +670,7 @@ if [ -d ${KDIR}/${DEVICETREE} ] && [ -d ${KDIR}/out/${DEVICETREE} ]; then
 	require_cmd fdtoverlaymerge
 	require_cmd ufdt_apply_overlay
 	require_cmd ${AVBTOOL}
-	python3 ${KDIR}/build-tools/merge_dtbs.py -b /tmp/devicetree_base -t /tmp/devicetree_techpack -o ${OUTPUT_DIR}/devicetree || {
+	python3 "${KDIR}/build-tools/merge_dtbs.py" -b "$dt_stage/base" -t "$dt_stage/techpack" -o "${OUTPUT_DIR}/devicetree" || {
 		echo -e "${red} << Failed to merge dtbs/dtbos >>${white}"
 		exit 1
 	}
@@ -665,8 +690,10 @@ if [ -d ${KDIR}/${DEVICETREE} ] && [ -d ${KDIR}/out/${DEVICETREE} ]; then
 		exit 1
 	fi
 
-	rm -rf /tmp/devicetree_base
-	rm -rf /tmp/devicetree_techpack
+	rm -rf -- "$dt_stage"
+else
+	echo 'Missing required devicetree source or build output' >&2
+	exit 1
 fi
 
 echo ""

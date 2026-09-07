@@ -165,5 +165,7 @@ arch/arm/boot/dts/vendor
 sphinx_*/
 
 # Custom
+/consolidation/
+/release/
 /build.sh
 Documentation/devicetree/bindings
