@@ -4,6 +4,7 @@
  *
  * Copyright (c) 2019,2021 The Linux Foundation. All rights reserved.
  * Copyright (C) 2008 Intel Corp.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/iopoll.h>

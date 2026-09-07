@@ -2,29 +2,24 @@
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  *
- * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * Took is_el1_instruction_abort() from arch/arm64/mm/fault.c
- * Copyright (C) 2012 ARM Ltd
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
 #include <linux/oom.h>
 #include <trace/hooks/mm.h>
-#include <trace/hooks/signal.h>
 #include <trace/hooks/vmscan.h>
 #include <linux/printk.h>
-#include <linux/dma-mapping.h>
-#include <linux/dma-direct.h>
-#include <trace/hooks/fault.h>
-#include <asm/esr.h>
-#include <asm/ptrace.h>
+#include <linux/nodemask.h>
+#include <linux/kthread.h>
+#include <linux/swap.h>
 
 static unsigned long panic_on_oom_timeout;
 struct task_struct *saved_tsk;
+static uint kswapd_threads;
+module_param_named(kswapd_threads, kswapd_threads, uint, 0644);
 
 #define PANIC_ON_OOM_DEFER_TIMEOUT (5*HZ)
-
 
 static void readahead_set(void *data, gfp_t *flag)
 {
@@ -47,14 +42,7 @@ static void set_swap_cache(void *data, gfp_t *flag)
 	*flag |= __GFP_CMA;
 }
 
-static void reap_eligible(void *data, struct task_struct *task, bool *reap)
-{
-	/* TODO: Can this logic be moved to module params approach? */
-	if (!strcmp(task->comm, "lmkd") || !strcmp(task->comm, "PreKillActionT"))
-		*reap = true;
-}
-
-static void __oom_panic_defer(void *data, struct oom_control *oc, int *val)
+static void __maybe_unused __oom_panic_defer(void *data, struct oom_control *oc, int *val)
 {
 	int ret = 0;
 	struct task_struct *p;
@@ -89,42 +77,88 @@ static void balance_reclaim(void *unused, bool *balance_anon_file_reclaim)
 	*balance_anon_file_reclaim = true;
 }
 
-static void allow_subpage_alloc(void *data, bool *allow_subpage_alloc, struct device *dev,
-				size_t *size)
+static int kswapd_per_node_run(int nid, unsigned int kswapd_threads)
 {
-	/* Don't enable this when ZONE_DMA32 is present, as the hook isn't needed */
-	if (!zone_dma32_are_empty())
-		return;
+	pg_data_t *pgdat = NODE_DATA(nid);
+	unsigned int hid, start = 0;
+	int ret = 0;
 
-	/*
-	 * Only allow an allocation to use the default CMA area for page-sized or smaller
-	 * allocations if (1) the device is not upstream of an IOMMU and (2) one of the
-	 * regular and coherent DMA bit masks hasn't been set to 64 bits.
-	 */
-	if (dev->iommu_group == false && !(dev->coherent_dma_mask == DMA_BIT_MASK(64) &&
-	    dma_get_mask(dev) == DMA_BIT_MASK(64))) {
-		*allow_subpage_alloc = true;
-		*size = PAGE_ALIGN(*size);
+	if (pgdat->kswapd) {
+		start = 1;
+		pgdat->mkswapd[0] = pgdat->kswapd;
 	}
+
+	for (hid = start; hid < kswapd_threads; ++hid) {
+		pgdat->mkswapd[hid] = kthread_run(kswapd, pgdat, "kswapd%d:%d",
+								nid, hid);
+		if (IS_ERR(pgdat->mkswapd[hid])) {
+			/* failure at boot is fatal */
+			WARN_ON(system_state < SYSTEM_RUNNING);
+			pr_err("Failed to start kswapd%d on node %d\n",
+				hid, nid);
+			ret = PTR_ERR(pgdat->mkswapd[hid]);
+			pgdat->mkswapd[hid] = NULL;
+			continue;
+		}
+		if (!pgdat->kswapd)
+			pgdat->kswapd = pgdat->mkswapd[hid];
+	}
+	return ret;
 }
 
-static bool is_el1_instruction_abort(unsigned long esr)
+static void kswapd_per_node_stop(int nid, unsigned int kswapd_threads)
 {
-	return ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_CUR;
+	int hid = 0;
+	struct task_struct *kswapd;
+
+	for (hid = 0; hid < kswapd_threads; hid++) {
+		kswapd = NODE_DATA(nid)->mkswapd[hid];
+		if (kswapd) {
+			kthread_stop(kswapd);
+			NODE_DATA(nid)->mkswapd[hid] = NULL;
+		}
+	}
+	NODE_DATA(nid)->kswapd = NULL;
 }
 
-static void can_fixup_sea(void *unused, unsigned long addr, unsigned long esr,
-			  struct pt_regs *regs, bool *can_fixup)
+static void kswapd_threads_set(void *unused, int nid, bool *skip, bool run)
 {
-	if (!user_mode(regs) && !is_el1_instruction_abort(esr))
-		*can_fixup = true;
+	*skip = true;
+	if (run)
+		kswapd_per_node_run(nid, kswapd_threads);
 	else
-		*can_fixup = false;
+		kswapd_per_node_stop(nid, kswapd_threads);
+
+}
+
+static int init_kswapd_per_node_hook(void)
+{
+	int ret = 0;
+	int nid;
+
+	if (kswapd_threads > MAX_KSWAPD_THREADS) {
+		pr_err("Failed to set kswapd_threads to %d ,Max limit is %d\n",
+				kswapd_threads, MAX_KSWAPD_THREADS);
+		return ret;
+	} else if (kswapd_threads > 1) {
+		ret = register_trace_android_vh_kswapd_per_node(kswapd_threads_set, NULL);
+		if (ret) {
+			pr_err("Failed to register kswapd_per_node hooks\n");
+			return ret;
+		}
+		for_each_node_state(nid, N_MEMORY)
+			kswapd_per_node_run(nid, kswapd_threads);
+	}
+	return ret;
 }
 
 static int __init init_mem_hooks(void)
 {
 	int ret;
+
+	ret = init_kswapd_per_node_hook();
+	if (ret)
+		return ret;
 
 	ret = register_trace_android_rvh_set_readahead_gfp_mask(readahead_set, NULL);
 	if (ret) {
@@ -144,19 +178,6 @@ static int __init init_mem_hooks(void)
 		return ret;
 	}
 
-	ret = register_trace_android_vh_process_killed(reap_eligible, NULL);
-	if (ret) {
-		pr_err("Failed to register process_killed hooks\n");
-		return ret;
-	}
-
-	ret = register_trace_android_vh_oom_check_panic(__oom_panic_defer,
-							NULL);
-	if (ret) {
-		pr_err("Failed to register oom_check_panic hooks\n");
-		return ret;
-	}
-
 	if (IS_ENABLED(CONFIG_QCOM_BALANCE_ANON_FILE_RECLAIM)) {
 		ret = register_trace_android_rvh_set_balance_anon_file_reclaim(balance_reclaim,
 							NULL);
@@ -165,20 +186,6 @@ static int __init init_mem_hooks(void)
 			return ret;
 		}
 	}
-
-	ret = register_trace_android_vh_subpage_dma_contig_alloc(allow_subpage_alloc, NULL);
-	if (ret) {
-		pr_err("Failed to register set_dma_mask hook\n");
-		return ret;
-	}
-
-
-	ret = register_trace_android_vh_try_fixup_sea(can_fixup_sea, NULL);
-	if (ret) {
-		pr_err("Failed to register try_fixup_sea\n");
-		return ret;
-	}
-
 	return 0;
 }
 

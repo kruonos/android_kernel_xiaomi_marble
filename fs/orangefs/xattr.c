@@ -54,9 +54,7 @@ static inline int convert_to_internal_xattr_flags(int setxattr_flags)
 static unsigned int xattr_key(const char *key)
 {
 	unsigned int i = 0;
-	if (!key)
-		return 0;
-	while (*key)
+	while (key)
 		i += *key++;
 	return i % 16;
 }
@@ -177,8 +175,8 @@ ssize_t orangefs_inode_getxattr(struct inode *inode, const char *name,
 				cx->length = -1;
 				cx->timeout = jiffies +
 				    orangefs_getattr_timeout_msecs*HZ/1000;
-				hlist_add_head( &cx->node,
-                                   &orangefs_inode->xattr_cache[xattr_key(cx->key)]);
+				hash_add(orangefs_inode->xattr_cache, &cx->node,
+				    xattr_key(cx->key));
 			}
 		}
 		goto out_release_op;
@@ -231,8 +229,8 @@ ssize_t orangefs_inode_getxattr(struct inode *inode, const char *name,
 			memcpy(cx->val, buffer, length);
 			cx->length = length;
 			cx->timeout = jiffies + HZ;
-			hlist_add_head(&cx->node,
-				&orangefs_inode->xattr_cache[xattr_key(cx->key)]);
+			hash_add(orangefs_inode->xattr_cache, &cx->node,
+			    xattr_key(cx->key));
 		}
 	}
 
@@ -528,6 +526,7 @@ out_unlock:
 }
 
 static int orangefs_xattr_set_default(const struct xattr_handler *handler,
+				      struct user_namespace *mnt_userns,
 				      struct dentry *unused,
 				      struct inode *inode,
 				      const char *name,
@@ -543,8 +542,7 @@ static int orangefs_xattr_get_default(const struct xattr_handler *handler,
 				      struct inode *inode,
 				      const char *name,
 				      void *buffer,
-				      size_t size,
-				      int flags)
+				      size_t size)
 {
 	return orangefs_inode_getxattr(inode, name, buffer, size);
 

@@ -239,7 +239,8 @@ static int snd_wavefront_midi_input_open(struct snd_rawmidi_substream *substream
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
@@ -263,7 +264,8 @@ static int snd_wavefront_midi_output_open(struct snd_rawmidi_substream *substrea
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
@@ -287,11 +289,11 @@ static int snd_wavefront_midi_input_close(struct snd_rawmidi_substream *substrea
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
-	midi->substream_input[mpu] = NULL;
 	midi->mode[mpu] &= ~MPU401_MODE_INPUT;
 	spin_unlock_irqrestore (&midi->open, flags);
 
@@ -311,11 +313,11 @@ static int snd_wavefront_midi_output_close(struct snd_rawmidi_substream *substre
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
-	midi->substream_output[mpu] = NULL;
 	midi->mode[mpu] &= ~MPU401_MODE_OUTPUT;
 	spin_unlock_irqrestore (&midi->open, flags);
 	return 0;
@@ -335,9 +337,9 @@ static void snd_wavefront_midi_input_trigger(struct snd_rawmidi_substream *subst
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL) {
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 		return;
-	}
 
 	spin_lock_irqsave (&midi->virtual, flags);
 	if (up) {
@@ -374,9 +376,9 @@ static void snd_wavefront_midi_output_trigger(struct snd_rawmidi_substream *subs
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL) {
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 		return;
-	}
 
 	spin_lock_irqsave (&midi->virtual, flags);
 	if (up) {

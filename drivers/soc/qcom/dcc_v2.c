@@ -521,7 +521,7 @@ static int __dcc_ll_cfg(struct dcc_drvdata *drvdata, int curr_list)
 			if ((off - prev_off) > 0xFF ||
 			    entry->len > MAX_DCC_LEN) {
 				dev_err(drvdata->dev,
-					"DCC: Progamming error Base: 0x%x, offset 0x%x\n",
+					"DCC: Programming error Base: 0x%x, offset 0x%x\n",
 					entry->base, entry->offset);
 				ret = -EINVAL;
 				goto err;
@@ -576,7 +576,7 @@ static int __dcc_ll_cfg(struct dcc_drvdata *drvdata, int curr_list)
 
 	if (loop_start) {
 		dev_err(drvdata->dev,
-			"DCC: Progamming error: Loop unterminated\n");
+			"DCC: Programming error: Loop unterminated\n");
 		ret = -EINVAL;
 		goto err;
 	}
@@ -676,7 +676,7 @@ static bool is_dcc_enabled(struct dcc_drvdata *drvdata)
 	bool dcc_enable = false;
 	int list;
 
-	for (list = 0; list < drvdata->nr_link_list; list++) {
+	for (list = 0; list < DCC_MAX_LINK_LIST; list++) {
 		if (drvdata->enable[list]) {
 			dcc_enable = true;
 			break;
@@ -697,9 +697,8 @@ static int dcc_enable(struct dcc_drvdata *drvdata)
 
 	mutex_lock(&drvdata->mutex);
 
-	if (!is_dcc_enabled(drvdata)) {
+	if (!is_dcc_enabled(drvdata))
 		memset_io(drvdata->ram_base, 0xDE, drvdata->ram_size);
-	}
 
 	for (list = 0; list < drvdata->nr_link_list; list++) {
 
@@ -1229,24 +1228,24 @@ static ssize_t config_show(struct device *dev,
 			    &drvdata->cfg_head[drvdata->curr_list], list) {
 		switch (entry->desc_type) {
 		case DCC_READ_WRITE_TYPE:
-			len = snprintf(local_buf, 64,
+			len = scnprintf(local_buf, 64,
 				       "Index: 0x%x, mask: 0x%x, val: 0x%x\n",
 				       entry->index, entry->mask,
 				       entry->write_val);
 			break;
 		case DCC_LOOP_TYPE:
-			len = snprintf(local_buf, 64, "Index: 0x%x, Loop: %d\n",
+			len = scnprintf(local_buf, 64, "Index: 0x%x, Loop: %d\n",
 				       entry->index, entry->loop_cnt);
 			break;
 		case DCC_WRITE_TYPE:
-			len = snprintf(local_buf, 64,
+			len = scnprintf(local_buf, 64,
 				       "Write Index: 0x%x, Base: 0x%x, Offset: 0x%x, len: 0x%x APB: %d\n",
 				       entry->index, entry->base,
 				       entry->offset, entry->len,
 				       entry->apb_bus);
 			break;
 		default:
-			len = snprintf(local_buf, 64,
+			len = scnprintf(local_buf, 64,
 				       "Read Index: 0x%x, Base: 0x%x, Offset: 0x%x, len: 0x%x APB: %d\n",
 				       entry->index, entry->base,
 				       entry->offset, entry->len,
@@ -1336,7 +1335,7 @@ static int dcc_config_add(struct dcc_drvdata *drvdata, unsigned int addr,
 	offset = addr - base;
 
 	while (len) {
-		entry = devm_kzalloc(drvdata->dev, sizeof(*entry), GFP_KERNEL);
+		entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 		if (!entry) {
 			ret = -ENOMEM;
 			goto err;
@@ -1406,7 +1405,7 @@ static void dcc_config_reset(struct dcc_drvdata *drvdata)
 		list_for_each_entry_safe(entry, temp,
 					 &drvdata->cfg_head[curr_list], list) {
 			list_del(&entry->list);
-			devm_kfree(drvdata->dev, entry);
+			kfree(entry);
 			drvdata->nr_config[curr_list]--;
 		}
 	}
@@ -1518,7 +1517,7 @@ static int dcc_add_loop(struct dcc_drvdata *drvdata, unsigned long loop_cnt)
 {
 	struct dcc_config_entry *entry;
 
-	entry = devm_kzalloc(drvdata->dev, sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1584,7 +1583,7 @@ static int dcc_rd_mod_wr_add(struct dcc_drvdata *drvdata, unsigned int mask,
 		goto err;
 	}
 
-	entry = devm_kzalloc(drvdata->dev, sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry) {
 		ret = -ENOMEM;
 		goto err;
@@ -1629,7 +1628,7 @@ static int dcc_add_write(struct dcc_drvdata *drvdata, unsigned int addr,
 {
 	struct dcc_config_entry *entry;
 
-	entry = devm_kzalloc(drvdata->dev, sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1889,7 +1888,7 @@ static int dcc_sram_dev_init(struct dcc_drvdata *drvdata)
 	if (!drvdata->sram_node)
 		return -ENOMEM;
 
-	strlcpy(drvdata->sram_node, node_name, node_size);
+	strscpy(drvdata->sram_node, node_name, node_size);
 	ret = dcc_sram_dev_register(drvdata);
 	if (ret)
 		dev_err(drvdata->dev, "DCC: sram node not registered.\n");
@@ -1939,7 +1938,6 @@ static int dcc_dt_parse(struct dcc_drvdata *drvdata, struct device_node *np)
 			str_dcc_data_sink[drvdata->data_sink[curr_link_list]]);
 		}
 	}
-	drvdata->qad_output[drvdata->curr_list] = 1;
 
 	prop = of_get_property(np, "qcom,link-list", &len);
 	if (prop) {
@@ -2139,7 +2137,7 @@ static int dcc_probe(struct platform_device *pdev)
 	dcc_configure_list(drvdata, pdev->dev.of_node);
 
 	/* Add dcc info to minidump table */
-	strlcpy(md_entry.name, "KDCCDATA", sizeof(md_entry.name));
+	strscpy(md_entry.name, "KDCCDATA", sizeof(md_entry.name));
 	md_entry.virt_addr = (uintptr_t)drvdata->ram_base;
 	md_entry.phys_addr = res->start;
 	md_entry.size = drvdata->ram_size;
@@ -2162,7 +2160,7 @@ static int dcc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_HIBERNATION
+#if defined(CONFIG_DEEPSLEEP) || defined(CONFIG_HIBERNATION)
 static int dcc_state_store(struct device *dev)
 {
 	int ret = 0, n, i;
@@ -2306,6 +2304,23 @@ out:
 }
 #endif
 
+#ifdef CONFIG_DEEPSLEEP
+static int dcc_v2_suspend(struct device *dev)
+{
+	if (pm_suspend_via_firmware())
+		return dcc_state_store(dev);
+
+	return 0;
+}
+
+static int dcc_v2_resume(struct device *dev)
+{
+	if (pm_suspend_via_firmware())
+		return dcc_state_restore(dev);
+
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_HIBERNATION
 static int dcc_v2_freeze(struct device *dev)
@@ -2337,6 +2352,10 @@ static int dcc_v2_thaw(struct device *dev)
 #endif
 
 static const struct dev_pm_ops dcc_v2_pm_ops = {
+#ifdef CONFIG_DEEPSLEEP
+	.suspend         = dcc_v2_suspend,
+	.resume          = dcc_v2_resume,
+#endif
 #ifdef CONFIG_HIBERNATION
 	.freeze          = dcc_v2_freeze,
 	.restore         = dcc_v2_restore,

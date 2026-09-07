@@ -333,7 +333,7 @@ void __init efi_reserve_boot_services(void)
 
 		/*
 		 * Because the following memblock_reserve() is paired
-		 * with free_reserved_area() for this region in
+		 * with memblock_free_late() for this region in
 		 * efi_free_boot_services(), we must be extremely
 		 * careful not to reserve, and subsequently free,
 		 * critical regions of memory (like the kernel image) or
@@ -396,32 +396,16 @@ static void __init efi_unmap_pages(efi_memory_desc_t *md)
 		pr_err("Failed to unmap VA mapping for 0x%llx\n", va);
 }
 
-struct efi_freeable_range {
-	u64 start;
-	u64 end;
-};
-
-static struct efi_freeable_range *ranges_to_free;
-
-void __init efi_unmap_boot_services(void)
+void __init efi_free_boot_services(void)
 {
 	struct efi_memory_map_data data = { 0 };
 	efi_memory_desc_t *md;
 	int num_entries = 0;
-	int idx = 0;
-	size_t sz;
 	void *new, *new_md;
 
 	/* Keep all regions for /sys/kernel/debug/efi */
 	if (efi_enabled(EFI_DBG))
 		return;
-
-	sz = sizeof(*ranges_to_free) * (efi.memmap.nr_map + 1);
-	ranges_to_free = kzalloc(sz, GFP_KERNEL);
-	if (!ranges_to_free) {
-		pr_err("Failed to allocate storage for freeable EFI regions\n");
-		return;
-	}
 
 	for_each_efi_memory_desc(md) {
 		unsigned long long start = md->phys_addr;
@@ -458,7 +442,7 @@ void __init efi_unmap_boot_services(void)
 		 * 1.4.4 with SGX enabled booting Linux via Fedora 24's
 		 * grub2-efi on a hard disk.  (And no, I don't know why
 		 * this happened, but Linux should still try to boot rather
-		 * panicing early.)
+		 * panicking early.)
 		 */
 		rm_size = real_mode_size_needed();
 		if (rm_size && (start + rm_size) < (1<<20) && size >= rm_size) {
@@ -468,14 +452,18 @@ void __init efi_unmap_boot_services(void)
 		}
 
 		/*
-		 * With CONFIG_DEFERRED_STRUCT_PAGE_INIT parts of the memory
-		 * map are still not initialized and we can't reliably free
-		 * memory here.
-		 * Queue the ranges to free at a later point.
+		 * Don't free memory under 1M for two reasons:
+		 * - BIOS might clobber it
+		 * - Crash kernel needs it to be reserved
 		 */
-		ranges_to_free[idx].start = start;
-		ranges_to_free[idx].end = start + size;
-		idx++;
+		if (start + size < SZ_1M)
+			continue;
+		if (start < SZ_1M) {
+			size -= (SZ_1M - start);
+			start = SZ_1M;
+		}
+
+		memblock_free_late(start, size);
 	}
 
 	if (!num_entries)
@@ -515,31 +503,6 @@ void __init efi_unmap_boot_services(void)
 		return;
 	}
 }
-
-static int __init efi_free_boot_services(void)
-{
-	struct efi_freeable_range *range = ranges_to_free;
-	unsigned long freed = 0;
-
-	if (!ranges_to_free)
-		return 0;
-
-	while (range->start) {
-		void *start = phys_to_virt(range->start);
-		void *end = phys_to_virt(range->end);
-
-		free_reserved_area(start, end, -1, NULL);
-		freed += (end - start);
-		range++;
-	}
-	kfree(ranges_to_free);
-
-	if (freed)
-		pr_info("Freeing EFI boot services memory: %ldK\n", freed / SZ_1K);
-
-	return 0;
-}
-arch_initcall(efi_free_boot_services);
 
 /*
  * A number of config table entries get remapped to virtual addresses
@@ -737,15 +700,25 @@ int efi_capsule_setup_info(struct capsule_info *cap_info, void *kbuff,
  * @return: Returns, if the page fault is not handled. This function
  * will never return if the page fault is handled successfully.
  */
-void efi_recover_from_page_fault(unsigned long phys_addr)
+void efi_crash_gracefully_on_page_fault(unsigned long phys_addr)
 {
 	if (!IS_ENABLED(CONFIG_X86_64))
 		return;
 
 	/*
-	 * Make sure that an efi runtime service caused the page fault.
+	 * If we get an interrupt/NMI while processing an EFI runtime service
+	 * then this is a regular OOPS, not an EFI failure.
 	 */
-	if (efi_rts_work.efi_rts_id == EFI_NONE)
+	if (in_interrupt())
+		return;
+
+	/*
+	 * Make sure that an efi runtime service caused the page fault.
+	 * READ_ONCE() because we might be OOPSing in a different thread,
+	 * and we don't want to trip KTSAN while trying to OOPS.
+	 */
+	if (READ_ONCE(efi_rts_work.efi_rts_id) == EFI_NONE ||
+	    current_work() != &efi_rts_work.work)
 		return;
 
 	/*
@@ -766,7 +739,7 @@ void efi_recover_from_page_fault(unsigned long phys_addr)
 	 * Buggy efi_reset_system() is handled differently from other EFI
 	 * Runtime Services as it doesn't use efi_rts_wq. Although,
 	 * native_machine_emergency_restart() says that machine_real_restart()
-	 * could fail, it's better not to compilcate this fault handler
+	 * could fail, it's better not to complicate this fault handler
 	 * because this case occurs *very* rarely and hence could be improved
 	 * on a need by basis.
 	 */
@@ -797,6 +770,4 @@ void efi_recover_from_page_fault(unsigned long phys_addr)
 		set_current_state(TASK_IDLE);
 		schedule();
 	}
-
-	return;
 }

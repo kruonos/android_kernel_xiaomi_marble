@@ -9,7 +9,6 @@
 #include <linux/blkdev.h>
 #include <linux/fs.h>
 #include <linux/log2.h>
-#include <linux/overflow.h>
 
 #include "debug.h"
 #include "ntfs.h"
@@ -936,20 +935,12 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 
 			if (!dlcn)
 				return -EINVAL;
-
-			/* Check special combination: 0 + SPARSE_LCN64. */
-			if (!prev_lcn && dlcn == SPARSE_LCN64) {
-				lcn = SPARSE_LCN64;
-			} else if (check_add_overflow(prev_lcn, (u64)dlcn, &lcn)) {
-				return -EINVAL;
-			}
+			lcn = prev_lcn + dlcn;
 			prev_lcn = lcn;
 		} else
 			return -EINVAL;
 
-		if (check_add_overflow(vcn64, len, &next_vcn))
-			return -EINVAL;
-
+		next_vcn = vcn64 + len;
 		/* Check boundary. */
 		if (next_vcn > evcn + 1)
 			return -EINVAL;
@@ -1110,8 +1101,7 @@ int run_get_highest_vcn(CLST vcn, const u8 *run_buf, u64 *highest_vcn)
 			return -EINVAL;
 
 		run_buf += size_size + offset_size;
-		if (check_add_overflow(vcn64, len, &vcn64))
-			return -EINVAL;
+		vcn64 += len;
 
 #ifndef CONFIG_NTFS3_64BIT_CLUSTER
 		if (vcn64 > 0x100000000ull)

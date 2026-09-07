@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __MSM_PERFORMANCE_H
@@ -21,15 +22,10 @@ enum evt_update_t {
 void msm_perf_events_update(enum evt_update_t update_typ,
 			enum gfx_evt_t evt_typ, pid_t pid,
 			uint32_t ctx_id, uint32_t timestamp, bool end_of_frame);
-
-extern void frame_retire_notify(void);
 #else
 static inline void msm_perf_events_update(enum evt_update_t update_typ,
 			enum gfx_evt_t evt_typ, pid_t pid,
 			uint32_t ctx_id, uint32_t timestamp, bool end_of_frame)
-{
-}
-extern inline void frame_retire_notify(void)
 {
 }
 #endif

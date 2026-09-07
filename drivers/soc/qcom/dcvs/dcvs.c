@@ -20,6 +20,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <soc/qcom/dcvs.h>
+#include <soc/qcom/of_common.h>
 #include "dcvs_private.h"
 #include "trace-dcvs.h"
 
@@ -150,49 +151,6 @@ static ssize_t store_boost_freq(struct kobject *kobj,
 
 	return count;
 }
-
-int boost_ddr_freq(int freq)
-{
-	int ret;
-	unsigned int val = freq;
-	struct dcvs_hw *hw;
-	struct dcvs_path *path;
-	struct dcvs_voter *voter;
-	struct dcvs_freq new_freq;
-	hw = dcvs_data->hw_devs[DCVS_DDR];
-	if (hw == NULL)
-		return -ENOMEM;
-	if (val > hw->hw_max_freq)
-		return -EINVAL;
-	/* boost_freq only supported on hw with slow path */
-	path = hw->dcvs_paths[DCVS_SLOW_PATH];
-	if (!path)
-		return -EPERM;
-
-	val = max(val, hw->hw_min_freq);
-	hw->boost_freq = val;
-
-	/* must re-aggregate votes to get new freq after boost update */
-	mutex_lock(&path->voter_lock);
-	new_freq.ib = new_freq.ab = 0;
-	new_freq.hw_type = hw->type;
-	list_for_each_entry(voter, &path->voter_list, node) {
-		new_freq.ib = max(voter->freq.ib, new_freq.ib);
-		new_freq.ab += voter->freq.ab;
-	}
-	new_freq.ib = get_target_freq(path, new_freq.ib);
-	if (new_freq.ib != path->cur_freq.ib) {
-		ret = path->commit_dcvs_freqs(path, &new_freq, 1);
-		if (ret < 0)
-			pr_err("Error setting boost freq: %d\n", ret);
-	}
-	mutex_unlock(&path->voter_lock);
-
-	trace_qcom_dcvs_boost(hw->type, path->type, hw->boost_freq,
-				new_freq.ib, new_freq.ab);
-	return 0;
-}
-EXPORT_SYMBOL(boost_ddr_freq);
 
 static ssize_t show_cur_freq(struct kobject *kobj,
 				struct attribute *attr, char *buf)
@@ -754,8 +712,6 @@ static int qcom_dcvs_hw_probe(struct platform_device *pdev)
 
 	hw->hw_max_freq = hw->freq_table[hw->table_len-1];
 	hw->hw_min_freq = hw->freq_table[0];
-	/* start with boost_freq = max_freq for better boot perf */
-	hw->boost_freq = hw->hw_max_freq;
 
 	ret = of_property_read_u32(dev->of_node, QCOM_DCVS_WIDTH_PROP,
 								&hw->width);
@@ -855,16 +811,16 @@ static int qcom_dcvs_path_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&path->voter_list);
 	mutex_init(&path->voter_lock);
 
-	/* commit max_freq for boot perf */
-	new_freqs[hw->type].ib = hw->hw_max_freq;
-	new_freqs[hw->type].ab = 0;
-	new_freqs[hw->type].hw_type = hw->type;
-	if (path->type == DCVS_FAST_PATH)
-		ret = path->commit_dcvs_freqs(path, new_freqs, BIT(hw->type));
-	else
+	/* start slow paths with boost_freq = max_freq for better boot perf */
+	if (path->type == DCVS_SLOW_PATH) {
+		hw->boost_freq = hw->hw_max_freq;
+		new_freqs[hw->type].ib = hw->hw_max_freq;
+		new_freqs[hw->type].ab = 0;
+		new_freqs[hw->type].hw_type = hw->type;
 		ret = path->commit_dcvs_freqs(path, &new_freqs[hw->type], 1);
-	if (ret < 0)
-		dev_err(dev, "Error committing initial freq for path%d\n", ret);
+		if (ret < 0)
+			dev_err(dev, "Err committing freq for path=%d\n", ret);
+	}
 
 	hw->dcvs_paths[path_type] = path;
 	hw->num_inited_paths++;

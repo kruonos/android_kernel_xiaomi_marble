@@ -124,7 +124,7 @@ static bool regs_within_kernel_stack(struct pt_regs *regs, unsigned long addr)
 {
 	return ((addr & ~(THREAD_SIZE - 1))  ==
 		(kernel_stack_pointer(regs) & ~(THREAD_SIZE - 1))) ||
-		on_irq_stack(addr, NULL);
+		on_irq_stack(addr, sizeof(unsigned long), NULL);
 }
 
 /**
@@ -142,7 +142,7 @@ unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n)
 
 	addr += n;
 	if (regs_within_kernel_stack(regs, (unsigned long)addr))
-		return READ_ONCE_NOCHECK(*addr);
+		return *addr;
 	else
 		return 0;
 }
@@ -196,6 +196,7 @@ static void ptrace_hbptriggered(struct perf_event *bp,
 		}
 		arm64_force_sig_ptrace_errno_trap(si_errno, bkpt->trigger,
 						  desc);
+		return;
 	}
 #endif
 	arm64_force_sig_fault(SIGTRAP, TRAP_HWBKPT, bkpt->trigger, desc);
@@ -846,6 +847,11 @@ static int sve_set(struct task_struct *target,
 	}
 
 	sve_alloc(target);
+	if (!target->thread.sve_state) {
+		ret = -ENOMEM;
+		clear_tsk_thread_flag(target, TIF_SVE);
+		goto out;
+	}
 
 	/*
 	 * Ensure target->thread.sve_state is up to date with target's
@@ -1071,7 +1077,7 @@ static int tagged_addr_ctrl_get(struct task_struct *target,
 {
 	long ctrl = get_tagged_addr_ctrl(target);
 
-	if (WARN_ON_ONCE(IS_ERR_VALUE(ctrl)))
+	if (IS_ERR_VALUE(ctrl))
 		return ctrl;
 
 	return membuf_write(&to, &ctrl, sizeof(ctrl));
@@ -1084,10 +1090,6 @@ static int tagged_addr_ctrl_set(struct task_struct *target, const struct
 {
 	int ret;
 	long ctrl;
-
-	ctrl = get_tagged_addr_ctrl(target);
-	if (WARN_ON_ONCE(IS_ERR_VALUE(ctrl)))
-		return ctrl;
 
 	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &ctrl, 0, -1);
 	if (ret)

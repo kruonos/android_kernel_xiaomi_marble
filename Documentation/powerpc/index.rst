@@ -35,6 +35,8 @@ powerpc
     vas-api
     vcpudispatch_stats
 
+    features
+
 .. only::  subproject and html
 
    Indices

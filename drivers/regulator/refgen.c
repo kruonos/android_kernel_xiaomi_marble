@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2017, 2019-2020, The Linux Foundation. All rights reserved. */
+/*
+ * Copyright (c) 2017, 2019-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ */
 
 #include <linux/bitops.h>
 #include <linux/err.h>
@@ -85,7 +88,7 @@ static int refgen_is_enabled(struct regulator_dev *rdev)
 	return 1;
 }
 
-static struct regulator_ops refgen_ops = {
+static const struct regulator_ops refgen_ops = {
 	.enable		= refgen_enable,
 	.disable	= refgen_disable,
 	.is_enabled	= refgen_is_enabled,
@@ -121,7 +124,7 @@ static int refgen_kona_is_enabled(struct regulator_dev *rdev)
 	return (val & REFGEN_PWRDWN_CTRL5_MASK) == REFGEN_PWRDWN_CTRL5_ENABLE;
 }
 
-static struct regulator_ops refgen_kona_ops = {
+static const struct regulator_ops refgen_kona_ops = {
 	.enable		= refgen_kona_enable,
 	.disable	= refgen_kona_disable,
 	.is_enabled	= refgen_kona_is_enabled,

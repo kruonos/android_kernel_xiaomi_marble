@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  */
 
@@ -12,7 +11,7 @@
 #include <linux/msm_pcie.h>
 
 #define MHI_FORCE_WAKE_DELAY_US (100)
-#define MHI_IPC_LOG_PAGES (200)
+#define MHI_IPC_LOG_PAGES (100)
 #define MAX_RDDM_TABLE_SIZE (8)
 #define MHI_REG_SIZE (SZ_4K)
 
@@ -48,12 +47,7 @@
 
 #define MHI_BW_SCALE_RESULT(status, seq) (((status) & 0xF) << 8 | \
 					((seq) & 0xFF))
-
-enum mhi_bw_scale_req_status {
-	MHI_BW_SCALE_SUCCESS = 0x0,
-	MHI_BW_SCALE_INVALID = 0x1,
-	MHI_BW_SCALE_NACK    = 0xF,
-};
+#define MHI_BW_SCALE_NACK 0xF
 
 /* subsystem failure reason cfg command */
 #define MHI_TRE_CMD_SFR_CFG_PTR(ptr) (ptr)
@@ -80,7 +74,7 @@ enum mhi_bw_scale_req_status {
 	(1 << TIMESYNC_CFG_ENABLED_SHIFT) & TIMESYNC_CFG_ENABLED_MASK | \
 	((er_index) << TIMESYNC_CFG_ER_ID_SHIFT) & TIMESYNC_CFG_ER_ID_MASK)
 
-#define MHI_VERB(fmt, ...) do { \
+#define MHI_VERB(dev, fmt, ...) do { \
 	struct mhi_private *mhi_priv = \
 		dev_get_drvdata(&mhi_cntrl->mhi_dev->dev); \
 	dev_dbg(dev, "[D][%s] " fmt, __func__, ##__VA_ARGS__); \
@@ -89,7 +83,7 @@ enum mhi_bw_scale_req_status {
 			       ##__VA_ARGS__); \
 } while (0)
 
-#define MHI_LOG(fmt, ...) do {	\
+#define MHI_LOG(dev, fmt, ...) do {	\
 	struct mhi_private *mhi_priv = \
 		dev_get_drvdata(&mhi_cntrl->mhi_dev->dev); \
 	dev_dbg(dev, "[I][%s] " fmt, __func__, ##__VA_ARGS__); \
@@ -98,7 +92,7 @@ enum mhi_bw_scale_req_status {
 			       ##__VA_ARGS__); \
 } while (0)
 
-#define MHI_ERR(fmt, ...) do {	\
+#define MHI_ERR(dev, fmt, ...) do {	\
 	struct mhi_private *mhi_priv = \
 		dev_get_drvdata(&mhi_cntrl->mhi_dev->dev); \
 	dev_err(dev, "[E][%s] " fmt, __func__, ##__VA_ARGS__); \
@@ -107,7 +101,7 @@ enum mhi_bw_scale_req_status {
 			       ##__VA_ARGS__); \
 } while (0)
 
-#define MHI_CRITICAL(fmt, ...) do { \
+#define MHI_CRITICAL(dev, fmt, ...) do { \
 	struct mhi_private *mhi_priv = \
 		dev_get_drvdata(&mhi_cntrl->mhi_dev->dev); \
 	dev_crit(dev, "[C][%s] " fmt, __func__, ##__VA_ARGS__); \
@@ -166,7 +160,7 @@ struct file_info {
  * @valid - entry is valid or not
  */
 struct reg_write_info {
-	u8 __iomem *reg_addr;
+	void __iomem *reg_addr;
 	u32 val;
 	bool valid;
 };
@@ -183,10 +177,11 @@ struct mhi_private {
 	enum mhi_state saved_dev_state;
 	u32 m2_timeout_ms;
 	void *priv_data;
-	u8 __iomem *bw_scale_db;
+	void __iomem *bw_scale_db;
 	int (*bw_scale)(struct mhi_controller *mhi_cntrl,
 			struct mhi_link_info *link_info);
 	phys_addr_t base_addr;
+	u32 numeric_id;
 	u32 bw_response;
 	struct mhi_sfr_info *sfr_info;
 	struct mhi_timesync *timesync;
@@ -226,13 +221,12 @@ struct mhi_timesync {
 	u64 (*time_get)(struct mhi_controller *mhi_cntrl);
 	int (*lpm_disable)(struct mhi_controller *mhi_cntrl);
 	int (*lpm_enable)(struct mhi_controller *mhi_cntrl);
-	u8 __iomem *time_reg;
-	u8 __iomem *time_db;
+	void __iomem *time_reg;
+	void __iomem *time_db;
 	u32 int_sequence;
 	u64 local_time;
 	u64 remote_time;
 	bool db_pending;
-	bool cap_en;
 	struct completion completion;
 	spinlock_t lock; /* list protection */
 	struct list_head head;
@@ -257,6 +251,8 @@ void mhi_misc_exit(void);
 int mhi_misc_init_mmio(struct mhi_controller *mhi_cntrl);
 int mhi_misc_register_controller(struct mhi_controller *mhi_cntrl);
 void mhi_misc_unregister_controller(struct mhi_controller *mhi_cntrl);
+int mhi_misc_sysfs_create(struct mhi_controller *mhi_cntrl);
+void mhi_misc_sysfs_destroy(struct mhi_controller *mhi_cntrl);
 int mhi_process_misc_bw_ev_ring(struct mhi_controller *mhi_cntrl,
 				struct mhi_event *mhi_event, u32 event_quota);
 int mhi_process_misc_tsync_ev_ring(struct mhi_controller *mhi_cntrl,
@@ -293,6 +289,15 @@ static inline int mhi_misc_register_controller(struct mhi_controller *mhi_cntrl)
 
 static inline void mhi_misc_unregister_controller(struct mhi_controller
 						  *mhi_cntrl)
+{
+}
+
+static inline int mhi_misc_sysfs_create(struct mhi_controller *mhi_cntrl)
+{
+	return 0;
+}
+
+static inline void mhi_misc_sysfs_destroy(struct mhi_controller *mhi_cntrl)
 {
 }
 

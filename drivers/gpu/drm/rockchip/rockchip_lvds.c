@@ -42,7 +42,7 @@ struct rockchip_lvds;
 		container_of(c, struct rockchip_lvds, encoder)
 
 /**
- * rockchip_lvds_soc_data - rockchip lvds Soc private data
+ * struct rockchip_lvds_soc_data - rockchip lvds Soc private data
  * @probe: LVDS platform probe function
  * @helper_funcs: LVDS connector helper functions
  */
@@ -572,7 +572,8 @@ static int rockchip_lvds_bind(struct device *dev, struct device *master,
 		ret = -EINVAL;
 		goto err_put_port;
 	} else if (ret) {
-		dev_err_probe(dev, ret, "failed to find panel and bridge node\n");
+		DRM_DEV_ERROR(dev, "failed to find panel and bridge node\n");
+		ret = -EPROBE_DEFER;
 		goto err_put_port;
 	}
 	if (lvds->panel)
@@ -639,11 +640,8 @@ static int rockchip_lvds_bind(struct device *dev, struct device *master,
 		}
 	} else {
 		ret = drm_bridge_attach(encoder, lvds->bridge, NULL, 0);
-		if (ret) {
-			DRM_DEV_ERROR(drm_dev->dev,
-				      "failed to attach bridge: %d\n", ret);
+		if (ret)
 			goto err_free_encoder;
-		}
 	}
 
 	pm_runtime_enable(dev);
@@ -728,7 +726,7 @@ static int rockchip_lvds_probe(struct platform_device *pdev)
 
 static int rockchip_lvds_remove(struct platform_device *pdev)
 {
-	struct rockchip_lvds *lvds = dev_get_drvdata(&pdev->dev);
+	struct rockchip_lvds *lvds = platform_get_drvdata(pdev);
 
 	component_del(&pdev->dev, &rockchip_lvds_component_ops);
 	clk_unprepare(lvds->pclk);

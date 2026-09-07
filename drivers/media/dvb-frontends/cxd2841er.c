@@ -311,8 +311,12 @@ static int cxd2841er_set_reg_bits(struct cxd2841er_priv *priv,
 
 static u32 cxd2841er_calc_iffreq_xtal(enum cxd2841er_xtal xtal, u32 ifhz)
 {
-	return div_u64(ifhz * 16777216ull,
-		       (xtal == SONY_XTAL_24000) ? 48000000 : 41000000);
+	u64 tmp;
+
+	tmp = (u64) ifhz * 16777216;
+	do_div(tmp, ((xtal == SONY_XTAL_24000) ? 48000000 : 41000000));
+
+	return (u32) tmp;
 }
 
 static u32 cxd2841er_calc_iffreq(u32 ifhz)
@@ -3334,7 +3338,7 @@ static int cxd2841er_set_frontend_s(struct dvb_frontend *fe)
 		cxd2841er_tuner_set(fe);
 
 	cxd2841er_tune_done(priv);
-	timeout = ((3000000 + (symbol_rate - 1)) / symbol_rate) + 150;
+	timeout = DIV_ROUND_UP(3000000, symbol_rate) + 150;
 
 	i = 0;
 	do {

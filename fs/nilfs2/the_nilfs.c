@@ -223,7 +223,7 @@ static int nilfs_get_blocksize(struct super_block *sb,
 /**
  * load_nilfs - load and recover the nilfs
  * @nilfs: the_nilfs structure to be released
- * @sb: super block isntance used to recover past segment
+ * @sb: super block instance used to recover past segment
  *
  * load_nilfs() searches and load the latest super root,
  * attaches the last segment, and does recovery if needed.
@@ -452,12 +452,6 @@ static int nilfs_store_disk_layout(struct the_nilfs *nilfs,
 	}
 
 	nilfs->ns_first_ino = le32_to_cpu(sbp->s_first_ino);
-	if (nilfs->ns_first_ino < NILFS_USER_INO) {
-		nilfs_err(nilfs->ns_sb,
-			  "too small lower limit for non-reserved inode numbers: %u",
-			  nilfs->ns_first_ino);
-		return -EINVAL;
-	}
 
 	nilfs->ns_blocks_per_segment = le32_to_cpu(sbp->s_blocks_per_segment);
 	if (nilfs->ns_blocks_per_segment < NILFS_SEG_MIN_BLOCKS) {

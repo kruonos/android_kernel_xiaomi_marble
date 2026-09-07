@@ -333,7 +333,7 @@ EXPORT_SYMBOL(gh_irq_wait_for_lend);
 int gh_irq_accept(enum gh_irq_label label, int irq, int type)
 {
 	struct gh_irq_entry *entry;
-	u32 virq;
+	int virq;
 
 	if (label >= GH_IRQ_LABEL_MAX)
 		return -EINVAL;

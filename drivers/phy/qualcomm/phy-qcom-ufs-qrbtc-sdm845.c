@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2016, 2019-2020, Linux Foundation. All rights reserved.
+ * Copyright (c) 2016, 2019-2021, Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -119,7 +119,7 @@ int ufs_qcom_phy_qrbtc_sdm845_set_mode(struct phy *generic_phy,
 	return 0;
 }
 
-static struct phy_ops ufs_qcom_phy_qrbtc_sdm845_phy_ops = {
+static const struct phy_ops ufs_qcom_phy_qrbtc_sdm845_phy_ops = {
 	.init		= ufs_qcom_phy_qrbtc_sdm845_init,
 	.exit		= ufs_qcom_phy_qrbtc_sdm845_exit,
 	.set_mode	= ufs_qcom_phy_qrbtc_sdm845_set_mode,
@@ -158,7 +158,7 @@ static int ufs_qcom_phy_qrbtc_sdm845_probe(struct platform_device *pdev)
 
 	phy_set_drvdata(generic_phy, phy);
 
-	strlcpy(phy->common_cfg.name, UFS_PHY_NAME,
+	strscpy(phy->common_cfg.name, UFS_PHY_NAME,
 		sizeof(phy->common_cfg.name));
 
 out:

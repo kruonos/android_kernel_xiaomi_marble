@@ -52,7 +52,7 @@
 /* V2 Defines */
 #define VSE_CVP_TX_CREDITS		0x49	/* 8bit */
 
-#define V2_CREDIT_TIMEOUT_US		40000
+#define V2_CREDIT_TIMEOUT_US		20000
 #define V2_CHECK_CREDIT_US		10
 #define V2_POLL_TIMEOUT_US		1000000
 #define V2_USER_TIMEOUT_US		500000
@@ -346,7 +346,7 @@ static int altera_cvp_write_init(struct fpga_manager *mgr,
 	}
 
 	if (val & VSE_CVP_STATUS_CFG_RDY) {
-		dev_warn(&mgr->dev, "CvP already started, teardown first\n");
+		dev_warn(&mgr->dev, "CvP already started, tear down first\n");
 		ret = altera_cvp_teardown(mgr, info);
 		if (ret)
 			return ret;

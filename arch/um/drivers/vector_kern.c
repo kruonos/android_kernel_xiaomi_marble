@@ -8,7 +8,6 @@
  * Copyright (C) 2001 by various other people who didn't put their name here.
  */
 
-#include <linux/version.h>
 #include <linux/memblock.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
@@ -142,7 +141,7 @@ static bool get_bpf_flash(struct arglist *def)
 
 	if (allow != NULL) {
 		if (kstrtoul(allow, 10, &result) == 0)
-			return result > 0;
+			return (allow > 0);
 	}
 	return false;
 }
@@ -827,8 +826,7 @@ static struct platform_driver uml_net_driver = {
 
 static void vector_device_release(struct device *dev)
 {
-	struct vector_device *device =
-		container_of(dev, struct vector_device, pdev.dev);
+	struct vector_device *device = dev_get_drvdata(dev);
 	struct net_device *netdev = device->dev;
 
 	list_del(&device->list);
@@ -1198,9 +1196,9 @@ static int vector_net_close(struct net_device *dev)
 
 /* TX tasklet */
 
-static void vector_tx_poll(unsigned long data)
+static void vector_tx_poll(struct tasklet_struct *t)
 {
-	struct vector_private *vp = (struct vector_private *)data;
+	struct vector_private *vp = from_tasklet(vp, t, tx_poll);
 
 	vp->estats.tx_kicks++;
 	vector_send(vp->tx_queue);
@@ -1273,7 +1271,7 @@ static int vector_net_open(struct net_device *dev)
 		irq_rr + VECTOR_BASE_IRQ, vp->fds->rx_fd,
 			IRQ_READ, vector_rx_interrupt,
 			IRQF_SHARED, dev->name, dev);
-	if (err != 0) {
+	if (err < 0) {
 		netdev_err(dev, "vector_open: failed to get rx irq(%d)\n", err);
 		err = -ENETUNREACH;
 		goto out_close;
@@ -1288,7 +1286,7 @@ static int vector_net_open(struct net_device *dev)
 			irq_rr + VECTOR_BASE_IRQ, vp->fds->tx_fd,
 				IRQ_WRITE, vector_tx_interrupt,
 				IRQF_SHARED, dev->name, dev);
-		if (err != 0) {
+		if (err < 0) {
 			netdev_err(dev,
 				"vector_open: failed to get tx irq(%d)\n", err);
 			err = -ENETUNREACH;
@@ -1491,7 +1489,9 @@ static void vector_get_ethtool_stats(struct net_device *dev,
 }
 
 static int vector_get_coalesce(struct net_device *netdev,
-					struct ethtool_coalesce *ec)
+			       struct ethtool_coalesce *ec,
+			       struct kernel_ethtool_coalesce *kernel_coal,
+			       struct netlink_ext_ack *extack)
 {
 	struct vector_private *vp = netdev_priv(netdev);
 
@@ -1500,7 +1500,9 @@ static int vector_get_coalesce(struct net_device *netdev,
 }
 
 static int vector_set_coalesce(struct net_device *netdev,
-					struct ethtool_coalesce *ec)
+			       struct ethtool_coalesce *ec,
+			       struct kernel_ethtool_coalesce *kernel_coal,
+			       struct netlink_ext_ack *extack)
 {
 	struct vector_private *vp = netdev_priv(netdev);
 
@@ -1600,22 +1602,38 @@ static void vector_eth_configure(
 
 	device->dev = dev;
 
-	INIT_LIST_HEAD(&vp->list);
-	vp->dev		= dev;
-	vp->unit	= n;
-	vp->options	= get_transport_options(def);
-	vp->parsed	= def;
-	vp->max_packet	= get_mtu(def) + ETH_HEADER_OTHER;
-	/*
-	 * TODO - we need to calculate headroom so that ip header
-	 * is 16 byte aligned all the time
-	 */
-	vp->headroom	= get_headroom(def);
-	vp->coalesce	= 2;
-	vp->req_size	= get_req_size(def);
+	*vp = ((struct vector_private)
+		{
+		.list			= LIST_HEAD_INIT(vp->list),
+		.dev			= dev,
+		.unit			= n,
+		.options		= get_transport_options(def),
+		.rx_irq			= 0,
+		.tx_irq			= 0,
+		.parsed			= def,
+		.max_packet		= get_mtu(def) + ETH_HEADER_OTHER,
+		/* TODO - we need to calculate headroom so that ip header
+		 * is 16 byte aligned all the time
+		 */
+		.headroom		= get_headroom(def),
+		.form_header		= NULL,
+		.verify_header		= NULL,
+		.header_rxbuffer	= NULL,
+		.header_txbuffer	= NULL,
+		.header_size		= 0,
+		.rx_header_size		= 0,
+		.rexmit_scheduled	= false,
+		.opened			= false,
+		.transport_data		= NULL,
+		.in_write_poll		= false,
+		.coalesce		= 2,
+		.req_size		= get_req_size(def),
+		.in_error		= false,
+		.bpf			= NULL
+	});
 
 	dev->features = dev->hw_features = (NETIF_F_SG | NETIF_F_FRAGLIST);
-	tasklet_init(&vp->tx_poll, vector_tx_poll, (unsigned long)vp);
+	tasklet_setup(&vp->tx_poll, vector_tx_poll);
 	INIT_WORK(&vp->reset_tx, vector_reset_tx);
 
 	timer_setup(&vp->tl, vector_timer_expire, 0);

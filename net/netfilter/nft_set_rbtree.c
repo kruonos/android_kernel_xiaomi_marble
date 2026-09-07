@@ -14,9 +14,6 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter/nf_tables.h>
 #include <net/netfilter/nf_tables_core.h>
-#include <net/netns/generic.h>
-
-extern unsigned int nf_tables_net_id;
 
 struct nft_rbtree {
 	struct rb_root		root;
@@ -116,8 +113,9 @@ static bool __nft_rbtree_lookup(const struct net *net, const struct nft_set *set
 	return false;
 }
 
-static bool nft_rbtree_lookup(const struct net *net, const struct nft_set *set,
-			      const u32 *key, const struct nft_set_ext **ext)
+INDIRECT_CALLABLE_SCOPE
+bool nft_rbtree_lookup(const struct net *net, const struct nft_set *set,
+		       const u32 *key, const struct nft_set_ext **ext)
 {
 	struct nft_rbtree *priv = nft_set_priv(set);
 	unsigned int seq = read_seqcount_begin(&priv->count);
@@ -228,7 +226,7 @@ static void nft_rbtree_gc_remove(struct net *net, struct nft_set *set,
 				 struct nft_rbtree_elem *rbe)
 {
 	struct nft_set_elem elem = {
-		.priv   = rbe,
+		.priv	= rbe,
 	};
 
 	nft_setelem_data_deactivate(net, set, &elem);
@@ -307,28 +305,15 @@ static bool nft_rbtree_update_first(const struct nft_set *set,
 	return false;
 }
 
-/* Only for anonymous sets which do not allow updates, all element are active. */
-static struct nft_rbtree_elem *nft_rbtree_prev_active(struct nft_rbtree_elem *rbe)
-{
-	struct rb_node *node;
-
-	node = rb_prev(&rbe->node);
-	if (!node)
-		return NULL;
-
-	return rb_entry(node, struct nft_rbtree_elem, node);
-}
-
 static int __nft_rbtree_insert(const struct net *net, const struct nft_set *set,
 			       struct nft_rbtree_elem *new,
 			       struct nft_set_ext **ext)
 {
-	struct nft_rbtree_elem *rbe, *rbe_le = NULL, *rbe_ge = NULL, *rbe_prev;
+	struct nft_rbtree_elem *rbe, *rbe_le = NULL, *rbe_ge = NULL;
 	struct rb_node *node, *next, *parent, **p, *first = NULL;
 	struct nft_rbtree *priv = nft_set_priv(set);
 	u8 cur_genmask = nft_genmask_cur(net);
 	u8 genmask = nft_genmask_next(net);
-	u64 tstamp = nft_net_tstamp(net);
 	int d;
 
 	/* Descend the tree to search for an existing element greater than the
@@ -376,7 +361,7 @@ static int __nft_rbtree_insert(const struct net *net, const struct nft_set *set,
 		/* perform garbage collection to avoid bogus overlap reports
 		 * but skip new elements in this transaction.
 		 */
-		if (__nft_set_elem_expired(&rbe->ext, tstamp) &&
+		if (nft_set_elem_expired(&rbe->ext) &&
 		    nft_set_elem_active(&rbe->ext, cur_genmask)) {
 			const struct nft_rbtree_elem *removed_end;
 
@@ -455,19 +440,11 @@ static int __nft_rbtree_insert(const struct net *net, const struct nft_set *set,
 	/* - new start element with existing closest, less or equal key value
 	 *   being a start element: partial overlap, reported as -ENOTEMPTY.
 	 *   Anonymous sets allow for two consecutive start element since they
-	 *   are constant, but validate that this new start element does not
-	 *   sit in between an existing start and end elements: partial overlap,
-	 *   reported as -ENOTEMPTY.
+	 *   are constant, skip them to avoid bogus overlap reports.
 	 */
-	if (rbe_le &&
-	    nft_rbtree_interval_start(rbe_le) && nft_rbtree_interval_start(new)) {
-		if (!nft_set_is_anonymous(set))
-			return -ENOTEMPTY;
-
-		rbe_prev = nft_rbtree_prev_active(rbe_le);
-		if (rbe_prev && nft_rbtree_interval_end(rbe_prev))
-			return -ENOTEMPTY;
-	}
+	if (!nft_set_is_anonymous(set) && rbe_le &&
+	    nft_rbtree_interval_start(rbe_le) && nft_rbtree_interval_start(new))
+		return -ENOTEMPTY;
 
 	/* - new end element with existing closest, less or equal key value
 	 *   being a end element: partial overlap, reported as -ENOTEMPTY.
@@ -571,7 +548,6 @@ static void *nft_rbtree_deactivate(const struct net *net,
 	const struct rb_node *parent = priv->root.rb_node;
 	struct nft_rbtree_elem *rbe, *this = elem->priv;
 	u8 genmask = nft_genmask_next(net);
-	u64 tstamp = nft_net_tstamp(net);
 	int d;
 
 	while (parent != NULL) {
@@ -592,7 +568,7 @@ static void *nft_rbtree_deactivate(const struct net *net,
 				   nft_rbtree_interval_end(this)) {
 				parent = parent->rb_right;
 				continue;
-			} else if (__nft_set_elem_expired(&rbe->ext, tstamp)) {
+			} else if (nft_set_elem_expired(&rbe->ext)) {
 				break;
 			} else if (!nft_set_elem_active(&rbe->ext, genmask)) {
 				parent = parent->rb_left;
@@ -650,8 +626,8 @@ static void nft_rbtree_gc(struct work_struct *work)
 	priv = container_of(work, struct nft_rbtree, gc_work.work);
 	set  = nft_set_container_of(priv);
 	net  = read_pnet(&set->net);
-	nft_net = net_generic(net, nf_tables_net_id);
-	gc_seq	= READ_ONCE(nft_net->gc_seq);
+	nft_net = nft_pernet(net);
+	gc_seq  = READ_ONCE(nft_net->gc_seq);
 
 	if (nft_set_gc_is_pending(set))
 		goto done;
@@ -706,6 +682,9 @@ dead_elem:
 
 		nft_trans_gc_elem_add(gc, rbe);
 	}
+
+	gc = nft_trans_gc_catchall_async(gc, gc_seq);
+
 try_later:
 	read_unlock_bh(&priv->lock);
 

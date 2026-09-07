@@ -2,7 +2,6 @@
 #include <linux/static_call.h>
 #include <linux/memory.h>
 #include <linux/bug.h>
-#include <asm/sync_core.h>
 #include <asm/text-patching.h>
 
 enum insn_type {
@@ -19,21 +18,32 @@ enum insn_type {
  */
 static const u8 tramp_ud[] = { 0x0f, 0xb9, 0xcc };
 
+/*
+ * cs cs cs xorl %eax, %eax - a single 5 byte instruction that clears %[er]ax
+ */
+static const u8 xor5rax[] = { 0x2e, 0x2e, 0x2e, 0x31, 0xc0 };
+
 static const u8 retinsn[] = { RET_INSN_OPCODE, 0xcc, 0xcc, 0xcc, 0xcc };
 
 static void __ref __static_call_transform(void *insn, enum insn_type type,
 					  void *func, bool modinit)
 {
+	const void *emulate = NULL;
 	int size = CALL_INSN_SIZE;
 	const void *code;
 
 	switch (type) {
 	case CALL:
 		code = text_gen_insn(CALL_INSN_OPCODE, insn, func);
+		if (func == &__static_call_return0) {
+			emulate = code;
+			code = &xor5rax;
+		}
+
 		break;
 
 	case NOP:
-		code = ideal_nops[NOP_ATOMIC5];
+		code = x86_nops[5];
 		break;
 
 	case JMP:
@@ -41,8 +51,8 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 		break;
 
 	case RET:
-		if (cpu_wants_rethunk_at(insn))
-			code = text_gen_insn(JMP32_INSN_OPCODE, insn, x86_return_thunk);
+		if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
+			code = text_gen_insn(JMP32_INSN_OPCODE, insn, &__x86_return_thunk);
 		else
 			code = &retinsn;
 		break;
@@ -54,7 +64,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 	if (system_state == SYSTEM_BOOTING || modinit)
 		return text_poke_early(insn, code, size);
 
-	text_poke_bp(insn, code, size, NULL);
+	text_poke_bp(insn, code, size, emulate);
 }
 
 static void __static_call_validate(void *insn, bool tail)
@@ -67,7 +77,8 @@ static void __static_call_validate(void *insn, bool tail)
 			return;
 	} else {
 		if (opcode == CALL_INSN_OPCODE ||
-		    !memcmp(insn, ideal_nops[NOP_ATOMIC5], 5))
+		    !memcmp(insn, x86_nops[5], 5) ||
+		    !memcmp(insn, xor5rax, 5))
 			return;
 	}
 
@@ -109,14 +120,6 @@ void arch_static_call_transform(void *site, void *tramp, void *func, bool tail)
 	mutex_unlock(&text_mutex);
 }
 EXPORT_SYMBOL_GPL(arch_static_call_transform);
-
-noinstr void __static_call_update_early(void *tramp, void *func)
-{
-	BUG_ON(system_state != SYSTEM_BOOTING);
-	BUG_ON(static_call_initialized);
-	__text_gen_insn(tramp, JMP32_INSN_OPCODE, tramp, func, JMP32_INSN_SIZE);
-	sync_core();
-}
 
 #ifdef CONFIG_RETHUNK
 /*

@@ -656,25 +656,17 @@ static void get_meter_levels_from_urb(int s,
 	u8 *meter_urb)
 {
 	int val = MUC2(meter_urb, s) + (MUC3(meter_urb, s) << 8);
-	int ch = MUB2(meter_urb, s) - 1;
-
-	if (ch < 0)
-		return;
 
 	if (MUA0(meter_urb, s) == 0x61 && MUA1(meter_urb, s) == 0x02 &&
 		MUA2(meter_urb, s) == 0x04 && MUB0(meter_urb, s) == 0x62) {
-		if (ch < SND_US16X08_MAX_CHANNELS) {
-			if (MUC0(meter_urb, s) == 0x72)
-				store->meter_level[ch] = val;
-			if (MUC0(meter_urb, s) == 0xb2)
-				store->comp_level[ch] = val;
-		}
+		if (MUC0(meter_urb, s) == 0x72)
+			store->meter_level[MUB2(meter_urb, s) - 1] = val;
+		if (MUC0(meter_urb, s) == 0xb2)
+			store->comp_level[MUB2(meter_urb, s) - 1] = val;
 	}
 	if (MUA0(meter_urb, s) == 0x61 && MUA1(meter_urb, s) == 0x02 &&
-		MUA2(meter_urb, s) == 0x02 && MUB0(meter_urb, s) == 0x62) {
-		if (ch < ARRAY_SIZE(store->master_level))
-			store->master_level[ch] = val;
-	}
+		MUA2(meter_urb, s) == 0x02 && MUB0(meter_urb, s) == 0x62)
+		store->master_level[MUB2(meter_urb, s) - 1] = val;
 }
 
 /* Function to retrieve current meter values from the device.
@@ -695,7 +687,7 @@ static int snd_us16x08_meter_get(struct snd_kcontrol *kcontrol,
 	struct usb_mixer_elem_info *elem = kcontrol->private_data;
 	struct snd_usb_audio *chip = elem->head.mixer->chip;
 	struct snd_us16x08_meter_store *store = elem->private_data;
-	u8 meter_urb[64] = {0};
+	u8 meter_urb[64];
 
 	switch (kcontrol->private_value) {
 	case 0: {
@@ -1084,7 +1076,7 @@ static int add_new_ctl(struct usb_mixer_interface *mixer,
 	else
 		kctl->private_free = snd_usb_mixer_elem_free;
 
-	strlcpy(kctl->id.name, name, sizeof(kctl->id.name));
+	strscpy(kctl->id.name, name, sizeof(kctl->id.name));
 
 	err = snd_usb_mixer_add_control(&elem->head, kctl);
 	if (err < 0)

@@ -5,11 +5,14 @@
  * Copyright (C) 2014 ARM Limited
  *
  * Author: Will Deacon <will.deacon@arm.com>
+ *
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"arm-lpae io-pgtable: " fmt
 
 #include <linux/atomic.h>
+#include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/io-pgtable.h>
 #include <linux/kernel.h>
@@ -17,9 +20,11 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/dma-mapping.h>
+#include <linux/qcom-iommu-util.h>
 #include <linux/qcom-io-pgtable.h>
 
 #include <asm/barrier.h>
+#include "qcom-io-pgtable-alloc.h"
 
 #include "io-pgtable-arm.h"
 
@@ -138,7 +143,7 @@
 /* IOPTE accessors */
 #define iopte_deref(pte,d) __va(iopte_to_paddr(pte, d))
 
-#define iopte_type(pte,l)					\
+#define iopte_type(pte)					\
 	(((pte) >> ARM_LPAE_PTE_TYPE_SHIFT) & ARM_LPAE_PTE_TYPE_MASK)
 
 #define iopte_prot(pte)	((pte) & ARM_LPAE_PTE_ATTR_MASK)
@@ -151,7 +156,9 @@ struct arm_lpae_io_pgtable {
 	int			bits_per_level;
 
 	void			*pgd;
-	const struct qcom_iommu_pgtable_ops *iommu_pgtbl_ops;
+	u32			vmid;
+	const struct qcom_iommu_flush_ops *iommu_tlb_ops;
+	const struct qcom_iommu_pgtable_log_ops *pgtable_log_ops;
 	/* Protects table refcounts */
 	spinlock_t		lock;
 };
@@ -225,9 +232,9 @@ static inline bool iopte_leaf(arm_lpae_iopte pte, int lvl,
 			      enum io_pgtable_fmt fmt)
 {
 	if (lvl == (ARM_LPAE_MAX_LEVELS - 1) && fmt != ARM_MALI_LPAE)
-		return iopte_type(pte, lvl) == ARM_LPAE_PTE_TYPE_PAGE;
+		return iopte_type(pte) == ARM_LPAE_PTE_TYPE_PAGE;
 
-	return iopte_type(pte, lvl) == ARM_LPAE_PTE_TYPE_BLOCK;
+	return iopte_type(pte) == ARM_LPAE_PTE_TYPE_BLOCK;
 }
 
 static arm_lpae_iopte paddr_to_iopte(phys_addr_t paddr,
@@ -263,16 +270,16 @@ static void *__arm_lpae_alloc_pages(struct arm_lpae_io_pgtable *data,
 				    struct io_pgtable_cfg *cfg, void *cookie)
 {
 	struct device *dev = cfg->iommu_dev;
-	int order = get_order(size);
 	dma_addr_t dma;
+	struct page *p;
 	void *pages;
 
 	VM_BUG_ON((gfp & __GFP_HIGHMEM));
-	pages = qcom_io_pgtable_alloc_pages(data->iommu_pgtbl_ops, cfg, cookie,
-					    gfp | __GFP_ZERO, order);
-	if (!pages)
+	p = qcom_io_pgtable_alloc_page(data->vmid, gfp | __GFP_ZERO);
+	if (!p)
 		return NULL;
 
+	pages = page_address(p);
 	if (!cfg->coherent_walk) {
 		dma = dma_map_single(dev, pages, size, DMA_TO_DEVICE);
 		if (dma_mapping_error(dev, dma))
@@ -292,7 +299,7 @@ out_unmap:
 	dev_err(dev, "Cannot accommodate DMA translation for IOMMU page tables\n");
 	dma_unmap_single(dev, dma, size, DMA_TO_DEVICE);
 out_free:
-	qcom_io_pgtable_free_pages(data->iommu_pgtbl_ops, cookie, pages, order, false);
+	qcom_io_pgtable_free_page(p);
 	return NULL;
 }
 
@@ -304,8 +311,11 @@ static void __arm_lpae_free_pages(struct arm_lpae_io_pgtable *data,
 	if (!cfg->coherent_walk)
 		dma_unmap_single(cfg->iommu_dev, __arm_lpae_dma_addr(pages),
 				 size, DMA_TO_DEVICE);
-	qcom_io_pgtable_free_pages(data->iommu_pgtbl_ops, cookie, pages,
-				   get_order(size), deferred_free);
+
+	if (deferred_free)
+		qcom_io_pgtable_tlb_add_walk_page(data->iommu_tlb_ops, cookie, pages);
+	else
+		qcom_io_pgtable_free_page(virt_to_page(pages));
 }
 
 static void __arm_lpae_sync_pte(arm_lpae_iopte *ptep, int num_entries,
@@ -390,12 +400,12 @@ static arm_lpae_iopte arm_lpae_install_table(arm_lpae_iopte *table,
 	/*
 	 * Drop the lock for TLB SYNC operation in order to
 	 * enable clock & regulator through rpm hooks and
-	 * resoter after it.
+	 * acquire after it.
 	 */
 
 	spin_unlock_irqrestore(&data->lock, *flags);
 	/* Due to tlb maintenance in unmap being deferred */
-	qcom_io_pgtable_tlb_sync(data->iommu_pgtbl_ops, data->iop.cookie);
+	qcom_io_pgtable_tlb_sync(data->iommu_tlb_ops, data->iop.cookie);
 	spin_lock_irqsave(&data->lock, *flags);
 
 	new = __pa(table) | ARM_LPAE_PTE_TYPE_TABLE;
@@ -529,7 +539,7 @@ static int __arm_lpae_map(struct arm_lpae_io_pgtable *data, unsigned long iova,
 		if (pte)
 			__arm_lpae_free_pages(data, cptep, tblsz, cfg, cookie, false);
 		else
-			qcom_io_pgtable_log_new_table(data->iommu_pgtbl_ops,
+			qcom_io_pgtable_log_new_table(data->pgtable_log_ops,
 					data->iop.cookie, cptep,
 					iova & ~(block_size - 1),
 					block_size);
@@ -630,10 +640,6 @@ static int arm_lpae_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	long iaext = (s64)iova >> cfg->ias;
 	unsigned long flags;
 
-	/* If no access, then nothing to do */
-	if (!(iommu_prot & (IOMMU_READ | IOMMU_WRITE)))
-		return 0;
-
 	if (WARN_ON(!pgsize || (pgsize & cfg->pgsize_bitmap) != pgsize || !pgcount))
 		return -EINVAL;
 
@@ -641,6 +647,10 @@ static int arm_lpae_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 		iaext = ~iaext;
 	if (WARN_ON(iaext || paddr >> cfg->oas))
 		return -ERANGE;
+
+	/* If no access, then nothing to do */
+	if (!(iommu_prot & (IOMMU_READ | IOMMU_WRITE)))
+		return 0;
 
 	prot = arm_lpae_prot_to_pte(data, iommu_prot);
 
@@ -722,6 +732,13 @@ static int arm_lpae_map_by_pgsize(struct io_pgtable_ops *ops,
 	if (WARN_ON(iaext || (paddr + size - 1) >> cfg->oas))
 		return -ERANGE;
 
+	/* If no access, then nothing to do */
+	if (!(iommu_prot & (IOMMU_READ | IOMMU_WRITE))) {
+		/* Increment 'mapped' so that the IOVA can be incremented accordingly. */
+		*mapped += size;
+		return 0;
+	}
+
 	while (size) {
 		pgsize = arm_lpae_pgsize(cfg->pgsize_bitmap, iova | paddr, size);
 
@@ -763,10 +780,6 @@ static int arm_lpae_map_sg(struct io_pgtable_ops *ops, unsigned long iova,
 	unsigned long flags;
 
 	*mapped = 0;
-
-	/* If no access, then nothing to do  */
-	if (!(prot & (IOMMU_READ | IOMMU_WRITE)))
-		return 0;
 
 	spin_lock_irqsave(&data->lock, flags);
 	while (i <= nents) {
@@ -842,11 +855,11 @@ static void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
 	}
 
 	__arm_lpae_free_pages(data, start, table_size, &data->iop.cfg, cookie,
-				deferred_free);
+			      deferred_free);
 
-	qcom_io_pgtable_log_remove_table(data->iommu_pgtbl_ops,
+	qcom_io_pgtable_log_remove_table(data->pgtable_log_ops,
 					data->iop.cookie, start,
-					0, //iova unknown
+					0, /* iova unknown */
 					ARM_LPAE_BLOCK_SIZE(lvl - 1, data));
 }
 
@@ -855,6 +868,7 @@ static void arm_lpae_free_pgtable(struct io_pgtable *iop)
 	struct arm_lpae_io_pgtable *data = io_pgtable_to_data(iop);
 
 	__arm_lpae_free_pgtable(data, data->start_level, data->pgd, false);
+	qcom_io_pgtable_allocator_unregister(data->vmid);
 	kfree(data);
 }
 
@@ -908,16 +922,18 @@ static size_t arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 		 * block, but anything else is invalid. We can't misinterpret
 		 * a page entry here since we're never at the last level.
 		 */
-		if (iopte_type(pte, lvl - 1) != ARM_LPAE_PTE_TYPE_TABLE)
+		if (iopte_type(pte) != ARM_LPAE_PTE_TYPE_TABLE)
 			return 0;
 
 		tablep = iopte_deref(pte, data);
 	} else if (unmap_idx_start >= 0) {
-		//note lvl + 1 due to split_sz above.
-		//add 0xDEA as flag since split_block_unmap shouldn't ever be called
+		/*
+		 * note lvl + 1 due to split_sz above.
+		 * add 0xDEA as flag since split_block_unmap shouldn't ever be called
+		 */
 		size_t prev_block_size = ARM_LPAE_BLOCK_SIZE(lvl + 1, data);
 
-		qcom_io_pgtable_log_new_table(data->iommu_pgtbl_ops,
+		qcom_io_pgtable_log_new_table(data->pgtable_log_ops,
 					data->iop.cookie, tablep,
 					iova & ~(prev_block_size - 1) + 0xDEA,
 					prev_block_size);
@@ -962,7 +978,7 @@ static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			if (!iopte_leaf(pte, lvl, iop->fmt)) {
 				__arm_lpae_free_pgtable(data, lvl + 1, iopte_deref(pte, data),
 							true);
-			} else if (iop->cfg.quirks & IO_PGTABLE_QUIRK_NON_STRICT) {
+			} else if (!iommu_iotlb_gather_queued(gather)) {
 				/*
 				 * Order the PTE update against queueing the IOVA, to
 				 * guarantee that a flush callback from a different CPU
@@ -1000,7 +1016,7 @@ static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			__arm_lpae_set_pte(ptep, 0, 1, &iop->cfg);
 			__arm_lpae_free_pgtable(data, lvl + 1, table, true);
 
-			qcom_io_pgtable_log_remove_table(data->iommu_pgtbl_ops,
+			qcom_io_pgtable_log_remove_table(data->pgtable_log_ops,
 				data->iop.cookie, table,
 				iova & ~(block_size - 1),
 				block_size);
@@ -1043,7 +1059,7 @@ static size_t arm_lpae_unmap_pages(struct io_pgtable_ops *ops, unsigned long iov
 	spin_lock_irqsave(&data->lock, flags);
 	unmapped = __arm_lpae_unmap(data, gather, iova, pgsize, pgcount,
 				    data->start_level, ptep, &flags);
-	qcom_io_pgtable_tlb_add_inv(data->iommu_pgtbl_ops, data->iop.cookie);
+	qcom_io_pgtable_tlb_add_inv(data->iommu_tlb_ops, data->iop.cookie);
 	spin_unlock_irqrestore(&data->lock, flags);
 
 	return unmapped;
@@ -1180,8 +1196,14 @@ arm_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg)
 		.iova_to_phys	= arm_lpae_iova_to_phys,
 	};
 
-	data->iommu_pgtbl_ops = pgtbl_info->iommu_pgtbl_ops;
 	spin_lock_init(&data->lock);
+	data->iommu_tlb_ops = pgtbl_info->iommu_tlb_ops;
+	data->pgtable_log_ops = pgtbl_info->pgtable_log_ops;
+	data->vmid = pgtbl_info->vmid;
+	if (qcom_io_pgtable_allocator_register(data->vmid)) {
+		kfree(data);
+		return NULL;
+	}
 
 	return data;
 }
@@ -1195,9 +1217,8 @@ arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 	bool tg1;
 
 	if (cfg->quirks & ~(IO_PGTABLE_QUIRK_ARM_NS |
-			    IO_PGTABLE_QUIRK_NON_STRICT |
 			    IO_PGTABLE_QUIRK_ARM_TTBR1 |
-			    IO_PGTABLE_QUIRK_QCOM_USE_UPSTREAM_HINT |
+			    IO_PGTABLE_QUIRK_ARM_OUTER_WBWA |
 			    IO_PGTABLE_QUIRK_QCOM_USE_LLC_NWA))
 		return NULL;
 
@@ -1210,18 +1231,18 @@ arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 		tcr->sh = ARM_LPAE_TCR_SH_IS;
 		tcr->irgn = ARM_LPAE_TCR_RGN_WBWA;
 		tcr->orgn = ARM_LPAE_TCR_RGN_WBWA;
-	} else if (cfg->quirks & IO_PGTABLE_QUIRK_QCOM_USE_UPSTREAM_HINT) {
-		tcr->sh = ARM_LPAE_TCR_SH_OS;
-		tcr->irgn = ARM_LPAE_TCR_RGN_NC;
-		tcr->orgn = ARM_LPAE_TCR_RGN_WBWA;
-	} else if (cfg->quirks & IO_PGTABLE_QUIRK_QCOM_USE_LLC_NWA) {
-		tcr->sh = ARM_LPAE_TCR_SH_OS;
-		tcr->irgn = ARM_LPAE_TCR_RGN_NC;
-		tcr->orgn = ARM_LPAE_TCR_RGN_WB;
+		if (WARN_ON(cfg->quirks & (IO_PGTABLE_QUIRK_ARM_OUTER_WBWA |
+					   IO_PGTABLE_QUIRK_QCOM_USE_LLC_NWA)))
+			goto out_free_data;
 	} else {
 		tcr->sh = ARM_LPAE_TCR_SH_OS;
 		tcr->irgn = ARM_LPAE_TCR_RGN_NC;
-		tcr->orgn = ARM_LPAE_TCR_RGN_NC;
+		if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_OUTER_WBWA)
+			tcr->orgn = ARM_LPAE_TCR_RGN_WBWA;
+		else if (cfg->quirks & IO_PGTABLE_QUIRK_QCOM_USE_LLC_NWA)
+			tcr->orgn = ARM_LPAE_TCR_RGN_WB;
+		else
+			tcr->orgn = ARM_LPAE_TCR_RGN_NC;
 	}
 
 	tg1 = cfg->quirks & IO_PGTABLE_QUIRK_ARM_TTBR1;
@@ -1295,6 +1316,7 @@ arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 	return &data->iop;
 
 out_free_data:
+	qcom_io_pgtable_allocator_unregister(data->vmid);
 	kfree(data);
 	return NULL;
 }
@@ -1307,7 +1329,7 @@ arm_64_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
 	typeof(&cfg->arm_lpae_s2_cfg.vtcr) vtcr = &cfg->arm_lpae_s2_cfg.vtcr;
 
 	/* The NS quirk doesn't apply at stage 2 */
-	if (cfg->quirks & ~(IO_PGTABLE_QUIRK_NON_STRICT))
+	if (cfg->quirks)
 		return NULL;
 
 	data = arm_lpae_alloc_pgtable(cfg);
@@ -1397,6 +1419,7 @@ arm_64_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
 	return &data->iop;
 
 out_free_data:
+	qcom_io_pgtable_allocator_unregister(data->vmid);
 	kfree(data);
 	return NULL;
 }
@@ -1473,6 +1496,7 @@ arm_mali_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 	return &data->iop;
 
 out_free_data:
+	qcom_io_pgtable_allocator_unregister(data->vmid);
 	kfree(data);
 	return NULL;
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2011-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  *
  */
 
@@ -9,17 +9,21 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#if IS_ENABLED(CONFIG_MSM_QMP)
 #include <linux/mailbox_client.h>
 #include <linux/mailbox/qmp.h>
+#endif
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 
 #include <linux/soc/qcom/smem.h>
 #include <soc/qcom/soc_sleep_stats.h>
 #include <clocksource/arm_arch_timer.h>
+#include <soc/qcom/boot_stats.h>
 
 #define STAT_TYPE_ADDR		0x0
 #define COUNT_ADDR		0x4
@@ -30,8 +34,7 @@
 
 #define DDR_STATS_MAGIC_KEY	0xA1157A75
 #define DDR_STATS_MAX_NUM_MODES	0x14
-#define MAX_DRV			18
-#define MAX_MSG_LEN		35
+#define MAX_MSG_LEN		40
 #define DRV_ABSENT		0xdeaddead
 #define DRV_INVALID		0xffffdead
 #define VOTE_MASK		0x3fff
@@ -64,13 +67,6 @@ static struct subsystem_data subsystems[] = {
 };
 #endif
 
-struct stats_config {
-	unsigned int offset_addr;
-	unsigned int ddr_offset_addr;
-	unsigned int num_records;
-	bool appended_stats_avail;
-};
-
 struct stats_entry {
 	uint32_t name;
 	uint32_t count;
@@ -80,16 +76,7 @@ struct stats_entry {
 struct stats_prv_data {
 	const struct stats_config *config;
 	void __iomem *reg;
-};
-
-struct ddr_stats_g_data {
-	bool read_vote_info;
-	void __iomem *ddr_reg;
-	u32 freq_count;
-	u32 entry_count;
-	struct mutex ddr_stats_lock;
-	struct mbox_chan *stats_mbox_ch;
-	struct mbox_client stats_mbox_cl;
+	u32 drv_max;
 };
 
 struct sleep_stats {
@@ -100,20 +87,61 @@ struct sleep_stats {
 	u64 accumulated;
 };
 
-struct appended_stats {
-	u32 client_votes;
-	u32 reserved[3];
+#if IS_ENABLED(CONFIG_MSM_QMP)
+struct ddr_stats_g_data {
+	bool read_vote_info;
+	void __iomem *ddr_reg;
+	u32 freq_count;
+	u32 entry_count;
+	u32 drv_max;
+	struct mutex ddr_stats_lock;
+	struct mbox_chan *stats_mbox_ch;
+	struct mbox_client stats_mbox_cl;
 };
 
 struct ddr_stats_g_data *ddr_gdata;
-bool ddr_freq_update;
-ktime_t send_msg_time;
+#endif
 
-#ifdef CONFIG_MI_POWER_INFO_MODULE
-/*add  CONFIG_MI_POWER_INFO_MODULE */
-//#include "../../misc/mi-power/mi_power.h"
-extern void soc_sleep_stats_dbg_register(struct stats_prv_data *prv_data);
-#endif // end of CONFIG_MI_POWER_INFO_MODULE
+static bool ddr_freq_update;
+
+#ifdef CONFIG_MSM_BOOT_TIME_MARKER
+static struct stats_prv_data *gdata;
+static u64 deep_sleep_last_exited_time;
+
+uint64_t get_aosd_sleep_exit_time(void)
+{
+	int i;
+	u64 last_exited_at;
+	u32 count;
+	static u32 saved_deep_sleep_count;
+	u32 s_type = 0;
+	char stat_type[5] = {0};
+	struct stats_prv_data *drv = gdata;
+
+	for (i = 0; i < drv->config->num_records; i++) {
+		s_type = readl_relaxed(drv[i].reg);
+		memcpy(stat_type, &s_type, sizeof(u32));
+		strim(stat_type);
+
+		if (!memcmp((const void *)stat_type, (const void *)"aosd", 4)) {
+			count = readl_relaxed(drv[i].reg + COUNT_ADDR);
+
+			if (saved_deep_sleep_count == count)
+				deep_sleep_last_exited_time = 0;
+			else {
+				saved_deep_sleep_count = count;
+				last_exited_at = readq_relaxed(drv[i].reg + LAST_EXITED_AT_ADDR);
+				deep_sleep_last_exited_time = last_exited_at;
+			}
+			break;
+
+		}
+	}
+
+	return deep_sleep_last_exited_time;
+}
+EXPORT_SYMBOL(get_aosd_sleep_exit_time);
+#endif
 
 static void print_sleep_stats(struct seq_file *s, struct sleep_stats *stat)
 {
@@ -156,10 +184,7 @@ static int soc_sleep_stats_show(struct seq_file *s, void *d)
 	void __iomem *reg = prv_data->reg;
 	struct sleep_stats stat;
 
-	stat.count = readl_relaxed(reg + COUNT_ADDR);
-	stat.last_entered_at = readq(reg + LAST_ENTERED_AT_ADDR);
-	stat.last_exited_at = readq(reg + LAST_EXITED_AT_ADDR);
-	stat.accumulated = readq(reg + ACCUMULATED_ADDR);
+	memcpy_fromio(&stat, reg, sizeof(struct sleep_stats));
 
 	print_sleep_stats(s, &stat);
 
@@ -180,10 +205,13 @@ static void  print_ddr_stats(struct seq_file *s, int *count,
 {
 
 	u32 cp_idx = 0;
-	u32 name, duration = 0;
+	u32 name;
+	u64 duration = 0;
 
-	if (accumulated_duration)
-		duration = (data->duration * 100) / accumulated_duration;
+	if (accumulated_duration) {
+		duration = data->duration * 100;
+		do_div(duration, accumulated_duration);
+	}
 
 	name = (data->name >> 8) & 0xFF;
 	if (name == 0x0) {
@@ -219,9 +247,7 @@ static void ddr_stats_fill_data(void __iomem *reg, u32 entry_count,
 	int i;
 
 	for (i = 0; i < entry_count; i++) {
-		data[i].count = readl_relaxed(reg + DDR_STATS_COUNT_ADDR);
-		data[i].name = readl_relaxed(reg + DDR_STATS_NAME_ADDR);
-		data[i].duration = readq_relaxed(reg + DDR_STATS_DURATION_ADDR);
+		memcpy_fromio(&data[i], reg, sizeof(*data));
 		*accumulated_duration += data[i].duration;
 		reg += sizeof(struct stats_entry);
 	}
@@ -249,13 +275,11 @@ static int ddr_stats_show(struct seq_file *s, void *d)
 	accumulated_duration = 0;
 	reg += sizeof(struct stats_entry) * 0x4;
 	for (i = DDR_STATS_NUM_MODES_ADDR; i < entry_count; i++) {
-		data[i].count = readl_relaxed(reg + DDR_STATS_COUNT_ADDR);
+		memcpy_fromio(&data[i], reg, sizeof(*data));
 		if (ddr_stats_is_freq_overtime(&data[i])) {
 			seq_puts(s, "ddr_stats: Freq update failed.\n");
 			return 0;
 		}
-		data[i].name = readl_relaxed(reg + DDR_STATS_NAME_ADDR);
-		data[i].duration = readq_relaxed(reg + DDR_STATS_DURATION_ADDR);
 		accumulated_duration += data[i].duration;
 		reg += sizeof(struct stats_entry);
 	}
@@ -267,6 +291,9 @@ static int ddr_stats_show(struct seq_file *s, void *d)
 }
 
 DEFINE_SHOW_ATTRIBUTE(ddr_stats);
+
+#if IS_ENABLED(CONFIG_MSM_QMP)
+static ktime_t send_msg_time;
 
 int ddr_stats_freq_sync_send_msg(void)
 {
@@ -359,7 +386,7 @@ EXPORT_SYMBOL(ddr_stats_get_residency);
 
 int ddr_stats_get_ss_count(void)
 {
-	return ddr_gdata->read_vote_info ? MAX_DRV : -EOPNOTSUPP;
+	return ddr_gdata->read_vote_info ? ddr_gdata->drv_max : -EOPNOTSUPP;
 }
 EXPORT_SYMBOL(ddr_stats_get_ss_count);
 
@@ -369,14 +396,19 @@ int ddr_stats_get_ss_vote_info(int ss_count,
 	char buf[MAX_MSG_LEN] = {};
 	struct qmp_pkt pkt;
 	void __iomem *reg;
-	u32 vote_offset, val[MAX_DRV];
+	u32 vote_offset, *val;
 	int ret, i;
 
-	if (!vote_info || !(ss_count == MAX_DRV) || !ddr_gdata)
+	if (!vote_info || !ddr_gdata || (ddr_gdata->drv_max == -EINVAL) ||
+			!(ss_count == ddr_gdata->drv_max))
 		return -ENODEV;
 
 	if (!ddr_gdata->read_vote_info)
 		return -EOPNOTSUPP;
+
+	val = kcalloc(ddr_gdata->drv_max, sizeof(u32), GFP_KERNEL);
+	if (!val)
+		return -ENOMEM;
 
 	mutex_lock(&ddr_gdata->ddr_stats_lock);
 	ret = scnprintf(buf, MAX_MSG_LEN, "{class: ddr, res: drvs_ddr_votes}");
@@ -387,6 +419,7 @@ int ddr_stats_get_ss_vote_info(int ss_count,
 	if (ret < 0) {
 		pr_err("Error sending mbox message: %d\n", ret);
 		mutex_unlock(&ddr_gdata->ddr_stats_lock);
+		kfree(val);
 		return ret;
 	}
 
@@ -411,10 +444,13 @@ int ddr_stats_get_ss_vote_info(int ss_count,
 	}
 
 	mutex_unlock(&ddr_gdata->ddr_stats_lock);
+
+	kfree(val);
 	return 0;
 
 }
 EXPORT_SYMBOL(ddr_stats_get_ss_vote_info);
+#endif
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 static struct dentry *create_debugfs_entries(void __iomem *reg,
@@ -424,20 +460,16 @@ static struct dentry *create_debugfs_entries(void __iomem *reg,
 {
 	struct dentry *root;
 	char stat_type[sizeof(u32) + 1] = {0};
-	u32 offset, type, key;
-	int i, j, n_subsystems;
+	u32 type, key;
+	int i;
+#if IS_ENABLED(CONFIG_QCOM_SMEM)
 	const char *name;
+	int j, n_subsystems;
+#endif
 
 	root = debugfs_create_dir("qcom_sleep_stats", NULL);
 
 	for (i = 0; i < prv_data[0].config->num_records; i++) {
-		offset = STAT_TYPE_ADDR + (i * sizeof(struct sleep_stats));
-
-		if (prv_data[0].config->appended_stats_avail)
-			offset += i * sizeof(struct appended_stats);
-
-		prv_data[i].reg = reg + offset;
-
 		type = readl_relaxed(prv_data[i].reg);
 		memcpy(stat_type, &type, sizeof(u32));
 		strim(stat_type);
@@ -447,6 +479,7 @@ static struct dentry *create_debugfs_entries(void __iomem *reg,
 				    &soc_sleep_stats_fops);
 	}
 
+#if IS_ENABLED(CONFIG_QCOM_SMEM)
 	n_subsystems = of_property_count_strings(node, "ss-name");
 	if (n_subsystems < 0)
 		goto exit;
@@ -463,7 +496,7 @@ static struct dentry *create_debugfs_entries(void __iomem *reg,
 			}
 		}
 	}
-
+#endif
 	if (!ddr_reg)
 		goto exit;
 
@@ -480,7 +513,7 @@ exit:
 static int soc_sleep_stats_probe(struct platform_device *pdev)
 {
 	struct resource *res;
-	void __iomem *reg_base, *reg;
+	void __iomem *reg_base, *ddr_reg = NULL;
 	void __iomem *offset_addr;
 	phys_addr_t stats_base;
 	resource_size_t stats_size;
@@ -489,8 +522,12 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 #endif
 	const struct stats_config *config;
 	struct stats_prv_data *prv_data;
-	int i;
+	int i, ret;
+#if IS_ENABLED(CONFIG_MSM_QMP)
 	u32 name;
+	void __iomem *reg;
+#endif
+	u32 offset;
 
 	config = device_get_match_data(&pdev->dev);
 	if (!config)
@@ -517,14 +554,16 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 	if (!prv_data)
 		return -ENOMEM;
 
-	for (i = 0; i < config->num_records; i++)
+	for (i = 0; i < config->num_records; i++) {
 		prv_data[i].config = config;
+		offset = STAT_TYPE_ADDR + (i * sizeof(struct sleep_stats));
 
-	ddr_gdata = devm_kzalloc(&pdev->dev, sizeof(*ddr_gdata), GFP_KERNEL);
-	if (!ddr_gdata)
-		return -ENOMEM;
+		if (prv_data[0].config->appended_stats_avail)
+			offset += i * sizeof(struct appended_stats);
 
-	ddr_gdata->read_vote_info = false;
+		prv_data[i].reg = reg_base + offset;
+	}
+
 	if (!config->ddr_offset_addr)
 		goto skip_ddr_stats;
 
@@ -536,9 +575,21 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 	stats_base = res->start | readl_relaxed(offset_addr);
 	iounmap(offset_addr);
 
-	ddr_gdata->ddr_reg = devm_ioremap(&pdev->dev, stats_base, stats_size);
-	if (!ddr_gdata->ddr_reg)
+	ddr_reg = devm_ioremap(&pdev->dev, stats_base, stats_size);
+	if (!ddr_reg)
 		return -ENOMEM;
+
+	ret = of_property_read_u32(pdev->dev.of_node, "qcom,drv-max", &prv_data->drv_max);
+	if (ret < 0)
+		prv_data->drv_max = -EINVAL;
+
+#if IS_ENABLED(CONFIG_MSM_QMP)
+	ddr_gdata = devm_kzalloc(&pdev->dev, sizeof(*ddr_gdata), GFP_KERNEL);
+	if (!ddr_gdata)
+		return -ENOMEM;
+
+	ddr_gdata->read_vote_info = false;
+	ddr_gdata->ddr_reg = ddr_reg;
 
 	mutex_init(&ddr_gdata->ddr_stats_lock);
 
@@ -549,6 +600,7 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 	}
 
 	reg = ddr_gdata->ddr_reg + DDR_STATS_NUM_MODES_ADDR + 0x4;
+
 	for (i = 0; i < ddr_gdata->entry_count; i++) {
 		name = readl_relaxed(reg + DDR_STATS_NAME_ADDR);
 		name = (name >> 8) & 0xFF;
@@ -567,22 +619,23 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 	if (IS_ERR(ddr_gdata->stats_mbox_ch))
 		goto skip_ddr_stats;
 
+	ddr_gdata->drv_max = prv_data->drv_max;
 	ddr_gdata->read_vote_info = true;
+#endif
 
 	ddr_freq_update = of_property_read_bool(pdev->dev.of_node,
 							"ddr-freq-update");
 
 skip_ddr_stats:
 #if IS_ENABLED(CONFIG_DEBUG_FS)
-	root = create_debugfs_entries(reg_base, ddr_gdata->ddr_reg, prv_data,
+	root = create_debugfs_entries(reg_base, ddr_reg, prv_data,
 				      pdev->dev.of_node);
 	platform_set_drvdata(pdev, root);
 #endif
 
-#ifdef CONFIG_MI_POWER_INFO_MODULE
-	/*add  CONFIG_MI_POWER_INFO_MODULE  register */
-	soc_sleep_stats_dbg_register(prv_data);
-#endif // end of CONFIG_MI_POWER_INFO_MODULE
+#ifdef CONFIG_MSM_BOOT_TIME_MARKER
+	gdata = prv_data;
+#endif
 
 	return 0;
 }
@@ -604,6 +657,12 @@ static const struct stats_config rpm_data = {
 	.appended_stats_avail = true,
 };
 
+static const struct stats_config rpmh_legacy_data = {
+	.offset_addr = 0x4,
+	.num_records = 3,
+	.appended_stats_avail = false,
+};
+
 static const struct stats_config rpmh_data = {
 	.offset_addr = 0x4,
 	.ddr_offset_addr = 0x1c,
@@ -613,6 +672,7 @@ static const struct stats_config rpmh_data = {
 
 static const struct of_device_id soc_sleep_stats_table[] = {
 	{ .compatible = "qcom,rpm-sleep-stats", .data = &rpm_data },
+	{ .compatible = "qcom,rpmh-sleep-stats-legacy", .data = &rpmh_legacy_data },
 	{ .compatible = "qcom,rpmh-sleep-stats", .data = &rpmh_data },
 	{ }
 };

@@ -18,7 +18,7 @@
 
 static struct kobject c1dcvs_kobj;
 static struct scmi_protocol_handle *ph;
-const static struct scmi_c1dcvs_vendor_ops *ops;
+static const struct scmi_c1dcvs_vendor_ops *ops;
 static unsigned int user_c1dcvs_en;
 static unsigned int kernel_c1dcvs_en;
 static DEFINE_MUTEX(c1dcvs_lock);
@@ -131,6 +131,9 @@ C1DCVS_ATTR_RW(enable_trace);
 store_c1dcvs_attr(hysteresis);
 show_c1dcvs_attr(hysteresis);
 C1DCVS_ATTR_RW(hysteresis);
+store_c1dcvs_attr(c1dcvs_opt_mode);
+show_c1dcvs_attr(c1dcvs_opt_mode);
+C1DCVS_ATTR_RW(c1dcvs_opt_mode);
 show_c1dcvs_attr(enable_c1dcvs);
 C1DCVS_ATTR_RW(enable_c1dcvs);
 
@@ -140,25 +143,32 @@ static ssize_t store_##name(struct kobject *kobj,			\
 				   size_t count)			\
 {									\
 	int ret, i = 0;							\
-	char *s = kstrdup(buf, GFP_KERNEL);				\
-	unsigned int msg[2] = {0};					\
-	char *str, *s_orig = s;						\
+	char *s;						\
+	unsigned int msg[2] = {0};						\
+	char *str;							\
+										\
+	s = kstrdup(buf, GFP_KERNEL);					\
+	if (!s)		\
+		return -ENOMEM;		\
+	if (!ops) {						\
+		ret = -ENODEV;		\
+		goto out;						\
+	}		\
 									\
-	if (!s)								\
-		return -ENOMEM;						\
 	while (((str = strsep(&s, " ")) != NULL) && i < 2) {		\
 		ret = kstrtouint(str, 10, &msg[i]);			\
 		if (ret < 0) {						\
 			pr_err("Invalid value :%d\n", ret);		\
-			goto out;					\
+			ret =  -EINVAL;					\
+			goto out;		\
 		}							\
 		i++;							\
 	}								\
 									\
 	pr_info("Input threshold :%lu for cluster :%lu\n", msg[1], msg[0]);\
-	ret = ops->set_##name(ph, msg);					\
-out:									\
-	kfree(s_orig);							\
+	ret = ops->set_##name(ph, msg);				\
+out:		\
+	kfree(s);		\
 	return ((ret < 0) ? ret : count);				\
 }									\
 
@@ -207,6 +217,7 @@ static struct attribute *c1dcvs_settings_attr[] = {
 	&ipc_thresh.attr,
 	&efreq_thresh.attr,
 	&hysteresis.attr,
+	&c1dcvs_opt_mode.attr,
 	NULL,
 };
 
@@ -250,7 +261,7 @@ static int scmi_c1dcvs_probe(struct scmi_device *sdev)
 	if (!sdev)
 		return -ENODEV;
 
-	ops = sdev->handle->devm_get_protocol(sdev, SCMI_C1DCVS_PROTOCOL, &ph);
+	ops = sdev->handle->devm_protocol_get(sdev, SCMI_C1DCVS_PROTOCOL, &ph);
 	if (IS_ERR(ops))
 		return PTR_ERR(ops);
 	ret = kobject_init_and_add(&c1dcvs_kobj, &c1dcvs_settings_ktype,

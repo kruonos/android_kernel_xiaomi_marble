@@ -62,8 +62,8 @@
 #include <linux/hdreg.h>
 #include <linux/reboot.h>
 #include <linux/stringify.h>
-#include <linux/irq.h>
 #include <asm/io.h>
+#include <asm/irq.h>
 #include <asm/processor.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
@@ -1300,7 +1300,7 @@ static char *__ipr_format_res_path(u8 *res_path, char *buffer, int len)
 
 	*p = '\0';
 	p += scnprintf(p, buffer + len - p, "%02X", res_path[0]);
-	for (i = 1; res_path[i] != 0xff && ((i * 3) < len); i++)
+	for (i = 1; res_path[i] != 0xff && i < IPR_RES_PATH_BYTES; i++)
 		p += scnprintf(p, buffer + len - p, "-%02X", res_path[i]);
 
 	return buffer;
@@ -1323,7 +1323,7 @@ static char *ipr_format_res_path(struct ipr_ioa_cfg *ioa_cfg,
 
 	*p = '\0';
 	p += scnprintf(p, buffer + len - p, "%d/", ioa_cfg->host->host_no);
-	__ipr_format_res_path(res_path, p, len - (buffer - p));
+	__ipr_format_res_path(res_path, p, len - (p - buffer));
 	return buffer;
 }
 
@@ -5322,7 +5322,7 @@ static int ipr_sata_reset(struct ata_link *link, unsigned int *classes,
 }
 
 /**
- * ipr_eh_dev_reset - Reset the device
+ * __ipr_eh_dev_reset - Reset the device
  * @scsi_cmd:	scsi command struct
  *
  * This function issues a device reset to the affected device.
@@ -5584,7 +5584,7 @@ static int ipr_cancel_op(struct scsi_cmnd *scsi_cmd)
 }
 
 /**
- * ipr_eh_abort - Abort a single op
+ * ipr_scan_finished - Report whether scan is done
  * @shost:           scsi host struct
  * @elapsed_time:    elapsed time
  *
@@ -5607,7 +5607,7 @@ static int ipr_scan_finished(struct Scsi_Host *shost, unsigned long elapsed_time
 }
 
 /**
- * ipr_eh_host_reset - Reset the host adapter
+ * ipr_eh_abort - Reset the host adapter
  * @scsi_cmd:	scsi command struct
  *
  * Return value:
@@ -6716,7 +6716,7 @@ static int ipr_ioctl(struct scsi_device *sdev, unsigned int cmd,
 }
 
 /**
- * ipr_info - Get information about the card/driver
+ * ipr_ioa_info - Get information about the card/driver
  * @host:	scsi host struct
  *
  * Return value:
@@ -8666,30 +8666,6 @@ static int ipr_dump_mailbox_wait(struct ipr_cmnd *ipr_cmd)
 }
 
 /**
- * ipr_set_affinity_nobalance
- * @ioa_cfg:	ipr_ioa_cfg struct for an ipr device
- * @flag:	bool
- *	true: ensable "IRQ_NO_BALANCING" bit for msix interrupt
- *	false: disable "IRQ_NO_BALANCING" bit for msix interrupt
- * Description: This function will be called to disable/enable
- *	"IRQ_NO_BALANCING" to avoid irqbalance daemon
- *	kicking in during adapter reset.
- **/
-static void ipr_set_affinity_nobalance(struct ipr_ioa_cfg *ioa_cfg, bool flag)
-{
-	int irq, i;
-
-	for (i = 0; i < ioa_cfg->nvectors; i++) {
-		irq = pci_irq_vector(ioa_cfg->pdev, i);
-
-		if (flag)
-			irq_set_status_flags(irq, IRQ_NO_BALANCING);
-		else
-			irq_clear_status_flags(irq, IRQ_NO_BALANCING);
-	}
-}
-
-/**
  * ipr_reset_restore_cfg_space - Restore PCI config space.
  * @ipr_cmd:	ipr command struct
  *
@@ -8713,7 +8689,6 @@ static int ipr_reset_restore_cfg_space(struct ipr_cmnd *ipr_cmd)
 		return IPR_RC_JOB_CONTINUE;
 	}
 
-	ipr_set_affinity_nobalance(ioa_cfg, false);
 	ipr_fail_all_ops(ioa_cfg);
 
 	if (ioa_cfg->sis64) {
@@ -8793,7 +8768,6 @@ static int ipr_reset_start_bist(struct ipr_cmnd *ipr_cmd)
 		rc = pci_write_config_byte(ioa_cfg->pdev, PCI_BIST, PCI_BIST_START);
 
 	if (rc == PCIBIOS_SUCCESSFUL) {
-		ipr_set_affinity_nobalance(ioa_cfg, true);
 		ipr_cmd->job_step = ipr_reset_bist_done;
 		ipr_reset_start_timer(ipr_cmd, IPR_WAIT_FOR_BIST_TIMEOUT);
 		rc = IPR_RC_JOB_RETURN;
@@ -9514,7 +9488,6 @@ static pci_ers_result_t ipr_pci_error_detected(struct pci_dev *pdev,
 	case pci_channel_io_perm_failure:
 		ipr_pci_perm_failure(pdev);
 		return PCI_ERS_RESULT_DISCONNECT;
-		break;
 	default:
 		break;
 	}

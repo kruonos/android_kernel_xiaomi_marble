@@ -1066,7 +1066,7 @@ static int dmz_iterate_devices(struct dm_target *ti,
 	struct dmz_target *dmz = ti->private;
 	unsigned int zone_nr_sectors = dmz_zone_nr_sectors(dmz->metadata);
 	sector_t capacity;
-	int i, r = 0;
+	int i, r;
 
 	for (i = 0; i < dmz->nr_ddevs; i++) {
 		capacity = dmz->dev[i].capacity & ~(zone_nr_sectors - 1);
@@ -1117,6 +1117,9 @@ static void dmz_status(struct dm_target *ti, status_type_t type,
 			format_dev_t(buf, dev->bdev->bd_dev);
 			DMEMIT(" %s", buf);
 		}
+		break;
+	case STATUSTYPE_IMA:
+		*result = '\0';
 		break;
 	}
 	return;

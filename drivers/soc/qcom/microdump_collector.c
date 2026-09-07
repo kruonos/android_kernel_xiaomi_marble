@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/smem.h>
-#include <linux/workqueue.h>
 
 #if IS_ENABLED(CONFIG_MSM_SUBSYSTEM_RESTART)
 #include <soc/qcom/subsystem_notif.h>
@@ -21,83 +21,10 @@
 #include <soc/qcom/qcom_ramdump.h>
 #endif
 
-#define MAX_SSR_REASON_LEN	130U
 #define SMEM_SSR_REASON_MSS0	421
 #define SMEM_SSR_DATA_MSS0	611
 #define SMEM_MODEM	1
 
-#define STR_NV_SIGNATURE_DESTROYED "CRITICAL_DATA_CHECK_FAILED"
-
-static struct kobject *checknv_kobj;
-static struct kset *checknv_kset;
-
-static const struct sysfs_ops checknv_sysfs_ops = {
-};
-
-static void kobj_release(struct kobject *kobj)
-{
-	kfree(kobj);
-}
-
-static struct kobj_type checknv_ktype = {
-	.sysfs_ops = &checknv_sysfs_ops,
-	.release = kobj_release,
-};
-
-static void checknv_kobj_clean(struct work_struct *work)
-{
-	kobject_uevent(checknv_kobj, KOBJ_REMOVE);
-	kobject_put(checknv_kobj);
-	kset_unregister(checknv_kset);
-}
-
-static void checknv_kobj_create(struct work_struct *work)
-{
-	int ret;
-
-	if (checknv_kset != NULL) {
-		pr_err("checknv_kset is not NULL, should clean up.");
-		kobject_uevent(checknv_kobj, KOBJ_REMOVE);
-		kobject_put(checknv_kobj);
-	}
-
-	checknv_kobj = kzalloc(sizeof(struct kobject), GFP_KERNEL);
-	if (!checknv_kobj) {
-		pr_err("kobject alloc failed.");
-		return;
-	}
-
-	if (checknv_kset == NULL) {
-		checknv_kset = kset_create_and_add("checknv_errimei", NULL, NULL);
-		if (!checknv_kset) {
-			pr_err("kset creation failed.");
-			goto free_kobj;
-		}
-	}
-
-	checknv_kobj->kset = checknv_kset;
-
-	ret = kobject_init_and_add(checknv_kobj, &checknv_ktype, NULL, "%s", "errimei");
-	if (ret) {
-		pr_err("%s: Error in creation kobject", __func__);
-		goto del_kobj;
-	}
-
-	kobject_uevent(checknv_kobj, KOBJ_ADD);
-	return;
-
-del_kobj:
-	kobject_put(checknv_kobj);
-	kset_unregister(checknv_kset);
-
-free_kobj:
-	kfree(checknv_kobj);
-}
-
-static DECLARE_DELAYED_WORK(create_kobj_work, checknv_kobj_create);
-static DECLARE_WORK(clean_kobj_work, checknv_kobj_clean);
-
-static char last_modem_sfr_reason[MAX_SSR_REASON_LEN] = "none";
 /*
  * This program collects the data from SMEM regions whenever the modem crashes
  * and stores it in /dev/ramdump_microdump_modem so as to expose it to
@@ -226,7 +153,6 @@ out:
 
 static void __exit microdump_exit(void)
 {
-	schedule_work(&clean_kobj_work);
 	microdump_modem_ssr_unregister_notifier(drv);
 	destroy_ramdump_device(drv->microdump_dev);
 	kfree(drv);
@@ -296,16 +222,6 @@ static int microdump_crash_collection(void)
 		goto out;
 	}
 
-	strlcpy(last_modem_sfr_reason, crash_reason, MAX_SSR_REASON_LEN);
-	pr_err("modem subsystem failure reason: %s.\n", last_modem_sfr_reason);
-
-	// If the NV protected file (critical_info) is destroyed, restart to recovery to inform user
-	if (strnstr(last_modem_sfr_reason, STR_NV_SIGNATURE_DESTROYED, strlen(last_modem_sfr_reason))) {
-		pr_err("errimei_dev: the NV has been destroyed, should restart to recovery\n");
-		schedule_delayed_work(&create_kobj_work, msecs_to_jiffies(1*1000));
-		goto out;
-	}
-
 	segment[1].va = crash_reason;
 	segment[1].size = size_reason;
 	list_add(&segment[1].node, &head);
@@ -329,7 +245,6 @@ out:
  * static int microdump_modem_panic_notifier_nb(struct notifier_block *nb,
  * unsigned long code, void *data)
  * {
- * pr_err("%s: inside\n", __func__);
  * return microdump_crash_collection();
  * }
  */
@@ -350,7 +265,6 @@ static int microdump_modem_ssr_notifier_nb(struct notifier_block *nb,
  * static int microdump_modem_panic_register_notifier(struct microdump_data *drv)
  * {
  * int ret;
- * pr_err("%s: inside\n", __func__);
  * drv->microdump_modem_panic_notifier.notifier_call = microdump_modem_panic_notifier_nb;
  * ret = atomic_notifier_chain_register(&panic_notifier_list,
  * &drv->microdump_modem_panic_notifier);
@@ -386,7 +300,6 @@ static int microdump_modem_ssr_register_notifier(struct microdump_data *drv)
  * static void microdump_modem_panic_unregister_notifier(struct microdump_data *drv)
  * {
  * int ret;
- * pr_err("%s: inside\n", __func__);
  * ret = atomic_notifier_chain_unregister(&panic_notifier_list,
  * &drv->microdump_modem_panic_notifier);
  * if (ret)

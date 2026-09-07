@@ -243,6 +243,16 @@ static void regmap_format_7_9_write(struct regmap *map,
 	*out = cpu_to_be16((reg << 9) | val);
 }
 
+static void regmap_format_7_17_write(struct regmap *map,
+				    unsigned int reg, unsigned int val)
+{
+	u8 *out = map->work_buf;
+
+	out[2] = val;
+	out[1] = val >> 8;
+	out[0] = (val >> 16) | (reg << 1);
+}
+
 static void regmap_format_10_14_write(struct regmap *map,
 				    unsigned int reg, unsigned int val)
 {
@@ -463,11 +473,9 @@ static void regmap_lock_hwlock_irq(void *__map)
 static void regmap_lock_hwlock_irqsave(void *__map)
 {
 	struct regmap *map = __map;
-	unsigned long flags = 0;
 
 	hwspin_lock_timeout_irqsave(map->hwlock, UINT_MAX,
-				    &flags);
-	map->spinlock_flags = flags;
+				    &map->spinlock_flags);
 }
 
 static void regmap_unlock_hwlock(void *__map)
@@ -523,6 +531,23 @@ __releases(&map->spinlock)
 {
 	struct regmap *map = __map;
 	spin_unlock_irqrestore(&map->spinlock, map->spinlock_flags);
+}
+
+static void regmap_lock_raw_spinlock(void *__map)
+__acquires(&map->raw_spinlock)
+{
+	struct regmap *map = __map;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&map->raw_spinlock, flags);
+	map->raw_spinlock_flags = flags;
+}
+
+static void regmap_unlock_raw_spinlock(void *__map)
+__releases(&map->raw_spinlock)
+{
+	struct regmap *map = __map;
+	raw_spin_unlock_irqrestore(&map->raw_spinlock, map->raw_spinlock_flags);
 }
 
 static void dev_get_regmap_release(struct device *dev, void *res)
@@ -637,17 +662,6 @@ int regmap_attach_dev(struct device *dev, struct regmap *map,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(regmap_attach_dev);
-
-static int dev_get_regmap_match(struct device *dev, void *res, void *data);
-
-static int regmap_detach_dev(struct device *dev, struct regmap *map)
-{
-	if (!dev)
-		return 0;
-
-	return devres_release(dev, dev_get_regmap_release,
-			      dev_get_regmap_match, (void *)map->name);
-}
 
 static enum regmap_endian regmap_get_reg_endian(const struct regmap_bus *bus,
 					const struct regmap_config *config)
@@ -774,11 +788,19 @@ struct regmap *__regmap_init(struct device *dev,
 	} else {
 		if ((bus && bus->fast_io) ||
 		    config->fast_io) {
-			spin_lock_init(&map->spinlock);
-			map->lock = regmap_lock_spinlock;
-			map->unlock = regmap_unlock_spinlock;
-			lockdep_set_class_and_name(&map->spinlock,
-						   lock_key, lock_name);
+			if (config->use_raw_spinlock) {
+				raw_spin_lock_init(&map->raw_spinlock);
+				map->lock = regmap_lock_raw_spinlock;
+				map->unlock = regmap_unlock_raw_spinlock;
+				lockdep_set_class_and_name(&map->raw_spinlock,
+							   lock_key, lock_name);
+			} else {
+				spin_lock_init(&map->spinlock);
+				map->lock = regmap_lock_spinlock;
+				map->unlock = regmap_unlock_spinlock;
+				lockdep_set_class_and_name(&map->spinlock,
+							   lock_key, lock_name);
+			}
 		} else {
 			mutex_init(&map->mutex);
 			map->lock = regmap_lock_mutex;
@@ -855,6 +877,7 @@ struct regmap *__regmap_init(struct device *dev,
 	if (!bus) {
 		map->reg_read  = config->reg_read;
 		map->reg_write = config->reg_write;
+		map->reg_update_bits = config->reg_update_bits;
 
 		map->defer_caching = false;
 		goto skip_format_initialization;
@@ -898,6 +921,9 @@ struct regmap *__regmap_init(struct device *dev,
 		switch (config->val_bits) {
 		case 9:
 			map->format.format_write = regmap_format_7_9_write;
+			break;
+		case 17:
+			map->format.format_write = regmap_format_7_17_write;
 			break;
 		default:
 			goto err_hwlock;
@@ -1101,13 +1127,13 @@ skip_format_initialization:
 
 		/* Sanity check */
 		if (range_cfg->range_max < range_cfg->range_min) {
-			dev_err(map->dev, "Invalid range %d: %u < %u\n", i,
+			dev_err(map->dev, "Invalid range %d: %d < %d\n", i,
 				range_cfg->range_max, range_cfg->range_min);
 			goto err_range;
 		}
 
 		if (range_cfg->range_max > map->max_register) {
-			dev_err(map->dev, "Invalid range %d: %u > %u\n", i,
+			dev_err(map->dev, "Invalid range %d: %d > %d\n", i,
 				range_cfg->range_max, map->max_register);
 			goto err_range;
 		}
@@ -1127,10 +1153,10 @@ skip_format_initialization:
 		/* Make sure, that this register range has no selector
 		   or data window within its boundary */
 		for (j = 0; j < config->num_ranges; j++) {
-			unsigned sel_reg = config->ranges[j].selector_reg;
-			unsigned win_min = config->ranges[j].window_start;
-			unsigned win_max = win_min +
-					   config->ranges[j].window_len - 1;
+			unsigned int sel_reg = config->ranges[j].selector_reg;
+			unsigned int win_min = config->ranges[j].window_start;
+			unsigned int win_max = win_min +
+					       config->ranges[j].window_len - 1;
 
 			/* Allow data window inside its own virtual range */
 			if (j == i)
@@ -1299,7 +1325,7 @@ EXPORT_SYMBOL_GPL(devm_regmap_field_alloc);
  */
 int regmap_field_bulk_alloc(struct regmap *regmap,
 			    struct regmap_field **rm_field,
-			    struct reg_field *reg_field,
+			    const struct reg_field *reg_field,
 			    int num_fields)
 {
 	struct regmap_field *rf;
@@ -1335,7 +1361,7 @@ EXPORT_SYMBOL_GPL(regmap_field_bulk_alloc);
 int devm_regmap_field_bulk_alloc(struct device *dev,
 				 struct regmap *regmap,
 				 struct regmap_field **rm_field,
-				 struct reg_field *reg_field,
+				 const struct reg_field *reg_field,
 				 int num_fields)
 {
 	struct regmap_field *rf;
@@ -1490,7 +1516,6 @@ void regmap_exit(struct regmap *map)
 {
 	struct regmap_async *async;
 
-	regmap_detach_dev(map->dev, map);
 	regcache_exit(map);
 	regmap_debugfs_exit(map);
 	regmap_range_exit(map);
@@ -1511,6 +1536,8 @@ void regmap_exit(struct regmap *map)
 		mutex_destroy(&map->mutex);
 	kfree_const(map->name);
 	kfree(map->patch);
+	if (map->bus && map->bus->free_on_exit)
+		kfree(map->bus);
 	kfree(map);
 }
 EXPORT_SYMBOL_GPL(regmap_exit);
@@ -1571,7 +1598,6 @@ static int _regmap_select_page(struct regmap *map, unsigned int *reg,
 			       unsigned int val_num)
 {
 	void *orig_work_buf;
-	unsigned int selector_reg;
 	unsigned int win_offset;
 	unsigned int win_page;
 	bool page_chg;
@@ -1590,31 +1616,10 @@ static int _regmap_select_page(struct regmap *map, unsigned int *reg,
 			return -EINVAL;
 	}
 
-	/*
-	 * Calculate the address of the selector register in the corresponding
-	 * data window if it is located on every page.
-	 */
-	page_chg = in_range(range->selector_reg, range->window_start, range->window_len);
-	if (page_chg)
-		selector_reg = range->range_min + win_page * range->window_len +
-			       range->selector_reg - range->window_start;
-
-	/*
-	 * It is possible to have selector register inside data window.
-	 * In that case, selector register is located on every page and it
-	 * needs no page switching, when accessed alone.
-	 *
-	 * Nevertheless we should synchronize the cache values for it.
-	 * This can't be properly achieved if the selector register is
-	 * the first and the only one to be read inside the data window.
-	 * That's why we update it in that case as well.
-	 *
-	 * However, we specifically avoid updating it for the default page,
-	 * when it's overlapped with the real data window, to prevent from
-	 * infinite looping.
-	 */
+	/* It is possible to have selector register inside data window.
+	   In that case, selector register is located on every page and
+	   it needs no page switching, when accessed alone. */
 	if (val_num > 1 ||
-	    (page_chg && selector_reg != range->selector_reg) ||
 	    range->window_start + win_offset != range->selector_reg) {
 		/* Use separate work_buf during page switching */
 		orig_work_buf = map->work_buf;
@@ -1623,7 +1628,7 @@ static int _regmap_select_page(struct regmap *map, unsigned int *reg,
 		ret = _regmap_update_bits(map, range->selector_reg,
 					  range->selector_mask,
 					  win_page << range->selector_shift,
-					  NULL, false);
+					  &page_chg, false);
 
 		map->work_buf = orig_work_buf;
 
@@ -1963,12 +1968,15 @@ int _regmap_write(struct regmap *map, unsigned int reg,
 		}
 	}
 
-	if (regmap_should_log(map))
-		dev_info(map->dev, "%x <= %x\n", reg, val);
+	ret = map->reg_write(context, reg, val);
+	if (ret == 0) {
+		if (regmap_should_log(map))
+			dev_info(map->dev, "%x <= %x\n", reg, val);
 
-	trace_regmap_reg_write(map, reg, val);
+		trace_regmap_reg_write(map, reg, val);
+	}
 
-	return map->reg_write(context, reg, val);
+	return ret;
 }
 
 /**

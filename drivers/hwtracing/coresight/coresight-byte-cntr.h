@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2017, 2019-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
+
 #ifndef _CORESIGHT_BYTE_CNTR_H
 #define _CORESIGHT_BYTE_CNTR_H
 #include <linux/cdev.h>

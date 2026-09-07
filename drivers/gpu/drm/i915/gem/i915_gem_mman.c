@@ -19,6 +19,7 @@
 #include "i915_gem_mman.h"
 #include "i915_trace.h"
 #include "i915_user_extensions.h"
+#include "i915_gem_ttm.h"
 #include "i915_vma.h"
 
 static inline bool
@@ -56,9 +57,17 @@ int
 i915_gem_mmap_ioctl(struct drm_device *dev, void *data,
 		    struct drm_file *file)
 {
+	struct drm_i915_private *i915 = to_i915(dev);
 	struct drm_i915_gem_mmap *args = data;
 	struct drm_i915_gem_object *obj;
 	unsigned long addr;
+
+	/*
+	 * mmap ioctl is disallowed for all discrete platforms,
+	 * and for all platforms with GRAPHICS_VER > 12.
+	 */
+	if (IS_DGFX(i915) || GRAPHICS_VER_FULL(i915) > IP_VER(12, 0))
+		return -EOPNOTSUPP;
 
 	if (args->flags & ~(I915_MMAP_WC))
 		return -EINVAL;
@@ -247,12 +256,15 @@ static vm_fault_t vm_fault_cpu(struct vm_fault *vmf)
 		     area->vm_flags & VM_WRITE))
 		return VM_FAULT_SIGBUS;
 
+	if (i915_gem_object_lock_interruptible(obj, NULL))
+		return VM_FAULT_NOPAGE;
+
 	err = i915_gem_object_pin_pages(obj);
 	if (err)
 		goto out;
 
 	iomap = -1;
-	if (!i915_gem_object_type_has(obj, I915_GEM_OBJECT_HAS_STRUCT_PAGE)) {
+	if (!i915_gem_object_has_struct_page(obj)) {
 		iomap = obj->mm.region->iomap.base;
 		iomap -= obj->mm.region->region.start;
 	}
@@ -270,42 +282,8 @@ static vm_fault_t vm_fault_cpu(struct vm_fault *vmf)
 	i915_gem_object_unpin_pages(obj);
 
 out:
+	i915_gem_object_unlock(obj);
 	return i915_error_to_vmf_fault(err);
-}
-
-static void set_address_limits(struct vm_area_struct *area,
-			       struct i915_vma *vma,
-			       unsigned long obj_offset,
-			       unsigned long *start_vaddr,
-			       unsigned long *end_vaddr)
-{
-	unsigned long vm_start, vm_end, vma_size; /* user's memory parameters */
-	long start, end; /* memory boundaries */
-
-	/*
-	 * Let's move into the ">> PAGE_SHIFT"
-	 * domain to be sure not to lose bits
-	 */
-	vm_start = area->vm_start >> PAGE_SHIFT;
-	vm_end = area->vm_end >> PAGE_SHIFT;
-	vma_size = vma->size >> PAGE_SHIFT;
-
-	/*
-	 * Calculate the memory boundaries by considering the offset
-	 * provided by the user during memory mapping and the offset
-	 * provided for the partial mapping.
-	 */
-	start = vm_start;
-	start -= obj_offset;
-	start += vma->ggtt_view.partial.offset;
-	end = start + vma_size;
-
-	start = max_t(long, start, vm_start);
-	end = min_t(long, end, vm_end);
-
-	/* Let's move back into the "<< PAGE_SHIFT" domain */
-	*start_vaddr = (unsigned long)start << PAGE_SHIFT;
-	*end_vaddr = (unsigned long)end << PAGE_SHIFT;
 }
 
 static vm_fault_t vm_fault_gtt(struct vm_fault *vmf)
@@ -320,18 +298,14 @@ static vm_fault_t vm_fault_gtt(struct vm_fault *vmf)
 	struct i915_ggtt *ggtt = &i915->ggtt;
 	bool write = area->vm_flags & VM_WRITE;
 	struct i915_gem_ww_ctx ww;
-	unsigned long obj_offset;
-	unsigned long start, end; /* memory boundaries */
 	intel_wakeref_t wakeref;
 	struct i915_vma *vma;
 	pgoff_t page_offset;
-	unsigned long pfn;
 	int srcu;
 	int ret;
 
-	obj_offset = area->vm_pgoff - drm_vma_node_start(&mmo->vma_node);
+	/* We don't use vmf->pgoff since that has the fake offset */
 	page_offset = (vmf->address - area->vm_start) >> PAGE_SHIFT;
-	page_offset += obj_offset;
 
 	trace_i915_gem_object_fault(obj, page_offset, true, write);
 
@@ -402,14 +376,12 @@ retry:
 	if (ret)
 		goto err_unpin;
 
-	set_address_limits(area, vma, obj_offset, &start, &end);
-
-	pfn = (ggtt->gmadr.start + i915_ggtt_offset(vma)) >> PAGE_SHIFT;
-	pfn += (start - area->vm_start) >> PAGE_SHIFT;
-	pfn += obj_offset - vma->ggtt_view.partial.offset;
-
 	/* Finally, remap it using the new GTT offset */
-	ret = remap_io_mapping(area, start, pfn, end - start, &ggtt->iomap);
+	ret = remap_io_mapping(area,
+			       area->vm_start + (vma->ggtt_view.partial.offset << PAGE_SHIFT),
+			       (ggtt->gmadr.start + vma->node.start) >> PAGE_SHIFT,
+			       min_t(u64, vma->size, area->vm_end - area->vm_start),
+			       &ggtt->iomap);
 	if (ret)
 		goto err_fence;
 
@@ -459,7 +431,9 @@ vm_access(struct vm_area_struct *area, unsigned long addr,
 {
 	struct i915_mmap_offset *mmo = area->vm_private_data;
 	struct drm_i915_gem_object *obj = mmo->obj;
+	struct i915_gem_ww_ctx ww;
 	void *vaddr;
+	int err = 0;
 
 	if (i915_gem_object_is_readonly(obj) && write)
 		return -EACCES;
@@ -468,10 +442,18 @@ vm_access(struct vm_area_struct *area, unsigned long addr,
 	if (range_overflows_t(u64, addr, len, obj->base.size))
 		return -EINVAL;
 
+	i915_gem_ww_ctx_init(&ww, true);
+retry:
+	err = i915_gem_object_lock(obj, &ww);
+	if (err)
+		goto out;
+
 	/* As this is primarily for debugging, let's focus on simplicity */
 	vaddr = i915_gem_object_pin_map(obj, I915_MAP_FORCE_WC);
-	if (IS_ERR(vaddr))
-		return PTR_ERR(vaddr);
+	if (IS_ERR(vaddr)) {
+		err = PTR_ERR(vaddr);
+		goto out;
+	}
 
 	if (write) {
 		memcpy(vaddr + addr, buf, len);
@@ -481,6 +463,16 @@ vm_access(struct vm_area_struct *area, unsigned long addr,
 	}
 
 	i915_gem_object_unpin_map(obj);
+out:
+	if (err == -EDEADLK) {
+		err = i915_gem_ww_ctx_backoff(&ww);
+		if (!err)
+			goto retry;
+	}
+	i915_gem_ww_ctx_fini(&ww);
+
+	if (err)
+		return err;
 
 	return len;
 }
@@ -634,6 +626,8 @@ mmap_offset_attach(struct drm_i915_gem_object *obj,
 	struct i915_mmap_offset *mmo;
 	int err;
 
+	GEM_BUG_ON(obj->ops->mmap_offset || obj->ops->mmap_ops);
+
 	mmo = lookup_mmo(obj, mmap_type);
 	if (mmo)
 		goto out;
@@ -652,7 +646,8 @@ mmap_offset_attach(struct drm_i915_gem_object *obj,
 		goto insert;
 
 	/* Attempt to reap some mmap space from dead objects */
-	err = intel_gt_retire_requests_timeout(&i915->gt, MAX_SCHEDULE_TIMEOUT);
+	err = intel_gt_retire_requests_timeout(&i915->gt, MAX_SCHEDULE_TIMEOUT,
+					       NULL);
 	if (err)
 		goto err;
 
@@ -676,41 +671,58 @@ err:
 }
 
 static int
-__assign_mmap_offset(struct drm_file *file,
-		     u32 handle,
+__assign_mmap_offset(struct drm_i915_gem_object *obj,
 		     enum i915_mmap_type mmap_type,
-		     u64 *offset)
+		     u64 *offset, struct drm_file *file)
+{
+	struct i915_mmap_offset *mmo;
+
+	if (i915_gem_object_never_mmap(obj))
+		return -ENODEV;
+
+	if (obj->ops->mmap_offset)  {
+		if (mmap_type != I915_MMAP_TYPE_FIXED)
+			return -ENODEV;
+
+		*offset = obj->ops->mmap_offset(obj);
+		return 0;
+	}
+
+	if (mmap_type == I915_MMAP_TYPE_FIXED)
+		return -ENODEV;
+
+	if (mmap_type != I915_MMAP_TYPE_GTT &&
+	    !i915_gem_object_has_struct_page(obj) &&
+	    !i915_gem_object_has_iomem(obj))
+		return -ENODEV;
+
+	mmo = mmap_offset_attach(obj, mmap_type, file);
+	if (IS_ERR(mmo))
+		return PTR_ERR(mmo);
+
+	*offset = drm_vma_node_offset_addr(&mmo->vma_node);
+	return 0;
+}
+
+static int
+__assign_mmap_offset_handle(struct drm_file *file,
+			    u32 handle,
+			    enum i915_mmap_type mmap_type,
+			    u64 *offset)
 {
 	struct drm_i915_gem_object *obj;
-	struct i915_mmap_offset *mmo;
 	int err;
 
 	obj = i915_gem_object_lookup(file, handle);
 	if (!obj)
 		return -ENOENT;
 
-	if (i915_gem_object_never_mmap(obj)) {
-		err = -ENODEV;
-		goto out;
-	}
-
-	if (mmap_type != I915_MMAP_TYPE_GTT &&
-	    !i915_gem_object_type_has(obj,
-				      I915_GEM_OBJECT_HAS_STRUCT_PAGE |
-				      I915_GEM_OBJECT_HAS_IOMEM)) {
-		err = -ENODEV;
-		goto out;
-	}
-
-	mmo = mmap_offset_attach(obj, mmap_type, file);
-	if (IS_ERR(mmo)) {
-		err = PTR_ERR(mmo);
-		goto out;
-	}
-
-	*offset = drm_vma_node_offset_addr(&mmo->vma_node);
-	err = 0;
-out:
+	err = i915_gem_object_lock_interruptible(obj, NULL);
+	if (err)
+		goto out_put;
+	err = __assign_mmap_offset(obj, mmap_type, offset, file);
+	i915_gem_object_unlock(obj);
+out_put:
 	i915_gem_object_put(obj);
 	return err;
 }
@@ -723,14 +735,16 @@ i915_gem_dumb_mmap_offset(struct drm_file *file,
 {
 	enum i915_mmap_type mmap_type;
 
-	if (boot_cpu_has(X86_FEATURE_PAT))
+	if (HAS_LMEM(to_i915(dev)))
+		mmap_type = I915_MMAP_TYPE_FIXED;
+	else if (boot_cpu_has(X86_FEATURE_PAT))
 		mmap_type = I915_MMAP_TYPE_WC;
 	else if (!i915_ggtt_has_aperture(&to_i915(dev)->ggtt))
 		return -ENODEV;
 	else
 		mmap_type = I915_MMAP_TYPE_GTT;
 
-	return __assign_mmap_offset(file, handle, mmap_type, offset);
+	return __assign_mmap_offset_handle(file, handle, mmap_type, offset);
 }
 
 /**
@@ -794,11 +808,15 @@ i915_gem_mmap_offset_ioctl(struct drm_device *dev, void *data,
 		type = I915_MMAP_TYPE_UC;
 		break;
 
+	case I915_MMAP_OFFSET_FIXED:
+		type = I915_MMAP_TYPE_FIXED;
+		break;
+
 	default:
 		return -EINVAL;
 	}
 
-	return __assign_mmap_offset(file, args->handle, type, &args->offset);
+	return __assign_mmap_offset_handle(file, args->handle, type, &args->offset);
 }
 
 static void vm_open(struct vm_area_struct *vma)
@@ -902,8 +920,18 @@ int i915_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 		 * destroyed and will be invalid when the vma manager lock
 		 * is released.
 		 */
-		mmo = container_of(node, struct i915_mmap_offset, vma_node);
-		obj = i915_gem_object_get_rcu(mmo->obj);
+		if (!node->driver_private) {
+			mmo = container_of(node, struct i915_mmap_offset, vma_node);
+			obj = i915_gem_object_get_rcu(mmo->obj);
+
+			GEM_BUG_ON(obj && obj->ops->mmap_ops);
+		} else {
+			obj = i915_gem_object_get_rcu
+				(container_of(node, struct drm_i915_gem_object,
+					      base.vma_node));
+
+			GEM_BUG_ON(obj && !obj->ops->mmap_ops);
+		}
 	}
 	drm_vma_offset_unlock_lookup(dev->vma_offset_manager);
 	rcu_read_unlock();
@@ -924,8 +952,7 @@ int i915_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 		return PTR_ERR(anon);
 	}
 
-	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
-	vma->vm_private_data = mmo;
+	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_IO;
 
 	/*
 	 * We keep the ref on mmo->obj, not vm_file, but we require
@@ -935,8 +962,18 @@ int i915_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	 * requires avoiding extraneous references to their filp, hence why
 	 * we prefer to use an anonymous file for their mmaps.
 	 */
-	fput(vma->vm_file);
-	vma->vm_file = anon;
+	vma_set_file(vma, anon);
+	/* Drop the initial creation reference, the vma is now holding one. */
+	fput(anon);
+
+	if (obj->ops->mmap_ops) {
+		vma->vm_page_prot = pgprot_decrypted(vm_get_page_prot(vma->vm_flags));
+		vma->vm_ops = obj->ops->mmap_ops;
+		vma->vm_private_data = node->driver_private;
+		return 0;
+	}
+
+	vma->vm_private_data = mmo;
 
 	switch (mmo->mmap_type) {
 	case I915_MMAP_TYPE_WC:
@@ -945,6 +982,9 @@ int i915_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 		vma->vm_ops = &vm_ops_cpu;
 		break;
 
+	case I915_MMAP_TYPE_FIXED:
+		GEM_WARN_ON(1);
+		fallthrough;
 	case I915_MMAP_TYPE_WB:
 		vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 		vma->vm_ops = &vm_ops_cpu;

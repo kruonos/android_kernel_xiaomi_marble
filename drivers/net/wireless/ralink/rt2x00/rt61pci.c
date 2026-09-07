@@ -1709,7 +1709,7 @@ static int rt61pci_set_state(struct rt2x00_dev *rt2x00dev, enum dev_state state)
 {
 	u32 reg, reg2;
 	unsigned int i;
-	bool put_to_sleep;
+	char put_to_sleep;
 
 	put_to_sleep = (state != STATE_AWAKE);
 
@@ -2656,7 +2656,7 @@ static int rt61pci_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 {
 	struct hw_mode_spec *spec = &rt2x00dev->spec;
 	struct channel_info *info;
-	u8 *tx_power;
+	char *tx_power;
 	unsigned int i;
 
 	/*
@@ -2993,8 +2993,6 @@ static const struct pci_device_id rt61pci_device_table[] = {
 MODULE_AUTHOR(DRV_PROJECT);
 MODULE_VERSION(DRV_VERSION);
 MODULE_DESCRIPTION("Ralink RT61 PCI & PCMCIA Wireless LAN driver.");
-MODULE_SUPPORTED_DEVICE("Ralink RT2561, RT2561s & RT2661 "
-			"PCI & PCMCIA chipset based cards");
 MODULE_DEVICE_TABLE(pci, rt61pci_device_table);
 MODULE_FIRMWARE(FIRMWARE_RT2561);
 MODULE_FIRMWARE(FIRMWARE_RT2561s);

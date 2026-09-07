@@ -93,6 +93,7 @@ static void update_pm_runtime_accounting(struct device *dev)
 static void __update_runtime_status(struct device *dev, enum rpm_status status)
 {
 	update_pm_runtime_accounting(dev);
+	trace_rpm_status(dev, status);
 	dev->power.runtime_status = status;
 }
 
@@ -363,7 +364,7 @@ static void rpm_suspend_suppliers(struct device *dev)
 static int __rpm_callback(int (*cb)(struct device *), struct device *dev)
 	__releases(&dev->power.lock) __acquires(&dev->power.lock)
 {
-	int retval, idx;
+	int retval = 0, idx;
 	bool use_links = dev->power.links_count > 0;
 
 	if (dev->power.irq_safe) {
@@ -391,7 +392,8 @@ static int __rpm_callback(int (*cb)(struct device *), struct device *dev)
 		}
 	}
 
-	retval = cb(dev);
+	if (cb)
+		retval = cb(dev);
 
 	if (dev->power.irq_safe) {
 		spin_lock(&dev->power.lock);
@@ -511,9 +513,6 @@ static int rpm_idle(struct device *dev, int rpmflags)
 static int rpm_callback(int (*cb)(struct device *), struct device *dev)
 {
 	int retval;
-
-	if (!cb)
-		return -ENOSYS;
 
 	if (dev->power.memalloc_noio) {
 		unsigned int noio_flag;
@@ -981,7 +980,7 @@ static void pm_runtime_work(struct work_struct *work)
 
 /**
  * pm_suspend_timer_fn - Timer function for pm_schedule_suspend().
- * @data: Device pointer passed by pm_schedule_suspend().
+ * @timer: hrtimer used by pm_schedule_suspend().
  *
  * Check if the time is right and queue a suspend request.
  */
@@ -998,7 +997,7 @@ static enum hrtimer_restart  pm_suspend_timer_fn(struct hrtimer *timer)
 	 * If 'expires' is after the current time, we've been called
 	 * too early.
 	 */
-	if (expires > 0 && expires <= ktime_get_mono_fast_ns()) {
+	if (expires > 0 && expires < ktime_get_mono_fast_ns()) {
 		dev->power.timer_expires = 0;
 		rpm_suspend(dev, dev->power.timer_autosuspends ?
 		    (RPM_ASYNC | RPM_AUTO) : RPM_ASYNC);
@@ -1163,7 +1162,7 @@ EXPORT_SYMBOL_GPL(__pm_runtime_resume);
  * suspending the device when both its runtime PM status is %RPM_ACTIVE and its
  * runtime PM usage counter is not zero.
  *
- * The caller is resposible for decrementing the runtime PM usage counter of
+ * The caller is responsible for decrementing the runtime PM usage counter of
  * @dev after this function has returned a positive value for it.
  */
 int pm_runtime_get_if_active(struct device *dev, bool ign_usage_count)
@@ -1479,32 +1478,6 @@ void pm_runtime_enable(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(pm_runtime_enable);
 
-static void pm_runtime_set_suspended_action(void *data)
-{
-	pm_runtime_set_suspended(data);
-}
-
-/**
- * devm_pm_runtime_set_active_enabled - set_active version of devm_pm_runtime_enable.
- *
- * @dev: Device to handle.
- */
-int devm_pm_runtime_set_active_enabled(struct device *dev)
-{
-	int err;
-
-	err = pm_runtime_set_active(dev);
-	if (err)
-		return err;
-
-	err = devm_add_action_or_reset(dev, pm_runtime_set_suspended_action, dev);
-	if (err)
-		return err;
-
-	return devm_pm_runtime_enable(dev);
-}
-EXPORT_SYMBOL_GPL(devm_pm_runtime_set_active_enabled);
-
 static void pm_runtime_disable_action(void *data)
 {
 	pm_runtime_dont_use_autosuspend(data);
@@ -1526,24 +1499,6 @@ int devm_pm_runtime_enable(struct device *dev)
 	return devm_add_action_or_reset(dev, pm_runtime_disable_action, dev);
 }
 EXPORT_SYMBOL_GPL(devm_pm_runtime_enable);
-
-static void pm_runtime_put_noidle_action(void *data)
-{
-	pm_runtime_put_noidle(data);
-}
-
-/**
- * devm_pm_runtime_get_noresume - devres-enabled version of pm_runtime_get_noresume.
- *
- * @dev: Device to handle.
- */
-int devm_pm_runtime_get_noresume(struct device *dev)
-{
-	pm_runtime_get_noresume(dev);
-
-	return devm_add_action_or_reset(dev, pm_runtime_put_noidle_action, dev);
-}
-EXPORT_SYMBOL_GPL(devm_pm_runtime_get_noresume);
 
 /**
  * pm_runtime_forbid - Block runtime PM of a device.
@@ -1749,24 +1704,17 @@ void pm_runtime_init(struct device *dev)
  */
 void pm_runtime_reinit(struct device *dev)
 {
-	if (pm_runtime_enabled(dev))
-		return;
-
-	if (dev->power.runtime_status == RPM_ACTIVE)
-		pm_runtime_set_suspended(dev);
-
-	if (dev->power.irq_safe) {
-		spin_lock_irq(&dev->power.lock);
-		dev->power.irq_safe = 0;
-		spin_unlock_irq(&dev->power.lock);
-		if (dev->parent)
-			pm_runtime_put(dev->parent);
+	if (!pm_runtime_enabled(dev)) {
+		if (dev->power.runtime_status == RPM_ACTIVE)
+			pm_runtime_set_suspended(dev);
+		if (dev->power.irq_safe) {
+			spin_lock_irq(&dev->power.lock);
+			dev->power.irq_safe = 0;
+			spin_unlock_irq(&dev->power.lock);
+			if (dev->parent)
+				pm_runtime_put(dev->parent);
+		}
 	}
-	/*
-	 * Clear power.needs_force_resume in case it has been set by
-	 * pm_runtime_force_suspend() invoked from a driver remove callback.
-	 */
-	dev->power.needs_force_resume = false;
 }
 
 /**
@@ -1776,7 +1724,6 @@ void pm_runtime_reinit(struct device *dev)
 void pm_runtime_remove(struct device *dev)
 {
 	__pm_runtime_disable(dev, false);
-	flush_work(&dev->power.work);
 	pm_runtime_reinit(dev);
 }
 
@@ -1796,7 +1743,6 @@ void pm_runtime_get_suppliers(struct device *dev)
 		if (link->flags & DL_FLAG_PM_RUNTIME) {
 			link->supplier_preactivated = true;
 			pm_runtime_get_sync(link->supplier);
-			refcount_inc(&link->rpm_active);
 		}
 
 	device_links_read_unlock(idx);
@@ -1809,8 +1755,6 @@ void pm_runtime_get_suppliers(struct device *dev)
 void pm_runtime_put_suppliers(struct device *dev)
 {
 	struct device_link *link;
-	unsigned long flags;
-	bool put;
 	int idx;
 
 	idx = device_links_read_lock();
@@ -1819,12 +1763,7 @@ void pm_runtime_put_suppliers(struct device *dev)
 				device_links_read_lock_held())
 		if (link->supplier_preactivated) {
 			link->supplier_preactivated = false;
-			spin_lock_irqsave(&dev->power.lock, flags);
-			put = pm_runtime_status_suspended(dev) &&
-			      refcount_dec_not_one(&link->rpm_active);
-			spin_unlock_irqrestore(&dev->power.lock, flags);
-			if (put)
-				pm_runtime_put(link->supplier);
+			pm_runtime_put(link->supplier);
 		}
 
 	device_links_read_unlock(idx);
@@ -1863,7 +1802,7 @@ void pm_runtime_drop_link(struct device_link *link)
 	pm_request_idle(link->supplier);
 }
 
-bool pm_runtime_need_not_resume(struct device *dev)
+static bool pm_runtime_need_not_resume(struct device *dev)
 {
 	return atomic_read(&dev->power.usage_count) <= 1 &&
 		(atomic_read(&dev->power.child_count) == 0 ||

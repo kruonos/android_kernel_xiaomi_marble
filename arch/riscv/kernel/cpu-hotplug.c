@@ -12,6 +12,7 @@
 #include <linux/sched/hotplug.h>
 #include <asm/irq.h>
 #include <asm/cpu_ops.h>
+#include <asm/numa.h>
 #include <asm/sbi.h>
 
 void cpu_stop(void);
@@ -46,6 +47,7 @@ int __cpu_disable(void)
 		return ret;
 
 	remove_cpu_topology(cpu);
+	numa_remove_cpu(cpu);
 	set_cpu_online(cpu, false);
 	irq_migrate_all_off_this_cpu();
 
@@ -65,12 +67,11 @@ void __cpu_die(unsigned int cpu)
 	}
 	pr_notice("CPU%u: off\n", cpu);
 
-	clear_tasks_mm_cpumask(cpu);
 	/* Verify from the firmware if the cpu is really stopped*/
 	if (cpu_ops[cpu]->cpu_is_stopped)
 		ret = cpu_ops[cpu]->cpu_is_stopped(cpu);
 	if (ret)
-		pr_warn("CPU%u may not have stopped: %d\n", cpu, ret);
+		pr_warn("CPU%d may not have stopped: %d\n", cpu, ret);
 }
 
 /*

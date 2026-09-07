@@ -472,8 +472,12 @@ nvmet_rdma_alloc_rsps(struct nvmet_rdma_queue *queue)
 	return 0;
 
 out_free:
-	while (--i >= 0)
-		nvmet_rdma_free_rsp(ndev, &queue->rsps[i]);
+	while (--i >= 0) {
+		struct nvmet_rdma_rsp *rsp = &queue->rsps[i];
+
+		list_del(&rsp->free_list);
+		nvmet_rdma_free_rsp(ndev, rsp);
+	}
 	kfree(queue->rsps);
 out:
 	return ret;
@@ -484,8 +488,12 @@ static void nvmet_rdma_free_rsps(struct nvmet_rdma_queue *queue)
 	struct nvmet_rdma_device *ndev = queue->dev;
 	int i, nr_rsps = queue->recv_queue_size * 2;
 
-	for (i = 0; i < nr_rsps; i++)
-		nvmet_rdma_free_rsp(ndev, &queue->rsps[i]);
+	for (i = 0; i < nr_rsps; i++) {
+		struct nvmet_rdma_rsp *rsp = &queue->rsps[i];
+
+		list_del(&rsp->free_list);
+		nvmet_rdma_free_rsp(ndev, rsp);
+	}
 	kfree(queue->rsps);
 }
 
@@ -996,27 +1004,6 @@ out_err:
 	nvmet_req_complete(&cmd->req, status);
 }
 
-static bool nvmet_rdma_recv_not_live(struct nvmet_rdma_queue *queue,
-		struct nvmet_rdma_rsp *rsp)
-{
-	unsigned long flags;
-	bool ret = true;
-
-	spin_lock_irqsave(&queue->state_lock, flags);
-	/*
-	 * recheck queue state is not live to prevent a race condition
-	 * with RDMA_CM_EVENT_ESTABLISHED handler.
-	 */
-	if (queue->state == NVMET_RDMA_Q_LIVE)
-		ret = false;
-	else if (queue->state == NVMET_RDMA_Q_CONNECTING)
-		list_add_tail(&rsp->wait_list, &queue->rsp_wait_list);
-	else
-		nvmet_rdma_put_rsp(rsp);
-	spin_unlock_irqrestore(&queue->state_lock, flags);
-	return ret;
-}
-
 static void nvmet_rdma_recv_done(struct ib_cq *cq, struct ib_wc *wc)
 {
 	struct nvmet_rdma_cmd *cmd =
@@ -1058,9 +1045,17 @@ static void nvmet_rdma_recv_done(struct ib_cq *cq, struct ib_wc *wc)
 	rsp->req.port = queue->port;
 	rsp->n_rdma = 0;
 
-	if (unlikely(queue->state != NVMET_RDMA_Q_LIVE) &&
-	    nvmet_rdma_recv_not_live(queue, rsp))
+	if (unlikely(queue->state != NVMET_RDMA_Q_LIVE)) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&queue->state_lock, flags);
+		if (queue->state == NVMET_RDMA_Q_CONNECTING)
+			list_add_tail(&rsp->wait_list, &queue->rsp_wait_list);
+		else
+			nvmet_rdma_put_rsp(rsp);
+		spin_unlock_irqrestore(&queue->state_lock, flags);
 		return;
+	}
 
 	nvmet_rdma_handle_command(queue, rsp);
 }
@@ -1262,7 +1257,7 @@ out_err:
 
 static int nvmet_rdma_create_queue_ib(struct nvmet_rdma_queue *queue)
 {
-	struct ib_qp_init_attr qp_attr;
+	struct ib_qp_init_attr qp_attr = { };
 	struct nvmet_rdma_device *ndev = queue->dev;
 	int nr_cqe, ret, i, factor;
 
@@ -1280,7 +1275,6 @@ static int nvmet_rdma_create_queue_ib(struct nvmet_rdma_queue *queue)
 		goto out;
 	}
 
-	memset(&qp_attr, 0, sizeof(qp_attr));
 	qp_attr.qp_context = queue;
 	qp_attr.event_handler = nvmet_rdma_qp_event;
 	qp_attr.send_cq = queue->cq;
@@ -1589,7 +1583,7 @@ static int nvmet_rdma_queue_connect(struct rdma_cm_id *cm_id,
 
 	if (queue->host_qid == 0) {
 		/* Let inflight controller teardown complete */
-		flush_scheduled_work();
+		flush_workqueue(nvmet_wq);
 	}
 
 	ret = nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn);
@@ -1674,7 +1668,7 @@ static void __nvmet_rdma_queue_disconnect(struct nvmet_rdma_queue *queue)
 
 	if (disconnect) {
 		rdma_disconnect(queue->cm_id);
-		schedule_work(&queue->release_work);
+		queue_work(nvmet_wq, &queue->release_work);
 	}
 }
 
@@ -1704,7 +1698,7 @@ static void nvmet_rdma_queue_connect_fail(struct rdma_cm_id *cm_id,
 	mutex_unlock(&nvmet_rdma_queue_mutex);
 
 	pr_err("failed to connect queue %d\n", queue->idx);
-	schedule_work(&queue->release_work);
+	queue_work(nvmet_wq, &queue->release_work);
 }
 
 /**
@@ -1778,7 +1772,7 @@ static int nvmet_rdma_cm_handler(struct rdma_cm_id *cm_id,
 		if (!queue) {
 			struct nvmet_rdma_port *port = cm_id->context;
 
-			schedule_delayed_work(&port->repair_work, 0);
+			queue_delayed_work(nvmet_wq, &port->repair_work, 0);
 			break;
 		}
 		fallthrough;
@@ -1908,7 +1902,7 @@ static void nvmet_rdma_repair_port_work(struct work_struct *w)
 	nvmet_rdma_disable_port(port);
 	ret = nvmet_rdma_enable_port(port);
 	if (ret)
-		schedule_delayed_work(&port->repair_work, 5 * HZ);
+		queue_delayed_work(nvmet_wq, &port->repair_work, 5 * HZ);
 }
 
 static int nvmet_rdma_add_port(struct nvmet_port *nport)
@@ -2052,7 +2046,7 @@ static void nvmet_rdma_remove_one(struct ib_device *ib_device, void *client_data
 	}
 	mutex_unlock(&nvmet_rdma_queue_mutex);
 
-	flush_scheduled_work();
+	flush_workqueue(nvmet_wq);
 }
 
 static struct ib_client nvmet_rdma_ib_client = {

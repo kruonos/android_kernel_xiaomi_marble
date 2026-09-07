@@ -1230,7 +1230,7 @@ static int rcar_drif_parse_subdevs(struct rcar_drif_sdr *sdr)
 	}
 
 	asd = v4l2_async_notifier_add_fwnode_subdev(notifier, fwnode,
-						    sizeof(*asd));
+						    struct v4l2_async_subdev);
 	fwnode_handle_put(fwnode);
 	if (IS_ERR(asd))
 		return PTR_ERR(asd);
@@ -1253,7 +1253,6 @@ static struct device_node *rcar_drif_bond_enabled(struct platform_device *p)
 	if (np && of_device_is_available(np))
 		return np;
 
-	of_node_put(np);
 	return NULL;
 }
 

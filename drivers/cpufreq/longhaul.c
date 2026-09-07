@@ -942,8 +942,6 @@ static int __init longhaul_init(void)
 		return cpufreq_register_driver(&longhaul_driver);
 	case 10:
 		pr_err("Use acpi-cpufreq driver for VIA C7\n");
-	default:
-		;
 	}
 
 	return -ENODEV;
@@ -954,9 +952,6 @@ static void __exit longhaul_exit(void)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	int i;
-
-	if (unlikely(!policy))
-		return;
 
 	for (i = 0; i < numscales; i++) {
 		if (mults[i] == maxmult) {

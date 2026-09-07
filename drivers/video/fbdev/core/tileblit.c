@@ -13,7 +13,6 @@
 #include <linux/fb.h>
 #include <linux/vt_kern.h>
 #include <linux/console.h>
-#include <linux/font.h>
 #include <asm/types.h>
 #include "fbcon.h"
 
@@ -33,14 +32,16 @@ static void tile_bmove(struct vc_data *vc, struct fb_info *info, int sy,
 }
 
 static void tile_clear(struct vc_data *vc, struct fb_info *info, int sy,
-		       int sx, int height, int width, int fg, int bg)
+		       int sx, int height, int width)
 {
 	struct fb_tilerect rect;
+	int bgshift = (vc->vc_hi_font_mask) ? 13 : 12;
+	int fgshift = (vc->vc_hi_font_mask) ? 9 : 8;
 
 	rect.index = vc->vc_video_erase_char &
 		((vc->vc_hi_font_mask) ? 0x1ff : 0xff);
-	rect.fg = fg;
-	rect.bg = bg;
+	rect.fg = attr_fgcol_ec(fgshift, vc, info);
+	rect.bg = attr_bgcol_ec(bgshift, vc, info);
 	rect.sx = sx;
 	rect.sy = sy;
 	rect.width = width;
@@ -75,42 +76,7 @@ static void tile_putcs(struct vc_data *vc, struct fb_info *info,
 static void tile_clear_margins(struct vc_data *vc, struct fb_info *info,
 			       int color, int bottom_only)
 {
-	unsigned int cw = vc->vc_font.width;
-	unsigned int ch = vc->vc_font.height;
-	unsigned int rw = info->var.xres - (vc->vc_cols*cw);
-	unsigned int bh = info->var.yres - (vc->vc_rows*ch);
-	unsigned int rs = info->var.xres - rw;
-	unsigned int bs = info->var.yres - bh;
-	unsigned int vwt = info->var.xres_virtual / cw;
-	unsigned int vht = info->var.yres_virtual / ch;
-	struct fb_tilerect rect;
-
-	rect.index = vc->vc_video_erase_char &
-		((vc->vc_hi_font_mask) ? 0x1ff : 0xff);
-	rect.fg = color;
-	rect.bg = color;
-
-	if ((int) rw > 0 && !bottom_only) {
-		rect.sx = (info->var.xoffset + rs + cw - 1) / cw;
-		rect.sy = 0;
-		rect.width = (rw + cw - 1) / cw;
-		rect.height = vht;
-		if (rect.width + rect.sx > vwt)
-			rect.width = vwt - rect.sx;
-		if (rect.sx < vwt)
-			info->tileops->fb_tilefill(info, &rect);
-	}
-
-	if ((int) bh > 0) {
-		rect.sx = info->var.xoffset / cw;
-		rect.sy = (info->var.yoffset + bs) / ch;
-		rect.width = rs / cw;
-		rect.height = (bh + ch - 1) / ch;
-		if (rect.height + rect.sy > vht)
-			rect.height = vht - rect.sy;
-		if (rect.sy < vht)
-			info->tileops->fb_tilefill(info, &rect);
-	}
+	return;
 }
 
 static void tile_cursor(struct vc_data *vc, struct fb_info *info, int mode,
@@ -178,11 +144,8 @@ void fbcon_set_tileops(struct vc_data *vc, struct fb_info *info)
 		map.width = vc->vc_font.width;
 		map.height = vc->vc_font.height;
 		map.depth = 1;
-		map.length = (ops->p->userfont) ?
-			FNTCHARCNT(ops->p->fontdata) : 256;
+		map.length = vc->vc_font.charcount;
 		map.data = ops->p->fontdata;
 		info->tileops->fb_settile(info, &map);
 	}
 }
-
-EXPORT_SYMBOL(fbcon_set_tileops);

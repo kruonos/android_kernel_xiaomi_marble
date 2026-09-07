@@ -85,7 +85,7 @@
 #define SMEM_GLOBAL_HOST	0xfffe
 
 /* Max number of processors/hosts in a system */
-#define SMEM_HOST_COUNT		15
+#define SMEM_HOST_COUNT		20
 
 /* Entry range check
  * ptr >= start : Checks if ptr is greater than the start of access region
@@ -134,7 +134,7 @@ struct smem_global_entry {
  * @free_offset:	index of the first unallocated byte in smem
  * @available:		number of bytes available for allocation
  * @reserved:		reserved field, must be 0
- * toc:			array of references to items
+ * @toc:		array of references to items
  */
 struct smem_header {
 	struct smem_proc_comm proc_comm[4];
@@ -265,6 +265,7 @@ struct smem_region {
  * @ptable_entries: list of pointers to partitions table entry of current
  *		processor/host
  * @item_count: max accepted item number
+ * @socinfo:	platform device pointer
  * @num_regions: number of @regions
  * @regions:	list of the memory regions defining the shared memory
  */
@@ -672,7 +673,7 @@ invalid_canary:
  * Looks up smem item and returns pointer to it. Size of smem
  * item is returned in @size.
  */
-void *qcom_smem_get(unsigned host, unsigned item, size_t *size)
+void *qcom_smem_get(unsigned int host, unsigned int item, size_t *size)
 {
 	struct smem_ptable_entry *entry;
 	unsigned long flags;
@@ -820,7 +821,7 @@ static u32 qcom_smem_get_item_count(struct qcom_smem *smem)
 	if (IS_ERR_OR_NULL(ptable))
 		return SMEM_ITEM_COUNT;
 
-	info = (struct smem_info *)&ptable->entry[le32_to_cpu(ptable->num_entries)];
+	info = (struct smem_info *)&ptable->entry[ptable->num_entries];
 	if (memcmp(info->magic, SMEM_INFO_MAGIC, sizeof(info->magic)))
 		return SMEM_ITEM_COUNT;
 
@@ -842,9 +843,7 @@ qcom_smem_partition_header(struct qcom_smem *smem,
 	header = smem->regions[0].virt_base + le32_to_cpu(entry->offset);
 
 	if (memcmp(header->magic, SMEM_PART_MAGIC, sizeof(header->magic))) {
-		dev_err(smem->dev, "bad partition magic %02x %02x %02x %02x\n",
-			header->magic[0], header->magic[1],
-			header->magic[2], header->magic[3]);
+		dev_err(smem->dev, "bad partition magic %4ph\n", header->magic);
 		return NULL;
 	}
 
@@ -1085,6 +1084,7 @@ static int qcom_smem_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "failed to register socinfo device\n");
 
 	return 0;
+
 release:
 	kfree(smem);
 	return ret;
@@ -1095,7 +1095,6 @@ static int qcom_smem_remove(struct platform_device *pdev)
 	platform_device_unregister(__smem->socinfo);
 
 	hwspin_lock_free(__smem->hwlock);
-
 	/*
 	 * In case of Hibernation Restore __smem object is still valid
 	 * and we call probe again so same object get allocated again

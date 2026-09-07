@@ -244,7 +244,7 @@ int gh_msgq_recv(void *msgq_client_desc,
 	} while (ret == -EAGAIN);
 
 	if (!ret)
-		print_hex_dump_debug("gh_msgq_recv: ", DUMP_PREFIX_OFFSET,
+		print_hex_dump_debug(__func__, DUMP_PREFIX_OFFSET,
 				     4, 1, buff, *recv_size, false);
 
 	return ret;

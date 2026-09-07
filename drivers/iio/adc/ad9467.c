@@ -90,7 +90,7 @@
 
 #define CHIPID_AD9434			0x6A
 #define AD9434_DEF_OUTPUT_MODE		0x00
-#define AD9434_REG_VREF_MASK		GENMASK(4, 0)
+#define AD9434_REG_VREF_MASK		0xC0
 
 /*
  * Analog Devices AD9467 16-Bit, 200/250 MSPS ADC
@@ -223,11 +223,11 @@ static void __ad9467_get_scale(struct adi_axi_adc_conv *conv, int index,
 }
 
 static const struct iio_chan_spec ad9434_channels[] = {
-	AD9467_CHAN(0, 0, 12, 's'),
+	AD9467_CHAN(0, 0, 12, 'S'),
 };
 
 static const struct iio_chan_spec ad9467_channels[] = {
-	AD9467_CHAN(0, 0, 16, 's'),
+	AD9467_CHAN(0, 0, 16, 'S'),
 };
 
 static const struct ad9467_chip_info ad9467_chip_tbl[] = {
@@ -472,8 +472,6 @@ static int ad9467_probe(struct spi_device *spi)
 	ret = ad9467_reset(&spi->dev);
 	if (ret)
 		return ret;
-
-	spi_set_drvdata(spi, st);
 
 	conv->chip_info = &info->axi_adc_info;
 

@@ -587,35 +587,26 @@ static int mlx5e_dcbnl_ieee_setmaxrate(struct net_device *netdev,
 	struct mlx5_core_dev *mdev = priv->mdev;
 	u8 max_bw_value[IEEE_8021QAZ_MAX_TCS];
 	u8 max_bw_unit[IEEE_8021QAZ_MAX_TCS];
-	__u64 upper_limit_mbps;
-	__u64 upper_limit_gbps;
+	__u64 upper_limit_mbps = roundup(255 * MLX5E_100MB, MLX5E_1GB);
 	int i;
 
 	memset(max_bw_value, 0, sizeof(max_bw_value));
 	memset(max_bw_unit, 0, sizeof(max_bw_unit));
-	upper_limit_mbps = 255 * MLX5E_100MB;
-	upper_limit_gbps = 255 * MLX5E_1GB;
 
 	for (i = 0; i <= mlx5_max_tc(mdev); i++) {
 		if (!maxrate->tc_maxrate[i]) {
 			max_bw_unit[i]  = MLX5_BW_NO_LIMIT;
 			continue;
 		}
-		if (maxrate->tc_maxrate[i] <= upper_limit_mbps) {
+		if (maxrate->tc_maxrate[i] < upper_limit_mbps) {
 			max_bw_value[i] = div_u64(maxrate->tc_maxrate[i],
 						  MLX5E_100MB);
 			max_bw_value[i] = max_bw_value[i] ? max_bw_value[i] : 1;
 			max_bw_unit[i]  = MLX5_100_MBPS_UNIT;
-		} else if (maxrate->tc_maxrate[i] <= upper_limit_gbps) {
+		} else {
 			max_bw_value[i] = div_u64(maxrate->tc_maxrate[i],
 						  MLX5E_1GB);
 			max_bw_unit[i]  = MLX5_GBPS_UNIT;
-		} else {
-			netdev_err(netdev,
-				   "tc_%d maxrate %llu Kbps exceeds limit %llu\n",
-				   i, maxrate->tc_maxrate[i],
-				   upper_limit_gbps);
-			return -EINVAL;
 		}
 	}
 
@@ -1160,35 +1151,23 @@ static int mlx5e_update_trust_state_hw(struct mlx5e_priv *priv, void *context)
 
 static int mlx5e_set_trust_state(struct mlx5e_priv *priv, u8 trust_state)
 {
-	struct mlx5e_channels new_channels = {};
-	bool reset_channels = true;
-	bool opened;
-	int err = 0;
+	struct mlx5e_params new_params;
+	bool reset = true;
+	int err;
 
 	mutex_lock(&priv->state_lock);
 
-	new_channels.params = priv->channels.params;
-	mlx5e_params_calc_trust_tx_min_inline_mode(priv->mdev, &new_channels.params,
+	new_params = priv->channels.params;
+	mlx5e_params_calc_trust_tx_min_inline_mode(priv->mdev, &new_params,
 						   trust_state);
 
-	opened = test_bit(MLX5E_STATE_OPENED, &priv->state);
-	if (!opened)
-		reset_channels = false;
-
 	/* Skip if tx_min_inline is the same */
-	if (new_channels.params.tx_min_inline_mode ==
-	    priv->channels.params.tx_min_inline_mode)
-		reset_channels = false;
+	if (new_params.tx_min_inline_mode == priv->channels.params.tx_min_inline_mode)
+		reset = false;
 
-	if (reset_channels) {
-		err = mlx5e_safe_switch_channels(priv, &new_channels,
-						 mlx5e_update_trust_state_hw,
-						 &trust_state);
-	} else {
-		err = mlx5e_update_trust_state_hw(priv, &trust_state);
-		if (!err && !opened)
-			priv->channels.params = new_channels.params;
-	}
+	err = mlx5e_safe_switch_params(priv, &new_params,
+				       mlx5e_update_trust_state_hw,
+				       &trust_state, reset);
 
 	mutex_unlock(&priv->state_lock);
 

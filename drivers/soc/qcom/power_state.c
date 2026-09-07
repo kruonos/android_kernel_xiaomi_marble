@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s: %s: " fmt, KBUILD_MODNAME, __func__
@@ -30,7 +30,6 @@
 
 #include "linux/power_state.h"
 
-
 #if IS_ENABLED(CONFIG_ARCH_MONACO)
 #define DS_ENTRY_SMC_ID		0xC3000924
 #else
@@ -48,7 +47,6 @@
 #define DS_NUM_PARAMETERS	1
 #define DS_ENTRY		1
 #define DS_EXIT			0
-
 
 #define POWER_STATS_BASEMINOR		0
 #define POWER_STATS_MAX_MINOR		1
@@ -81,9 +79,6 @@ static struct subsystem_event_data event_data[] = {
 	{ "mpss", MDSP_BEFORE_POWERDOWN, MDSP_AFTER_POWERUP },
 	{ "lpass", ADSP_BEFORE_POWERDOWN, ADSP_AFTER_POWERUP },
 	{ "cdsp", CDSP_BEFORE_POWERDOWN, CDSP_AFTER_POWERUP },
-	{ "cdsp1", CDSP1_BEFORE_POWERDOWN, CDSP1_AFTER_POWERUP },
-	{ "gpdsp0", GPDSP0_BEFORE_POWERDOWN, GPDSP0_AFTER_POWERUP },
-	{ "gpdsp1", GPDSP1_BEFORE_POWERDOWN, GPDSP1_AFTER_POWERUP },
 };
 
 struct subsystem_data {
@@ -104,18 +99,14 @@ struct power_state_drvdata {
 	dev_t ps_dev_no;
 	struct kobject *ps_kobj;
 	struct kobj_attribute ps_ka;
-	struct kobj_attribute ds_ka;
-	struct kobj_attribute sd_ka;
 	struct wakeup_source *ps_ws;
 	struct notifier_block ps_pm_nb;
 	struct qmp *qmp;
 	struct msm_rpm_kvp kvp_req;
 	struct syscore_ops ps_ops;
 	enum power_states current_state;
-	int subsys_count;
+	u32 subsys_count;
 	struct list_head sub_sys_list;
-	bool deep_sleep_allowed;
-	u32 suspend_delay;
 };
 
 static struct power_state_drvdata *drv;
@@ -238,7 +229,6 @@ static int send_deep_sleep_vote(int state, struct power_state_drvdata *drv)
 	return msm_rpm_send_message(MSM_RPM_CTX_SLEEP_SET, RPM_XO_DS_REQ,
 				    RPM_XO_DS_ID, &drv->kvp_req, 1);
 }
-
 #elif IS_ENABLED(CONFIG_NOTIFY_AOP)
 static int send_deep_sleep_vote(int state, struct power_state_drvdata *drv)
 {
@@ -307,15 +297,12 @@ static long ps_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case POWER_STATE_MODEM_EXIT:
 	case ADSP_SUSPEND:
 	case ADSP_EXIT:
-	case CDSP_EXIT:
-	case CDSP_SUSPEND:
 	case POWER_STATE_ADSP_SUSPEND:
 	case POWER_STATE_ADSP_EXIT:
 		pr_debug("Deprecated ioctl\n");
 		break;
 
 	default:
-		pr_err("Inside default in power_state.c due to %d\n", cmd);
 		ret = -ENOIOCTLCMD;
 		pr_err("%s: Default\n", __func__);
 		break;
@@ -458,58 +445,6 @@ static int power_state_suspend(void)
 	return 0;
 }
 
-static ssize_t suspend_delay_show(struct kobject *kobj, struct kobj_attribute *attr,
-				       char *buf)
-{
-	struct power_state_drvdata *drv = container_of(attr, struct power_state_drvdata, sd_ka);
-
-	return scnprintf(buf, PAGE_SIZE, "%u\n", drv->suspend_delay);
-}
-
-static ssize_t suspend_delay_store(struct kobject *kobj, struct kobj_attribute *attr,
-					const char *buf, size_t count)
-{
-	struct power_state_drvdata *drv = container_of(attr, struct power_state_drvdata, sd_ka);
-	u32 val;
-	int ret;
-
-	ret = kstrtouint(buf, 0, &val);
-	if (ret < 0) {
-		pr_err("Invalid argument passed\n");
-		return ret;
-	}
-
-	drv->suspend_delay = val;
-
-	return count;
-}
-
-static ssize_t deep_sleep_allowed_show(struct kobject *kobj, struct kobj_attribute *attr,
-				       char *buf)
-{
-	struct power_state_drvdata *drv = container_of(attr, struct power_state_drvdata, ds_ka);
-
-	return scnprintf(buf, PAGE_SIZE, "%u\n", drv->deep_sleep_allowed);
-}
-
-static ssize_t deep_sleep_allowed_store(struct kobject *kobj, struct kobj_attribute *attr,
-					const char *buf, size_t count)
-{
-	struct power_state_drvdata *drv = container_of(attr, struct power_state_drvdata, ds_ka);
-	bool val;
-	int ret;
-
-	ret = kstrtobool(buf, &val);
-	if (ret) {
-		pr_err("Invalid argument passed\n");
-		return ret;
-	}
-
-	drv->deep_sleep_allowed = val;
-
-	return count;
-}
-
 static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	struct power_state_drvdata *drv = container_of(attr, struct power_state_drvdata, ps_ka);
@@ -566,46 +501,16 @@ static int power_state_dev_init(struct power_state_drvdata *drv)
 	drv->ps_ka.show = state_show;
 
 	ret = sysfs_create_file(drv->ps_kobj, &drv->ps_ka.attr);
-	if (ret)
-		goto exit;
-
-	sysfs_attr_init(&drv->ds_ka.attr);
-	drv->ds_ka.attr.mode = 0644;
-	drv->ds_ka.attr.name = "deep_sleep_allowed";
-	drv->ds_ka.show = deep_sleep_allowed_show;
-	drv->ds_ka.store = deep_sleep_allowed_store;
-
-	ret = sysfs_create_file(drv->ps_kobj, &drv->ds_ka.attr);
 	if (ret) {
-		sysfs_remove_file(drv->ps_kobj, &drv->ps_ka.attr);
-		goto exit;
+		kobject_put(drv->ps_kobj);
+		device_destroy(drv->ps_class, drv->ps_dev_no);
+		class_destroy(drv->ps_class);
+		cdev_del(&drv->ps_cdev);
+		unregister_chrdev_region(drv->ps_dev_no, 1);
+		return ret;
 	}
 
-	sysfs_attr_init(&drv->sd_ka.attr);
-	drv->sd_ka.attr.mode = 0644;
-	drv->sd_ka.attr.name = "suspend_delay";
-	drv->sd_ka.show = suspend_delay_show;
-	drv->sd_ka.store = suspend_delay_store;
-
-	ret = sysfs_create_file(drv->ps_kobj, &drv->sd_ka.attr);
-	if (ret) {
-		sysfs_remove_file(drv->ps_kobj, &drv->ds_ka.attr);
-		sysfs_remove_file(drv->ps_kobj, &drv->ps_ka.attr);
-		goto exit;
-	}
-
-	/* Default delay of 1 second */
-	drv->suspend_delay = 1;
 	return 0;
-
-exit:
-	kobject_put(drv->ps_kobj);
-	device_destroy(drv->ps_class, drv->ps_dev_no);
-	class_destroy(drv->ps_class);
-	cdev_del(&drv->ps_cdev);
-	unregister_chrdev_region(drv->ps_dev_no, 1);
-
-	return ret;
 }
 
 static int power_state_probe(struct platform_device *pdev)
@@ -630,11 +535,13 @@ static int power_state_probe(struct platform_device *pdev)
 	if (!drv->ps_ws)
 		goto remove_pm_notifier;
 
+	ret = power_state_dev_init(drv);
+	if (ret)
+		goto remove_ws;
+
 	INIT_LIST_HEAD(&drv->sub_sys_list);
 
 	drv->subsys_count = of_property_count_strings(dn, "qcom,subsys-name");
-	if (drv->subsys_count < 0)
-		drv->subsys_count = 0;
 	for (i = 0; i < drv->subsys_count; i++) {
 		of_property_read_string_index(dn, "qcom,subsys-name", i, &name);
 
@@ -682,10 +589,6 @@ static int power_state_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = power_state_dev_init(drv);
-	if (ret)
-		goto remove_ss;
-
 	drv->ps_ops.suspend = power_state_suspend;
 	drv->ps_ops.resume = power_state_resume;
 	register_syscore_ops(&drv->ps_ops);
@@ -699,6 +602,7 @@ remove_ss:
 		list_del(&ss_data->list);
 	}
 	INIT_LIST_HEAD(&drv->sub_sys_list);
+remove_ws:
 	wakeup_source_unregister(drv->ps_ws);
 remove_pm_notifier:
 	unregister_pm_notifier(&drv->ps_pm_nb);
@@ -711,6 +615,8 @@ static int power_state_remove(struct platform_device *pdev)
 	struct subsystem_data *ss_data;
 
 	unregister_syscore_ops(&drv->ps_ops);
+	if (IS_ENABLED(CONFIG_NOTIFY_AOP))
+		qmp_put(drv->qmp);
 
 	list_for_each_entry(ss_data, &drv->sub_sys_list, list) {
 		qcom_unregister_ssr_notifier(ss_data->ssr_handle, &ss_data->ps_ssr_nb);
@@ -719,7 +625,6 @@ static int power_state_remove(struct platform_device *pdev)
 
 	INIT_LIST_HEAD(&drv->sub_sys_list);
 	wakeup_source_unregister(drv->ps_ws);
-	sysfs_remove_file(drv->ps_kobj, &drv->ds_ka.attr);
 	sysfs_remove_file(drv->ps_kobj, &drv->ps_ka.attr);
 	kobject_put(drv->ps_kobj);
 	device_destroy(drv->ps_class, drv->ps_dev_no);

@@ -1608,7 +1608,8 @@ static int omap_dma_context_notifier(struct notifier_block *nb,
 			return NOTIFY_BAD;
 		omap_dma_context_save(od);
 		break;
-	case CPU_CLUSTER_PM_ENTER_FAILED:
+	case CPU_CLUSTER_PM_ENTER_FAILED:	/* No need to restore context */
+		break;
 	case CPU_CLUSTER_PM_EXIT:
 		omap_dma_context_restore(od);
 		break;
@@ -1803,8 +1804,6 @@ static int omap_dma_probe(struct platform_device *pdev)
 	if (rc) {
 		pr_warn("OMAP-DMA: failed to register slave DMA engine device: %d\n",
 			rc);
-		if (od->ll123_supported)
-			dma_pool_destroy(od->desc_pool);
 		omap_dma_free(od);
 		return rc;
 	}
@@ -1820,8 +1819,6 @@ static int omap_dma_probe(struct platform_device *pdev)
 		if (rc) {
 			pr_warn("OMAP-DMA: failed to register DMA controller\n");
 			dma_async_device_unregister(&od->ddev);
-			if (od->ll123_supported)
-				dma_pool_destroy(od->desc_pool);
 			omap_dma_free(od);
 		}
 	}

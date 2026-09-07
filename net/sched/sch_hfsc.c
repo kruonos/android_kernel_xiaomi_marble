@@ -176,11 +176,6 @@ struct hfsc_sched {
 
 #define	HT_INFINITY	0xffffffffffffffffULL	/* infinite time value */
 
-static bool cl_in_el_or_vttree(struct hfsc_class *cl)
-{
-	return ((cl->cl_flags & HFSC_FSC) && cl->cl_nactive) ||
-		((cl->cl_flags & HFSC_RSC) && !RB_EMPTY_NODE(&cl->el_node));
-}
 
 /*
  * eligible tree holds backlogged classes being sorted by their eligible times.
@@ -209,10 +204,7 @@ eltree_insert(struct hfsc_class *cl)
 static inline void
 eltree_remove(struct hfsc_class *cl)
 {
-	if (!RB_EMPTY_NODE(&cl->el_node)) {
-		rb_erase(&cl->el_node, &cl->sched->eligible);
-		RB_CLEAR_NODE(&cl->el_node);
-	}
+	rb_erase(&cl->el_node, &cl->sched->eligible);
 }
 
 static inline void
@@ -556,7 +548,7 @@ static void
 rtsc_min(struct runtime_sc *rtsc, struct internal_sc *isc, u64 x, u64 y)
 {
 	u64 y1, y2, dx, dy;
-	u64 dsm;
+	u32 dsm;
 
 	if (isc->sm1 <= isc->sm2) {
 		/* service curve is convex */
@@ -599,7 +591,7 @@ rtsc_min(struct runtime_sc *rtsc, struct internal_sc *isc, u64 x, u64 y)
 	 */
 	dx = (y1 - y) << SM_SHIFT;
 	dsm = isc->sm1 - isc->sm2;
-	dx = div64_u64(dx, dsm);
+	do_div(dx, dsm);
 	/*
 	 * check if (x, y1) belongs to the 1st segment of rtsc.
 	 * if so, add the offset.
@@ -836,6 +828,22 @@ update_vf(struct hfsc_class *cl, unsigned int len, u64 cur_time)
 	}
 }
 
+static unsigned int
+qdisc_peek_len(struct Qdisc *sch)
+{
+	struct sk_buff *skb;
+	unsigned int len;
+
+	skb = sch->ops->peek(sch);
+	if (unlikely(skb == NULL)) {
+		qdisc_warn_nonwc("qdisc_peek_len", sch);
+		return 0;
+	}
+	len = qdisc_pkt_len(skb);
+
+	return len;
+}
+
 static void
 hfsc_adjust_levels(struct hfsc_class *cl)
 {
@@ -951,7 +959,6 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 
 	if (cl != NULL) {
 		int old_flags;
-		int len = 0;
 
 		if (parentid) {
 			if (cl->cl_parent &&
@@ -982,13 +989,9 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 		if (usc != NULL)
 			hfsc_change_usc(cl, usc, cur_time);
 
-		if (cl->qdisc->q.qlen != 0)
-			len = qdisc_peek_len(cl->qdisc);
-		/* Check queue length again since some qdisc implementations
-		 * (e.g., netem/codel) might empty the queue during the peek
-		 * operation.
-		 */
 		if (cl->qdisc->q.qlen != 0) {
+			int len = qdisc_peek_len(cl->qdisc);
+
 			if (cl->cl_flags & HFSC_RSC) {
 				if (old_flags & HFSC_RSC)
 					update_ed(cl, len);
@@ -1033,8 +1036,6 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 	cl = kzalloc(sizeof(struct hfsc_class), GFP_KERNEL);
 	if (cl == NULL)
 		return -ENOBUFS;
-
-	RB_CLEAR_NODE(&cl->el_node);
 
 	err = tcf_block_get(&cl->block, &cl->filter_list, sch, extack);
 	if (err) {
@@ -1107,7 +1108,8 @@ hfsc_destroy_class(struct Qdisc *sch, struct hfsc_class *cl)
 }
 
 static int
-hfsc_delete_class(struct Qdisc *sch, unsigned long arg)
+hfsc_delete_class(struct Qdisc *sch, unsigned long arg,
+		  struct netlink_ext_ack *extack)
 {
 	struct hfsc_sched *q = qdisc_priv(sch);
 	struct hfsc_class *cl = (struct hfsc_class *)arg;
@@ -1146,7 +1148,7 @@ hfsc_classify(struct sk_buff *skb, struct Qdisc *sch, int *qerr)
 	*qerr = NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
 	head = &q->root;
 	tcf = rcu_dereference_bh(q->root.filter_list);
-	while (tcf && (result = tcf_classify(skb, tcf, &res, false)) >= 0) {
+	while (tcf && (result = tcf_classify(skb, NULL, tcf, &res, false)) >= 0) {
 #ifdef CONFIG_NET_CLS_ACT
 		switch (result) {
 		case TC_ACT_QUEUED:
@@ -1221,8 +1223,7 @@ hfsc_qlen_notify(struct Qdisc *sch, unsigned long arg)
 	/* vttree is now handled in update_vf() so that update_vf(cl, 0, 0)
 	 * needs to be called explicitly to remove a class from vttree.
 	 */
-	if (cl->cl_nactive)
-		update_vf(cl, 0, 0);
+	update_vf(cl, 0, 0);
 	if (cl->cl_flags & HFSC_RSC)
 		eltree_remove(cl);
 }
@@ -1570,10 +1571,7 @@ hfsc_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 		return err;
 	}
 
-	sch->qstats.backlog += len;
-	sch->q.qlen++;
-
-	if (first && !cl_in_el_or_vttree(cl)) {
+	if (first) {
 		if (cl->cl_flags & HFSC_RSC)
 			init_ed(cl, len);
 		if (cl->cl_flags & HFSC_FSC)
@@ -1587,6 +1585,9 @@ hfsc_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 			cl->qdisc->ops->peek(cl->qdisc);
 
 	}
+
+	sch->qstats.backlog += len;
+	sch->q.qlen++;
 
 	return NET_XMIT_SUCCESS;
 }
@@ -1642,16 +1643,10 @@ hfsc_dequeue(struct Qdisc *sch)
 		if (cl->qdisc->q.qlen != 0) {
 			/* update ed */
 			next_len = qdisc_peek_len(cl->qdisc);
-			/* Check queue length again since some qdisc implementations
-			 * (e.g., netem/codel) might empty the queue during the peek
-			 * operation.
-			 */
-			if (cl->qdisc->q.qlen != 0) {
-				if (realtime)
-					update_ed(cl, next_len);
-				else
-					update_d(cl, next_len);
-			}
+			if (realtime)
+				update_ed(cl, next_len);
+			else
+				update_d(cl, next_len);
 		} else {
 			/* the class becomes passive */
 			eltree_remove(cl);

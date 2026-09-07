@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -19,7 +20,7 @@
 #include <linux/of_address.h>
 #include <linux/qcom_scm.h>
 #include <linux/nvmem-consumer.h>
-
+#include <linux/panic_notifier.h>
 #include <asm/cacheflush.h>
 #include <asm/system_misc.h>
 #include <asm/memory.h>
@@ -91,7 +92,7 @@ static size_t store_emmc_dload(struct kobject *kobj, struct attribute *attr,
 			       const char *buf, size_t count);
 RESET_ATTR(emmc_dload, 0644, show_emmc_dload, store_emmc_dload);
 
-#ifdef CONFIG_QCOM_MINIDUMP
+#if IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 static ssize_t show_dload_mode(struct kobject *kobj, struct attribute *attr,
 			       char *buf);
 static size_t store_dload_mode(struct kobject *kobj, struct attribute *attr,
@@ -101,7 +102,7 @@ RESET_ATTR(dload_mode, 0644, show_dload_mode, store_dload_mode);
 
 static struct attribute *reset_attrs[] = {
 	&reset_attr_emmc_dload.attr,
-#ifdef CONFIG_QCOM_MINIDUMP
+#if IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 	&reset_attr_dload_mode.attr,
 #endif
 	NULL
@@ -189,7 +190,7 @@ static int dload_set(const char *val, const struct kernel_param *kp)
 
 	int old_val = download_mode;
 
-	ret = param_set_int(val, kp);
+	ret = param_set_bool(val, kp);
 
 	if (ret)
 		return ret;
@@ -319,7 +320,7 @@ static ssize_t show_emmc_dload(struct kobject *kobj, struct attribute *attr,
 	else
 		show_val = 0;
 
-	return snprintf(buf, sizeof(show_val), "%u\n", show_val);
+	return scnprintf(buf, sizeof(show_val), "%u\n", show_val);
 }
 
 static size_t store_emmc_dload(struct kobject *kobj, struct attribute *attr,
@@ -346,7 +347,7 @@ static size_t store_emmc_dload(struct kobject *kobj, struct attribute *attr,
 	return count;
 }
 
-#ifdef CONFIG_QCOM_MINIDUMP
+#if IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 static DEFINE_MUTEX(tcsr_lock);
 
 static ssize_t show_dload_mode(struct kobject *kobj, struct attribute *attr,
@@ -528,6 +529,9 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct resource *mem;
 	struct device_node *np;
 	int ret = 0;
+
+	if (!qcom_scm_is_available())
+		return -EPROBE_DEFER;
 
 	nvmem_cell = devm_nvmem_cell_get(dev, "restart_reason");
 	if (PTR_ERR(nvmem_cell) == -EPROBE_DEFER)

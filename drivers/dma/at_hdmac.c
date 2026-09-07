@@ -54,6 +54,25 @@ module_param(init_nr_desc_per_channel, uint, 0644);
 MODULE_PARM_DESC(init_nr_desc_per_channel,
 		 "initial descriptors per channel (default: 64)");
 
+/**
+ * struct at_dma_platform_data - Controller configuration parameters
+ * @nr_channels: Number of channels supported by hardware (max 8)
+ * @cap_mask: dma_capability flags supported by the platform
+ */
+struct at_dma_platform_data {
+	unsigned int	nr_channels;
+	dma_cap_mask_t  cap_mask;
+};
+
+/**
+ * struct at_dma_slave - Controller-specific information about a slave
+ * @dma_dev: required DMA master device
+ * @cfg: Platform-specific initializer for the CFG register
+ */
+struct at_dma_slave {
+	struct device		*dma_dev;
+	u32			cfg;
+};
 
 /* prototypes */
 static dma_cookie_t atc_tx_submit(struct dma_async_tx_descriptor *tx);
@@ -1559,7 +1578,6 @@ static void atc_free_chan_resources(struct dma_chan *chan)
 {
 	struct at_dma_chan	*atchan = to_at_dma_chan(chan);
 	struct at_dma		*atdma = to_at_dma(chan->device);
-	struct at_dma_slave	*atslave;
 	struct at_desc		*desc, *_desc;
 	LIST_HEAD(list);
 
@@ -1580,12 +1598,8 @@ static void atc_free_chan_resources(struct dma_chan *chan)
 	/*
 	 * Free atslave allocated in at_dma_xlate()
 	 */
-	atslave = chan->private;
-	if (atslave) {
-		put_device(atslave->dma_dev);
-		kfree(atslave);
-		chan->private = NULL;
-	}
+	kfree(chan->private);
+	chan->private = NULL;
 
 	dev_vdbg(chan2dev(chan), "free_chan_resources: done\n");
 }

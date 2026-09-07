@@ -60,11 +60,15 @@ config PHY_QCOM_QUSB2
 	  USB IPs on MSM SOCs.
 
 config PHY_QCOM_UFS
-	tristate "Qualcomm UFS PHY driver"
+	tristate "Qualcomm Technologies, Inc. UFS PHY driver"
 	depends on OF && ARCH_QCOM
 	select GENERIC_PHY
 	help
-	  Support for UFS PHY on QCOM chipsets.
+	  Enables support for UFS PHY on Qualcomm Technologies, Inc.
+	  chipsets.
+	  This driver together with the UFS PHY controller specific
+	  driver enables the UFS PHY support for Qualcomm Technologies, Inc.
+	  chips.
 
 if PHY_QCOM_UFS
 
@@ -74,19 +78,6 @@ config PHY_QCOM_UFS_V4
 	help
 	  Support for 7nm UFS QMP phy present on QCOM chipsets.
 
-config PHY_QCOM_UFS_14NM
-	tristate
-	default PHY_QCOM_UFS
-	help
-	  Support for 14nm UFS QMP phy present on QCOM chipsets.
-
-config PHY_QCOM_UFS_20NM
-	tristate
-	default PHY_QCOM_UFS
-	depends on BROKEN
-	help
-	  Support for 20nm UFS QMP phy present on QCOM chipsets.
-
 config PHY_QCOM_UFS_QRBTC_SDM845
 	tristate "Qualcomm Technologies, Inc. UFS Presil Phy Driver"
 	depends on PHY_QCOM_UFS && REGULATOR_STUB
@@ -95,12 +86,6 @@ config PHY_QCOM_UFS_QRBTC_SDM845
 	  The support is restricted to HS-G1 only on both Tx and Rx.
 	  No low power mode support is present.
 	  Doesn't restrict number of lanes.
-
-config PHY_QCOM_UFS_V3
-	tristate
-	default PHY_QCOM_UFS
-	help
-	  Support for 8nm UFS QMP phy present on QCOM chipsets.
 
 endif
 

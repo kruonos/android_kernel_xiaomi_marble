@@ -9,7 +9,6 @@
 
 #ifdef CONFIG_X86_LOCAL_APIC
 
-extern int avail_to_resrv_perfctr_nmi_bit(unsigned int);
 extern int reserve_perfctr_nmi(unsigned int);
 extern void release_perfctr_nmi(unsigned int);
 extern int reserve_evntsel_nmi(unsigned int);
@@ -58,8 +57,6 @@ struct nmiaction {
 int __register_nmi_handler(unsigned int, struct nmiaction *);
 
 void unregister_nmi_handler(unsigned int, const char *);
-
-void set_emergency_nmi_handler(unsigned int type, nmi_handler_t handler);
 
 void stop_nmi(void);
 void restart_nmi(void);

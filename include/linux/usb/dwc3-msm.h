@@ -6,6 +6,7 @@
 #ifndef __LINUX_USB_DWC3_MSM_H
 #define __LINUX_USB_DWC3_MSM_H
 
+#include <linux/pm_runtime.h>
 #include <linux/scatterlist.h>
 #include <linux/usb/gadget.h>
 
@@ -36,6 +37,9 @@
 #define MSM_INTERNAL_MEM		BIT(10)
 #define MSM_VENDOR_ID			BIT(16)
 
+/* EBC TRB parameters */
+#define EBC_TRB_SIZE			16384
+
 /* Operations codes for GSI enabled EPs */
 enum gsi_ep_op {
 	GSI_EP_OP_CONFIG = 0,
@@ -58,6 +62,7 @@ enum usb_hw_ep_mode {
 	USB_EP_NONE,
 	USB_EP_BAM,
 	USB_EP_GSI,
+	USB_EP_EBC,
 };
 
 enum dwc3_notify_event {
@@ -143,6 +148,129 @@ struct gsi_channel_info {
 struct dwc3;
 extern void *dwc_trace_ipc_log_ctxt;
 
+/**
+ * usb_gadget_autopm_get - increment PM-usage counter of usb gadget's parent
+ * device.
+ * @gadget: usb gadget whose parent device counter is incremented
+ *
+ * This routine should be called by function driver when it wants to use
+ * gadget's parent device and needs to guarantee that it is not suspended. In
+ * addition, the routine prevents subsequent autosuspends of gadget's parent
+ * device. However if the autoresume fails then the counter is re-decremented.
+ *
+ * This routine can run only in process context.
+ */
+static inline int usb_gadget_autopm_get(struct usb_gadget *gadget)
+{
+	int status = -ENODEV;
+
+	if (!gadget || !gadget->dev.parent)
+		return status;
+
+	status = pm_runtime_get_sync(gadget->dev.parent);
+	if (status < 0)
+		pm_runtime_put_sync(gadget->dev.parent);
+
+	if (status > 0)
+		status = 0;
+	return status;
+}
+
+/**
+ * usb_gadget_autopm_get_async - increment PM-usage counter of usb gadget's
+ * parent device.
+ * @gadget: usb gadget whose parent device counter is incremented
+ *
+ * This routine increments @gadget parent device PM usage counter and queue an
+ * autoresume request if the device is suspended. It does not autoresume device
+ * directly (it only queues a request). After a successful call, the device may
+ * not yet be resumed.
+ *
+ * This routine can run in atomic context.
+ */
+static inline int usb_gadget_autopm_get_async(struct usb_gadget *gadget)
+{
+	int status = -ENODEV;
+
+	if (!gadget || !gadget->dev.parent)
+		return status;
+
+	status = pm_runtime_get(gadget->dev.parent);
+	if (status < 0 && status != -EINPROGRESS)
+		pm_runtime_put_noidle(gadget->dev.parent);
+
+	if (status > 0 || status == -EINPROGRESS)
+		status = 0;
+	return status;
+}
+
+/**
+ * usb_gadget_autopm_get_noresume - increment PM-usage counter of usb gadget's
+ * parent device.
+ * @gadget: usb gadget whose parent device counter is incremented
+ *
+ * This routine increments PM-usage count of @gadget parent device but does not
+ * carry out an autoresume.
+ *
+ * This routine can run in atomic context.
+ */
+static inline void usb_gadget_autopm_get_noresume(struct usb_gadget *gadget)
+{
+	if (gadget && gadget->dev.parent)
+		pm_runtime_get_noresume(gadget->dev.parent);
+}
+
+/**
+ * usb_gadget_autopm_put - decrement PM-usage counter of usb gadget's parent
+ * device.
+ * @gadget: usb gadget whose parent device counter is decremented.
+ *
+ * This routine should be called by function driver when it is finished using
+ * @gadget parent device and wants to allow it to autosuspend. It decrements
+ * PM-usage counter of @gadget parent device, when the counter reaches 0, a
+ * delayed autosuspend request is attempted.
+ *
+ * This routine can run only in process context.
+ */
+static inline void usb_gadget_autopm_put(struct usb_gadget *gadget)
+{
+	if (gadget && gadget->dev.parent)
+		pm_runtime_put_sync(gadget->dev.parent);
+}
+
+/**
+ * usb_gadget_autopm_put_async - decrement PM-usage counter of usb gadget's
+ * parent device.
+ * @gadget: usb gadget whose parent device counter is decremented.
+ *
+ * This routine decrements PM-usage counter of @gadget parent device and
+ * schedules a delayed autosuspend request if the counter is <= 0.
+ *
+ * This routine can run in atomic context.
+ */
+static inline void usb_gadget_autopm_put_async(struct usb_gadget *gadget)
+{
+	if (gadget && gadget->dev.parent)
+		pm_runtime_put(gadget->dev.parent);
+}
+
+/**
+ * usb_gadget_autopm_put_no_suspend - decrement PM-usage counter of usb gadget
+'s
+ * parent device.
+ * @gadget: usb gadget whose parent device counter is decremented.
+ *
+ * This routine decrements PM-usage counter of @gadget parent device but does
+ * not carry out an autosuspend.
+ *
+ * This routine can run in atomic context.
+ */
+static inline void usb_gadget_autopm_put_no_suspend(struct usb_gadget *gadget)
+{
+	if (gadget && gadget->dev.parent)
+		pm_runtime_put_noidle(gadget->dev.parent);
+}
+
 #if IS_ENABLED(CONFIG_USB_DWC3_MSM)
 void dwc3_msm_notify_event(struct dwc3 *dwc,
 		enum dwc3_notify_event event, unsigned int value);
@@ -154,7 +282,6 @@ int msm_data_fifo_config(struct usb_ep *ep, unsigned long addr, u32 size,
 	u8 dst_pipe_idx);
 int msm_dwc3_reset_dbm_ep(struct usb_ep *ep);
 int dwc3_msm_set_dp_mode(struct device *dev, bool connected, int lanes);
-int dwc3_msm_release_ss_lane(struct device *dev);
 int msm_ep_update_ops(struct usb_ep *ep);
 int msm_ep_clear_ops(struct usb_ep *ep);
 int msm_ep_set_mode(struct usb_ep *ep, enum usb_hw_ep_mode mode);
@@ -180,8 +307,6 @@ static inline void dwc3_tx_fifo_resize_request(struct usb_ep *ep,
 static inline bool msm_dwc3_reset_ep_after_lpm(struct usb_gadget *gadget)
 { return false; }
 static inline int dwc3_msm_set_dp_mode(struct device *dev, bool connected, int lanes)
-{ return -ENODEV; }
-static inline int dwc3_msm_release_ss_lane(struct device *dev)
 { return -ENODEV; }
 int msm_ep_update_ops(struct usb_ep *ep)
 { return -ENODEV; }

@@ -18,7 +18,6 @@
 #define HCIUARTGETDEVICE	_IOR('U', 202, int)
 #define HCIUARTSETFLAGS		_IOW('U', 203, int)
 #define HCIUARTGETFLAGS		_IOR('U', 204, int)
-#define HCIUARTTRIGGERDUMP	_IO('U', 205)
 
 /* UART protocols */
 #define HCI_UART_MAX_PROTO	12
@@ -60,7 +59,6 @@ struct hci_uart_proto {
 	int (*recv)(struct hci_uart *hu, const void *data, int len);
 	int (*enqueue)(struct hci_uart *hu, struct sk_buff *skb);
 	struct sk_buff *(*dequeue)(struct hci_uart *hu);
-	int (*trigger_dump)(struct hci_uart *hu);
 };
 
 struct hci_uart {
@@ -88,10 +86,10 @@ struct hci_uart {
 };
 
 /* HCI_UART proto flag bits */
-#define HCI_UART_PROTO_SET	0
-#define HCI_UART_REGISTERED	1
-#define HCI_UART_PROTO_READY	2
-#define HCI_UART_PROTO_INIT	4
+#define HCI_UART_PROTO_SET		0
+#define HCI_UART_REGISTERED		1
+#define HCI_UART_PROTO_READY		2
+#define HCI_UART_NO_SUSPEND_NOTIFIER	3
 
 /* TX states  */
 #define HCI_UART_SENDING	1

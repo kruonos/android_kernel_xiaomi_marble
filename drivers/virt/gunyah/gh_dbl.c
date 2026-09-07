@@ -359,7 +359,7 @@ EXPORT_SYMBOL(gh_dbl_tx_register);
  * @rx_cb: Callback of the client when there is a vIRQ on doorbell
  * @priv: Private data of the driver
  *
- * The function returns a descriptor for the clients to receieve a message.
+ * The function returns a descriptor for the clients to receive a message.
  * Else, returns -EBUSY if some other client is already registered
  * to this label, and -EINVAL for invalid arguments. The caller should check
  * the return value using IS_ERR_OR_NULL() and PTR_ERR() to extract the error

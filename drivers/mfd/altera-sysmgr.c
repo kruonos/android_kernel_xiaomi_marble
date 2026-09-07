@@ -110,15 +110,11 @@ struct regmap *altr_sysmgr_regmap_lookup_by_phandle(struct device_node *np,
 
 	dev = driver_find_device_by_of_node(&altr_sysmgr_driver.driver,
 					    (void *)sysmgr_np);
-	if (property)
-		of_node_put(sysmgr_np);
-
+	of_node_put(sysmgr_np);
 	if (!dev)
 		return ERR_PTR(-EPROBE_DEFER);
 
 	sysmgr = dev_get_drvdata(dev);
-
-	put_device(dev);
 
 	return sysmgr->regmap;
 }
@@ -157,7 +153,7 @@ static int sysmgr_probe(struct platform_device *pdev)
 		if (!base)
 			return -ENOMEM;
 
-		sysmgr_config.max_register = res->end - res->start - 3;
+		sysmgr_config.max_register = resource_size(res) - 4;
 		regmap = devm_regmap_init_mmio(dev, base, &sysmgr_config);
 	}
 

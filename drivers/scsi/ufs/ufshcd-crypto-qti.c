@@ -2,7 +2,7 @@
 /*
  * UFS Crypto ops QTI implementation.
  *
- * Copyright (c) 2020-2021, Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <crypto/algapi.h>
@@ -116,9 +116,8 @@ static int ufshcd_crypto_qti_keyslot_evict(struct blk_keyslot_manager *ksm,
 
 	get_mmio_data(&mmio_data, host);
 	err = crypto_qti_keyslot_evict(&mmio_data, slot);
-	if (err) {
+	if (err)
 		pr_err("%s: failed with error %d\n", __func__, err);
-	}
 
 	ufshcd_release(hba);
 	return err;

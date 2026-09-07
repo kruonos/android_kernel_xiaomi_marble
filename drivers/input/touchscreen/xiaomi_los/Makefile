@@ -1,1 +1,0 @@
-obj-$(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_LOS) += xiaomi_touch.o

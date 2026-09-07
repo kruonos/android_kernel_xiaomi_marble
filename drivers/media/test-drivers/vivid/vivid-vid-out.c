@@ -63,16 +63,14 @@ static int vid_out_queue_setup(struct vb2_queue *vq,
 		if (sizes[0] < size)
 			return -EINVAL;
 		for (p = 1; p < planes; p++) {
-			if (sizes[p] < dev->bytesperline_out[p] * h /
-					vfmt->vdownsampling[p] +
-					vfmt->data_offset[p])
+			if (sizes[p] < dev->bytesperline_out[p] * h +
+				       vfmt->data_offset[p])
 				return -EINVAL;
 		}
 	} else {
 		for (p = 0; p < planes; p++)
-			sizes[p] = p ? dev->bytesperline_out[p] * h /
-					vfmt->vdownsampling[p] +
-					vfmt->data_offset[p] : size;
+			sizes[p] = p ? dev->bytesperline_out[p] * h +
+				       vfmt->data_offset[p] : size;
 	}
 
 	if (vq->num_buffers + *nbuffers < 2)
@@ -129,7 +127,7 @@ static int vid_out_buf_prepare(struct vb2_buffer *vb)
 
 	for (p = 0; p < planes; p++) {
 		if (p)
-			size = dev->bytesperline_out[p] * h / vfmt->vdownsampling[p];
+			size = dev->bytesperline_out[p] * h;
 		size += vb->planes[p].data_offset;
 
 		if (vb2_get_plane_payload(vb, p) < size) {
@@ -336,8 +334,8 @@ int vivid_g_fmt_vid_out(struct file *file, void *priv,
 	for (p = 0; p < mp->num_planes; p++) {
 		mp->plane_fmt[p].bytesperline = dev->bytesperline_out[p];
 		mp->plane_fmt[p].sizeimage =
-			mp->plane_fmt[p].bytesperline * mp->height /
-			fmt->vdownsampling[p] + fmt->data_offset[p];
+			mp->plane_fmt[p].bytesperline * mp->height +
+			fmt->data_offset[p];
 	}
 	for (p = fmt->buffers; p < fmt->planes; p++) {
 		unsigned stride = dev->bytesperline_out[p];
@@ -859,11 +857,9 @@ int vidioc_g_fmt_vid_out_overlay(struct file *file, void *priv,
 		    ((dev->compose_out.width + 7) / 8) * dev->compose_out.height))
 			return -EFAULT;
 	}
-	if (clipcount && win->clips) {
-		if (copy_to_user(win->clips, dev->clips_out,
-				 clipcount * sizeof(dev->clips_out[0])))
-			return -EFAULT;
-	}
+	if (clipcount && win->clips)
+		memcpy(win->clips, dev->clips_out,
+		       clipcount * sizeof(dev->clips_out[0]));
 	return 0;
 }
 
@@ -893,9 +889,8 @@ int vidioc_try_fmt_vid_out_overlay(struct file *file, void *priv,
 	if (win->clipcount > MAX_CLIPS)
 		win->clipcount = MAX_CLIPS;
 	if (win->clipcount) {
-		if (copy_from_user(dev->try_clips_out, win->clips,
-				   win->clipcount * sizeof(dev->clips_out[0])))
-			return -EFAULT;
+		memcpy(dev->try_clips_out, win->clips,
+		       win->clipcount * sizeof(dev->clips_out[0]));
 		for (i = 0; i < win->clipcount; i++) {
 			struct v4l2_rect *r = &dev->try_clips_out[i].c;
 
@@ -918,9 +913,8 @@ int vidioc_try_fmt_vid_out_overlay(struct file *file, void *priv,
 					return -EINVAL;
 			}
 		}
-		if (copy_to_user(win->clips, dev->try_clips_out,
-				 win->clipcount * sizeof(dev->clips_out[0])))
-			return -EFAULT;
+		memcpy(win->clips, dev->try_clips_out,
+		       win->clipcount * sizeof(dev->clips_out[0]));
 	}
 	return 0;
 }

@@ -92,8 +92,6 @@ static int itg3200_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_RAW:
 		reg = (u8)chan->address;
 		ret = itg3200_read_reg_s16(indio_dev, reg, val);
-		if (ret)
-			return ret;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		*val = 0;
@@ -310,8 +308,7 @@ static int itg3200_probe(struct i2c_client *client,
 
 	st = iio_priv(indio_dev);
 
-	ret = iio_read_mount_matrix(&client->dev, "mount-matrix",
-				&st->orientation);
+	ret = iio_read_mount_matrix(&client->dev, &st->orientation);
 	if (ret)
 		return ret;
 

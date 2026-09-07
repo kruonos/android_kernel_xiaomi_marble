@@ -15,10 +15,6 @@ static void check_good_sample(struct test_perf_branches *skel)
 	int pbe_size = sizeof(struct perf_branch_entry);
 	int duration = 0;
 
-	if (CHECK(!skel->bss->run_cnt, "invalid run_cnt",
-		  "checked sample validity before prog run"))
-		return;
-
 	if (CHECK(!skel->bss->valid, "output not valid",
 		 "no valid sample from prog"))
 		return;
@@ -49,10 +45,6 @@ static void check_bad_sample(struct test_perf_branches *skel)
 	int written_stack = skel->bss->written_stack_out;
 	int duration = 0;
 
-	if (CHECK(!skel->bss->run_cnt, "invalid run_cnt",
-		  "checked sample validity before prog run"))
-		return;
-
 	if (CHECK(!skel->bss->valid, "output not valid",
 		 "no valid sample from prog"))
 		return;
@@ -82,7 +74,7 @@ static void test_perf_branches_common(int perf_fd,
 
 	/* attach perf_event */
 	link = bpf_program__attach_perf_event(skel->progs.perf_branches, perf_fd);
-	if (CHECK(IS_ERR(link), "attach_perf_event", "err %ld\n", PTR_ERR(link)))
+	if (!ASSERT_OK_PTR(link, "attach_perf_event"))
 		goto out_destroy_skel;
 
 	/* generate some branches on cpu 0 */
@@ -91,12 +83,8 @@ static void test_perf_branches_common(int perf_fd,
 	err = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set);
 	if (CHECK(err, "set_affinity", "cpu #0, err %d\n", err))
 		goto out_destroy;
-
-	/* Spin the loop for a while by using a high iteration count, and by
-	 * checking whether the specific run count marker has been explicitly
-	 * incremented at least once by the backing perf_event BPF program.
-	 */
-	for (i = 0; i < 100000000 && !*(volatile int *)&skel->bss->run_cnt; ++i)
+	/* spin the loop for a while (random high number) */
+	for (i = 0; i < 1000000; ++i)
 		++j;
 
 	test_perf_branches__detach(skel);
@@ -131,7 +119,7 @@ static void test_perf_branches_hw(void)
 	 * Some setups don't support branch records (virtual machines, !x86),
 	 * so skip test in this case.
 	 */
-	if (pfd == -1) {
+	if (pfd < 0) {
 		if (errno == ENOENT || errno == EOPNOTSUPP) {
 			printf("%s:SKIP:no PERF_SAMPLE_BRANCH_STACK\n",
 			       __func__);

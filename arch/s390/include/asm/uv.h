@@ -312,10 +312,7 @@ static inline int share(unsigned long addr, u16 cmd)
 
 	if (!uv_call(0, (u64)&uvcb))
 		return 0;
-	pr_err("%s UVC failed (rc: 0x%x, rrc: 0x%x), possible hypervisor bug.\n",
-	       uvcb.header.cmd == UVC_CMD_SET_SHARED_ACCESS ? "Share" : "Unshare",
-	       uvcb.header.rc, uvcb.header.rrc);
-	panic("System security cannot be guaranteed unless the system panics now.\n");
+	return -EINVAL;
 }
 
 /*
@@ -359,11 +356,9 @@ int uv_convert_from_secure(unsigned long paddr);
 int gmap_convert_to_secure(struct gmap *gmap, unsigned long gaddr);
 
 void setup_uv(void);
-void adjust_to_uv_max(unsigned long *vmax);
 #else
 #define is_prot_virt_host() 0
 static inline void setup_uv(void) {}
-static inline void adjust_to_uv_max(unsigned long *vmax) {}
 
 static inline int uv_destroy_page(unsigned long paddr)
 {
@@ -374,12 +369,6 @@ static inline int uv_convert_from_secure(unsigned long paddr)
 {
 	return 0;
 }
-#endif
-
-#if defined(CONFIG_PROTECTED_VIRTUALIZATION_GUEST) || IS_ENABLED(CONFIG_KVM)
-void uv_query_info(void);
-#else
-static inline void uv_query_info(void) {}
 #endif
 
 #endif /* _ASM_S390_UV_H */

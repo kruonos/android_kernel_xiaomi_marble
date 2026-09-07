@@ -10,10 +10,35 @@
 #include <trace/hooks/thermal.h>
 #include "../thermal_core.h"
 
-static void disable_cdev_stats(void *unused,
-		struct thermal_cooling_device *cdev, bool *disable)
+/* Generic helpers for thermal zone -> change_mode ops */
+static inline __maybe_unused int qti_tz_change_mode(struct thermal_zone_device *tz,
+		enum thermal_device_mode mode)
 {
-	*disable = true;
+	struct thermal_instance *instance;
+
+	if (!tz)
+		return 0;
+
+	tz->passive = 0;
+	tz->temperature = THERMAL_TEMP_INVALID;
+	tz->prev_low_trip = -INT_MAX;
+	tz->prev_high_trip = INT_MAX;
+	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
+		instance->initialized = false;
+		if (mode == THERMAL_DEVICE_DISABLED) {
+			instance->target = THERMAL_NO_TARGET;
+			instance->cdev->updated = false;
+			thermal_cdev_update(instance->cdev);
+		}
+	}
+
+	return 0;
+}
+
+static void disable_cdev_stats(void *unused,
+		struct thermal_cooling_device *cdev, int *disable)
+{
+	*disable = 1;
 }
 
 /* Generic thermal vendor hooks initialization API */
@@ -33,46 +58,6 @@ static inline __maybe_unused void thermal_vendor_hooks_exit(void)
 {
 	unregister_trace_android_vh_disable_thermal_cooling_stats(
 			disable_cdev_stats, NULL);
-}
-
-/* Generic helpers for thermal zone -> get_trend ops */
-static __maybe_unused inline int qti_tz_get_trend(
-				struct thermal_zone_device *tz, int trip,
-				enum thermal_trend *trend)
-{
-	int trip_temp = 0, trip_hyst = 0, temp, ret;
-	enum thermal_trip_type type = -1;
-
-	if (!tz)
-		return -EINVAL;
-
-	ret = tz->ops->get_trip_temp(tz, trip, &trip_temp);
-	if (ret)
-		return ret;
-
-	ret = tz->ops->get_trip_type(tz, trip, &type);
-	if (ret)
-		return ret;
-
-	if (tz->ops->get_trip_hyst) {
-		ret = tz->ops->get_trip_hyst(tz, trip, &trip_hyst);
-		if (ret)
-			return ret;
-	}
-	temp = READ_ONCE(tz->temperature);
-
-	/*
-	 * Handle only monitor trip clear condition, fallback to default
-	 * trend estimation for all other cases.
-	 */
-	if ((type == THERMAL_TRIP_ACTIVE) && trip_hyst && (temp < trip_temp)) {
-		if (temp > (trip_temp - trip_hyst)) {
-			*trend = THERMAL_TREND_STABLE;
-			return 0;
-		}
-	}
-
-	return -EINVAL;
 }
 
 #endif  // __QTI_THERMAL_ZONE_INTERNAL_H

@@ -11,7 +11,8 @@
 
 #include <crypto/hmac.h>
 #include <crypto/md5.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 
@@ -109,12 +110,9 @@ static inline void mv_cesa_ahash_dma_cleanup(struct ahash_request *req)
 static inline void mv_cesa_ahash_cleanup(struct ahash_request *req)
 {
 	struct mv_cesa_ahash_req *creq = ahash_request_ctx(req);
-	struct mv_cesa_engine *engine = creq->base.engine;
 
 	if (mv_cesa_req_get_type(&creq->base) == CESA_DMA_REQ)
 		mv_cesa_ahash_dma_cleanup(req);
-
-	atomic_sub(req->nbytes, &engine->load);
 }
 
 static void mv_cesa_ahash_last_cleanup(struct ahash_request *req)
@@ -170,7 +168,12 @@ static void mv_cesa_ahash_std_step(struct ahash_request *req)
 	int i;
 
 	mv_cesa_adjust_op(engine, &creq->op_tmpl);
-	memcpy_toio(engine->sram, &creq->op_tmpl, sizeof(creq->op_tmpl));
+	if (engine->pool)
+		memcpy(engine->sram_pool, &creq->op_tmpl,
+		       sizeof(creq->op_tmpl));
+	else
+		memcpy_toio(engine->sram, &creq->op_tmpl,
+			    sizeof(creq->op_tmpl));
 
 	if (!sreq->offset) {
 		digsize = crypto_ahash_digestsize(crypto_ahash_reqtfm(req));
@@ -179,9 +182,14 @@ static void mv_cesa_ahash_std_step(struct ahash_request *req)
 				       engine->regs + CESA_IVDIG(i));
 	}
 
-	if (creq->cache_ptr)
-		memcpy_toio(engine->sram + CESA_SA_DATA_SRAM_OFFSET,
-			    creq->cache, creq->cache_ptr);
+	if (creq->cache_ptr) {
+		if (engine->pool)
+			memcpy(engine->sram_pool + CESA_SA_DATA_SRAM_OFFSET,
+			       creq->cache, creq->cache_ptr);
+		else
+			memcpy_toio(engine->sram + CESA_SA_DATA_SRAM_OFFSET,
+				    creq->cache, creq->cache_ptr);
+	}
 
 	len = min_t(size_t, req->nbytes + creq->cache_ptr - sreq->offset,
 		    CESA_SA_SRAM_PAYLOAD_SIZE);
@@ -192,12 +200,10 @@ static void mv_cesa_ahash_std_step(struct ahash_request *req)
 	}
 
 	if (len - creq->cache_ptr)
-		sreq->offset += sg_pcopy_to_buffer(req->src, creq->src_nents,
-						   engine->sram +
-						   CESA_SA_DATA_SRAM_OFFSET +
-						   creq->cache_ptr,
-						   len - creq->cache_ptr,
-						   sreq->offset);
+		sreq->offset += mv_cesa_sg_copy_to_sram(
+			engine, req->src, creq->src_nents,
+			CESA_SA_DATA_SRAM_OFFSET + creq->cache_ptr,
+			len - creq->cache_ptr, sreq->offset);
 
 	op = &creq->op_tmpl;
 
@@ -222,16 +228,28 @@ static void mv_cesa_ahash_std_step(struct ahash_request *req)
 			if (len + trailerlen > CESA_SA_SRAM_PAYLOAD_SIZE) {
 				len &= CESA_HASH_BLOCK_SIZE_MSK;
 				new_cache_ptr = 64 - trailerlen;
-				memcpy_fromio(creq->cache,
-					      engine->sram +
-					      CESA_SA_DATA_SRAM_OFFSET + len,
-					      new_cache_ptr);
+				if (engine->pool)
+					memcpy(creq->cache,
+					       engine->sram_pool +
+					       CESA_SA_DATA_SRAM_OFFSET + len,
+					       new_cache_ptr);
+				else
+					memcpy_fromio(creq->cache,
+						      engine->sram +
+						      CESA_SA_DATA_SRAM_OFFSET +
+						      len,
+						      new_cache_ptr);
 			} else {
 				i = mv_cesa_ahash_pad_req(creq, creq->cache);
 				len += i;
-				memcpy_toio(engine->sram + len +
-					    CESA_SA_DATA_SRAM_OFFSET,
-					    creq->cache, i);
+				if (engine->pool)
+					memcpy(engine->sram_pool + len +
+					       CESA_SA_DATA_SRAM_OFFSET,
+					       creq->cache, i);
+				else
+					memcpy_toio(engine->sram + len +
+						    CESA_SA_DATA_SRAM_OFFSET,
+						    creq->cache, i);
 			}
 
 			if (frag_mode == CESA_SA_DESC_CFG_LAST_FRAG)
@@ -245,7 +263,10 @@ static void mv_cesa_ahash_std_step(struct ahash_request *req)
 	mv_cesa_update_op_cfg(op, frag_mode, CESA_SA_DESC_CFG_FRAG_MSK);
 
 	/* FIXME: only update enc_len field */
-	memcpy_toio(engine->sram, op, sizeof(*op));
+	if (engine->pool)
+		memcpy(engine->sram_pool, op, sizeof(*op));
+	else
+		memcpy_toio(engine->sram, op, sizeof(*op));
 
 	if (frag_mode == CESA_SA_DESC_CFG_FIRST_FRAG)
 		mv_cesa_update_op_cfg(op, CESA_SA_DESC_CFG_MID_FRAG,
@@ -374,6 +395,8 @@ static void mv_cesa_ahash_complete(struct crypto_async_request *req)
 			}
 		}
 	}
+
+	atomic_sub(ahashreq->nbytes, &engine->load);
 }
 
 static void mv_cesa_ahash_prepare(struct crypto_async_request *req,
@@ -640,7 +663,7 @@ static int mv_cesa_ahash_dma_req_init(struct ahash_request *req)
 	if (ret)
 		goto err_free_tdma;
 
-	if (iter.base.len > iter.src.op_offset) {
+	if (iter.src.sg) {
 		/*
 		 * Add all the new data, inserting an operation block and
 		 * launch command between each full SRAM block-worth of
@@ -924,7 +947,7 @@ struct ahash_alg mv_md5_alg = {
 		.base = {
 			.cra_name = "md5",
 			.cra_driver_name = "mv-md5",
-			.cra_priority = 0,
+			.cra_priority = 300,
 			.cra_flags = CRYPTO_ALG_ASYNC |
 				     CRYPTO_ALG_ALLOCATES_MEMORY |
 				     CRYPTO_ALG_KERN_DRIVER_ONLY,
@@ -995,7 +1018,7 @@ struct ahash_alg mv_sha1_alg = {
 		.base = {
 			.cra_name = "sha1",
 			.cra_driver_name = "mv-sha1",
-			.cra_priority = 0,
+			.cra_priority = 300,
 			.cra_flags = CRYPTO_ALG_ASYNC |
 				     CRYPTO_ALG_ALLOCATES_MEMORY |
 				     CRYPTO_ALG_KERN_DRIVER_ONLY,
@@ -1069,7 +1092,7 @@ struct ahash_alg mv_sha256_alg = {
 		.base = {
 			.cra_name = "sha256",
 			.cra_driver_name = "mv-sha256",
-			.cra_priority = 0,
+			.cra_priority = 300,
 			.cra_flags = CRYPTO_ALG_ASYNC |
 				     CRYPTO_ALG_ALLOCATES_MEMORY |
 				     CRYPTO_ALG_KERN_DRIVER_ONLY,
@@ -1304,7 +1327,7 @@ struct ahash_alg mv_ahmac_md5_alg = {
 		.base = {
 			.cra_name = "hmac(md5)",
 			.cra_driver_name = "mv-hmac-md5",
-			.cra_priority = 0,
+			.cra_priority = 300,
 			.cra_flags = CRYPTO_ALG_ASYNC |
 				     CRYPTO_ALG_ALLOCATES_MEMORY |
 				     CRYPTO_ALG_KERN_DRIVER_ONLY,
@@ -1375,7 +1398,7 @@ struct ahash_alg mv_ahmac_sha1_alg = {
 		.base = {
 			.cra_name = "hmac(sha1)",
 			.cra_driver_name = "mv-hmac-sha1",
-			.cra_priority = 0,
+			.cra_priority = 300,
 			.cra_flags = CRYPTO_ALG_ASYNC |
 				     CRYPTO_ALG_ALLOCATES_MEMORY |
 				     CRYPTO_ALG_KERN_DRIVER_ONLY,
@@ -1446,7 +1469,7 @@ struct ahash_alg mv_ahmac_sha256_alg = {
 		.base = {
 			.cra_name = "hmac(sha256)",
 			.cra_driver_name = "mv-hmac-sha256",
-			.cra_priority = 0,
+			.cra_priority = 300,
 			.cra_flags = CRYPTO_ALG_ASYNC |
 				     CRYPTO_ALG_ALLOCATES_MEMORY |
 				     CRYPTO_ALG_KERN_DRIVER_ONLY,

@@ -81,8 +81,10 @@ int fsl8250_handle_irq(struct uart_port *port)
 	if ((lsr & UART_LSR_THRE) && (up->ier & UART_IER_THRI))
 		serial8250_tx_chars(up);
 
-	up->lsr_saved_flags = orig_lsr;
-	uart_unlock_and_check_sysrq(&up->port, flags);
+	up->lsr_saved_flags |= orig_lsr & UART_LSR_BI;
+
+	uart_unlock_and_check_sysrq_irqrestore(&up->port, flags);
+
 	return 1;
 }
 EXPORT_SYMBOL_GPL(fsl8250_handle_irq);
@@ -104,11 +106,8 @@ static int fsl8250_acpi_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		if (irq != -EPROBE_DEFER)
-			dev_err(dev, "cannot get irq\n");
+	if (irq < 0)
 		return irq;
-	}
 
 	memset(&port8250, 0, sizeof(port8250));
 

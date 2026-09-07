@@ -27,12 +27,16 @@ struct qcom_icc_provider {
 	struct device *dev;
 	struct qcom_icc_bcm **bcms;
 	size_t num_bcms;
+	struct qcom_icc_node **nodes;
+	size_t num_nodes;
 	struct list_head probe_list;
 	struct regmap *regmap;
 	struct clk_bulk_data *clks;
 	int num_clks;
 	struct bcm_voter **voters;
 	size_t num_voters;
+	bool stub;
+	bool skip_qos;
 };
 
 /**
@@ -55,7 +59,7 @@ struct bcm_db {
 #define MAX_VCD			10
 
 /**
- * struct qcom_icc_node - QTI specific interconnect nodes
+ * struct qcom_icc_node - Qualcomm specific interconnect nodes
  * @name: the node name used in debugfs
  * @links: an array of nodes where we can go next while traversing
  * @id: a unique node identifier
@@ -101,6 +105,8 @@ struct qcom_icc_node {
  * @dirty: flag used to indicate whether the bcm needs to be committed
  * @keepalive: flag used to indicate whether a keepalive is required
  * @keepalive_early: keepalive only prior to sync-state
+ * @qos_proxy: flag used to indicate whether a proxy vote needed as part of
+ * qos configuration
  * @disabled: flag used to indicate state of bcm node
  * @aux_data: auxiliary data used when calculating threshold values and
  * communicating with RPMh
@@ -121,6 +127,7 @@ struct qcom_icc_bcm {
 	bool dirty;
 	bool keepalive;
 	bool keepalive_early;
+	bool qos_proxy;
 	bool disabled;
 	struct bcm_db aux_data;
 	struct list_head list;
@@ -162,10 +169,11 @@ int qcom_icc_aggregate_stub(struct icc_node *node, u32 tag, u32 avg_bw,
 int qcom_icc_set(struct icc_node *src, struct icc_node *dst);
 int qcom_icc_set_stub(struct icc_node *src, struct icc_node *dst);
 struct icc_node_data *qcom_icc_xlate_extended(struct of_phandle_args *spec, void *data);
-int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev);
+int qcom_icc_bcm_init(struct qcom_icc_provider *qp, struct qcom_icc_bcm *bcm, struct device *dev);
 void qcom_icc_pre_aggregate(struct icc_node *node);
 int qcom_icc_get_bw_stub(struct icc_node *node, u32 *avg, u32 *peak);
 int qcom_icc_rpmh_probe(struct platform_device *pdev);
 int qcom_icc_rpmh_remove(struct platform_device *pdev);
 void qcom_icc_rpmh_sync_state(struct device *dev);
+int qcom_icc_rpmh_configure_qos(struct qcom_icc_provider *qp);
 #endif

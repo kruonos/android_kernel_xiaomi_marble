@@ -222,7 +222,7 @@ static void xilinx_cpm_pcie_intx_flow(struct irq_desc *desc)
 			pcie_read(port, XILINX_CPM_PCIE_REG_IDRN));
 
 	for_each_set_bit(i, &val, PCI_NUM_INTX)
-		generic_handle_irq(irq_find_mapping(port->intx_domain, i));
+		generic_handle_domain_irq(port->intx_domain, i);
 
 	chained_irq_exit(chip, desc);
 }
@@ -282,7 +282,7 @@ static void xilinx_cpm_pcie_event_flow(struct irq_desc *desc)
 	val =  pcie_read(port, XILINX_CPM_PCIE_REG_IDR);
 	val &= pcie_read(port, XILINX_CPM_PCIE_REG_IMR);
 	for_each_set_bit(i, &val, 32)
-		generic_handle_irq(irq_find_mapping(port->cpm_domain, i));
+		generic_handle_domain_irq(port->cpm_domain, i);
 	pcie_write(port, val, XILINX_CPM_PCIE_REG_IDR);
 
 	/*
@@ -556,15 +556,13 @@ static int xilinx_cpm_pcie_probe(struct platform_device *pdev)
 		return err;
 
 	bus = resource_list_first_type(&bridge->windows, IORESOURCE_BUS);
-	if (!bus) {
-		err = -ENODEV;
-		goto err_free_irq_domains;
-	}
+	if (!bus)
+		return -ENODEV;
 
 	err = xilinx_cpm_pcie_parse_dt(port, bus->res);
 	if (err) {
 		dev_err(dev, "Parsing DT failed\n");
-		goto err_free_irq_domains;
+		goto err_parse_dt;
 	}
 
 	xilinx_cpm_pcie_init_port(port);
@@ -588,7 +586,7 @@ err_host_bridge:
 	xilinx_cpm_free_interrupts(port);
 err_setup_irq:
 	pci_ecam_free(port->cfg);
-err_free_irq_domains:
+err_parse_dt:
 	xilinx_cpm_free_irq_domains(port);
 	return err;
 }

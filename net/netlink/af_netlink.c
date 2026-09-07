@@ -67,6 +67,8 @@
 #include <net/sock.h>
 #include <net/scm.h>
 #include <net/netlink.h>
+#define CREATE_TRACE_POINTS
+#include <trace/events/netlink.h>
 
 #include "af_netlink.h"
 
@@ -126,7 +128,7 @@ static const char *const nlk_cb_mutex_key_strings[MAX_LINKS + 1] = {
 	"nlk_cb_mutex-MAX_LINKS"
 };
 
-static int netlink_dump(struct sock *sk, bool lock_taken);
+static int netlink_dump(struct sock *sk);
 
 /* nl_table locking explained:
  * Lookup and traversal are protected with an RCU read-side lock. Insertion
@@ -147,6 +149,12 @@ static BLOCKING_NOTIFIER_HEAD(netlink_chain);
 
 static const struct rhashtable_params netlink_rhashtable_params;
 
+void do_trace_netlink_extack(const char *msg)
+{
+	trace_netlink_extack(msg);
+}
+EXPORT_SYMBOL(do_trace_netlink_extack);
+
 static inline u32 netlink_group_mask(u32 group)
 {
 	if (group > 32)
@@ -157,7 +165,7 @@ static inline u32 netlink_group_mask(u32 group)
 static struct sk_buff *netlink_to_full_skb(const struct sk_buff *skb,
 					   gfp_t gfp_mask)
 {
-	unsigned int len = skb->len;
+	unsigned int len = skb_end_offset(skb);
 	struct sk_buff *new;
 
 	new = alloc_skb(len, gfp_mask);
@@ -345,7 +353,7 @@ static void netlink_overrun(struct sock *sk)
 		if (!test_and_set_bit(NETLINK_S_CONGESTED,
 				      &nlk_sk(sk)->state)) {
 			sk->sk_err = ENOBUFS;
-			sk->sk_error_report(sk);
+			sk_error_report(sk);
 		}
 	}
 	atomic_inc(&sk->sk_drops);
@@ -379,11 +387,21 @@ static void netlink_skb_set_owner_r(struct sk_buff *skb, struct sock *sk)
 	WARN_ON(skb->sk != NULL);
 	skb->sk = sk;
 	skb->destructor = netlink_skb_destructor;
+	atomic_add(skb->truesize, &sk->sk_rmem_alloc);
 	sk_mem_charge(sk, skb->truesize);
 }
 
 static void netlink_sock_destruct(struct sock *sk)
 {
+	struct netlink_sock *nlk = nlk_sk(sk);
+
+	if (nlk->cb_running) {
+		if (nlk->cb.done)
+			nlk->cb.done(&nlk->cb);
+		module_put(nlk->cb.module);
+		kfree_skb(nlk->cb.skb);
+	}
+
 	skb_queue_purge(&sk->sk_receive_queue);
 
 	if (!sock_flag(sk, SOCK_DEAD)) {
@@ -394,6 +412,14 @@ static void netlink_sock_destruct(struct sock *sk)
 	WARN_ON(atomic_read(&sk->sk_rmem_alloc));
 	WARN_ON(refcount_read(&sk->sk_wmem_alloc));
 	WARN_ON(nlk_sk(sk)->groups);
+}
+
+static void netlink_sock_destruct_work(struct work_struct *work)
+{
+	struct netlink_sock *nlk = container_of(work, struct netlink_sock,
+						work);
+
+	sk_free(&nlk->sk);
 }
 
 /* This lock without WQ_FLAG_EXCLUSIVE is good on UP and it is _very_ bad on
@@ -712,6 +738,12 @@ static void deferred_put_nlk_sk(struct rcu_head *head)
 	if (!refcount_dec_and_test(&sk->sk_refcnt))
 		return;
 
+	if (nlk->cb_running && nlk->cb.done) {
+		INIT_WORK(&nlk->work, netlink_sock_destruct_work);
+		schedule_work(&nlk->work);
+		return;
+	}
+
 	sk_free(sk);
 }
 
@@ -759,14 +791,6 @@ static int netlink_release(struct socket *sock)
 					  };
 		blocking_notifier_call_chain(&netlink_chain,
 				NETLINK_URELEASE, &n);
-	}
-
-	/* Terminate any outstanding dump */
-	if (nlk->cb_running) {
-		if (nlk->cb.done)
-			nlk->cb.done(&nlk->cb);
-		module_put(nlk->cb.module);
-		kfree_skb(nlk->cb.skb);
 	}
 
 	module_put(nlk->module);
@@ -1206,48 +1230,41 @@ static struct sk_buff *netlink_alloc_large_skb(unsigned int size,
 int netlink_attachskb(struct sock *sk, struct sk_buff *skb,
 		      long *timeo, struct sock *ssk)
 {
-	DECLARE_WAITQUEUE(wait, current);
 	struct netlink_sock *nlk;
-	unsigned int rmem;
 
 	nlk = nlk_sk(sk);
-	rmem = atomic_add_return(skb->truesize, &sk->sk_rmem_alloc);
 
-	if ((rmem == skb->truesize || rmem <= READ_ONCE(sk->sk_rcvbuf)) &&
-	    !test_bit(NETLINK_S_CONGESTED, &nlk->state)) {
-		netlink_skb_set_owner_r(skb, sk);
-		return 0;
-	}
+	if ((atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf ||
+	     test_bit(NETLINK_S_CONGESTED, &nlk->state))) {
+		DECLARE_WAITQUEUE(wait, current);
+		if (!*timeo) {
+			if (!ssk || netlink_is_kernel(ssk))
+				netlink_overrun(sk);
+			sock_put(sk);
+			kfree_skb(skb);
+			return -EAGAIN;
+		}
 
-	atomic_sub(skb->truesize, &sk->sk_rmem_alloc);
+		__set_current_state(TASK_INTERRUPTIBLE);
+		add_wait_queue(&nlk->wait, &wait);
 
-	if (!*timeo) {
-		if (!ssk || netlink_is_kernel(ssk))
-			netlink_overrun(sk);
+		if ((atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf ||
+		     test_bit(NETLINK_S_CONGESTED, &nlk->state)) &&
+		    !sock_flag(sk, SOCK_DEAD))
+			*timeo = schedule_timeout(*timeo);
+
+		__set_current_state(TASK_RUNNING);
+		remove_wait_queue(&nlk->wait, &wait);
 		sock_put(sk);
-		kfree_skb(skb);
-		return -EAGAIN;
+
+		if (signal_pending(current)) {
+			kfree_skb(skb);
+			return sock_intr_errno(*timeo);
+		}
+		return 1;
 	}
-
-	__set_current_state(TASK_INTERRUPTIBLE);
-	add_wait_queue(&nlk->wait, &wait);
-	rmem = atomic_read(&sk->sk_rmem_alloc);
-
-	if (((rmem && rmem + skb->truesize > READ_ONCE(sk->sk_rcvbuf)) ||
-	     test_bit(NETLINK_S_CONGESTED, &nlk->state)) &&
-	    !sock_flag(sk, SOCK_DEAD))
-		*timeo = schedule_timeout(*timeo);
-
-	__set_current_state(TASK_RUNNING);
-	remove_wait_queue(&nlk->wait, &wait);
-	sock_put(sk);
-
-	if (signal_pending(current)) {
-		kfree_skb(skb);
-		return sock_intr_errno(*timeo);
-	}
-
-	return 1;
+	netlink_skb_set_owner_r(skb, sk);
+	return 0;
 }
 
 static int __netlink_sendskb(struct sock *sk, struct sk_buff *skb)
@@ -1307,7 +1324,6 @@ static int netlink_unicast_kernel(struct sock *sk, struct sk_buff *skb,
 	ret = -ECONNREFUSED;
 	if (nlk->netlink_rcv != NULL) {
 		ret = skb->len;
-		atomic_add(skb->truesize, &sk->sk_rmem_alloc);
 		netlink_skb_set_owner_r(skb, sk);
 		NETLINK_CB(skb).sk = ssk;
 		netlink_deliver_tap_kernel(sk, ssk, skb);
@@ -1386,19 +1402,13 @@ EXPORT_SYMBOL_GPL(netlink_strict_get_check);
 static int netlink_broadcast_deliver(struct sock *sk, struct sk_buff *skb)
 {
 	struct netlink_sock *nlk = nlk_sk(sk);
-	unsigned int rmem, rcvbuf;
 
-	rmem = atomic_add_return(skb->truesize, &sk->sk_rmem_alloc);
-	rcvbuf = READ_ONCE(sk->sk_rcvbuf);
-
-	if ((rmem == skb->truesize || rmem <= rcvbuf) &&
+	if (atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf &&
 	    !test_bit(NETLINK_S_CONGESTED, &nlk->state)) {
 		netlink_skb_set_owner_r(skb, sk);
 		__netlink_sendskb(sk, skb);
-		return rmem > (rcvbuf >> 1);
+		return atomic_read(&sk->sk_rmem_alloc) > (sk->sk_rcvbuf >> 1);
 	}
-
-	atomic_sub(skb->truesize, &sk->sk_rmem_alloc);
 	return -1;
 }
 
@@ -1582,7 +1592,7 @@ static int do_one_set_err(struct sock *sk, struct netlink_set_err_data *p)
 	}
 
 	sk->sk_err = p->code;
-	sk->sk_error_report(sk);
+	sk_error_report(sk);
 out:
 	return ret;
 }
@@ -1925,7 +1935,7 @@ static int netlink_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	struct sock *sk = sock->sk;
 	struct netlink_sock *nlk = nlk_sk(sk);
 	int noblock = flags & MSG_DONTWAIT;
-	size_t copied, max_recvmsg_len;
+	size_t copied;
 	struct sk_buff *skb, *data_skb;
 	int err, ret;
 
@@ -1958,10 +1968,9 @@ static int netlink_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 #endif
 
 	/* Record the max length of recvmsg() calls for future allocations */
-	max_recvmsg_len = max(READ_ONCE(nlk->max_recvmsg_len), len);
-	max_recvmsg_len = min_t(size_t, max_recvmsg_len,
-				SKB_WITH_OVERHEAD(32768));
-	WRITE_ONCE(nlk->max_recvmsg_len, max_recvmsg_len);
+	nlk->max_recvmsg_len = max(nlk->max_recvmsg_len, len);
+	nlk->max_recvmsg_len = min_t(size_t, nlk->max_recvmsg_len,
+				     SKB_WITH_OVERHEAD(32768));
 
 	copied = data_skb->len;
 	if (len < copied) {
@@ -1994,10 +2003,10 @@ static int netlink_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 
 	if (READ_ONCE(nlk->cb_running) &&
 	    atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf / 2) {
-		ret = netlink_dump(sk, false);
+		ret = netlink_dump(sk);
 		if (ret) {
 			sk->sk_err = -ret;
-			sk->sk_error_report(sk);
+			sk_error_report(sk);
 		}
 	}
 
@@ -2153,9 +2162,8 @@ void __netlink_clear_multicast_users(struct sock *ksk, unsigned int group)
 {
 	struct sock *sk;
 	struct netlink_table *tbl = &nl_table[ksk->sk_protocol];
-	struct hlist_node *tmp;
 
-	sk_for_each_bound_safe(sk, tmp, &tbl->mc_list)
+	sk_for_each_bound(sk, &tbl->mc_list)
 		netlink_update_socket_mc(nlk_sk(sk), group, 0);
 }
 
@@ -2205,25 +2213,25 @@ static int netlink_dump_done(struct netlink_sock *nlk, struct sk_buff *skb,
 	return 0;
 }
 
-static int netlink_dump(struct sock *sk, bool lock_taken)
+static int netlink_dump(struct sock *sk)
 {
 	struct netlink_sock *nlk = nlk_sk(sk);
 	struct netlink_ext_ack extack = {};
 	struct netlink_callback *cb;
 	struct sk_buff *skb = NULL;
-	unsigned int rmem, rcvbuf;
-	size_t max_recvmsg_len;
 	struct module *module;
 	int err = -ENOBUFS;
 	int alloc_min_size;
 	int alloc_size;
 
-	if (!lock_taken)
-		mutex_lock(nlk->cb_mutex);
+	mutex_lock(nlk->cb_mutex);
 	if (!nlk->cb_running) {
 		err = -EINVAL;
 		goto errout_skb;
 	}
+
+	if (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf)
+		goto errout_skb;
 
 	/* NLMSG_GOODSIZE is small to avoid high order allocations being
 	 * required, but it makes sense to _attempt_ a 16K bytes allocation
@@ -2233,9 +2241,8 @@ static int netlink_dump(struct sock *sk, bool lock_taken)
 	cb = &nlk->cb;
 	alloc_min_size = max_t(int, cb->min_dump_alloc, NLMSG_GOODSIZE);
 
-	max_recvmsg_len = READ_ONCE(nlk->max_recvmsg_len);
-	if (alloc_min_size < max_recvmsg_len) {
-		alloc_size = max_recvmsg_len;
+	if (alloc_min_size < nlk->max_recvmsg_len) {
+		alloc_size = nlk->max_recvmsg_len;
 		skb = alloc_skb(alloc_size,
 				(GFP_KERNEL & ~__GFP_DIRECT_RECLAIM) |
 				__GFP_NOWARN | __GFP_NORETRY);
@@ -2246,13 +2253,6 @@ static int netlink_dump(struct sock *sk, bool lock_taken)
 	}
 	if (!skb)
 		goto errout_skb;
-
-	rcvbuf = READ_ONCE(sk->sk_rcvbuf);
-	rmem = atomic_add_return(skb->truesize, &sk->sk_rmem_alloc);
-	if (rmem != skb->truesize && rmem >= rcvbuf) {
-		atomic_sub(skb->truesize, &sk->sk_rmem_alloc);
-		goto errout_skb;
-	}
 
 	/* Trim skb to allocated size. User is expected to provide buffer as
 	 * large as max(min_dump_alloc, 16KiB (mac_recvmsg_len capped at
@@ -2379,7 +2379,9 @@ int __netlink_dump_start(struct sock *ssk, struct sk_buff *skb,
 	WRITE_ONCE(nlk->cb_running, true);
 	nlk->dump_done_errno = INT_MAX;
 
-	ret = netlink_dump(sk, true);
+	mutex_unlock(nlk->cb_mutex);
+
+	ret = netlink_dump(sk);
 
 	sock_put(sk);
 
@@ -2438,7 +2440,7 @@ void netlink_ack(struct sk_buff *in_skb, struct nlmsghdr *nlh, int err,
 	skb = nlmsg_new(payload + tlvlen, GFP_KERNEL);
 	if (!skb) {
 		NETLINK_CB(in_skb).sk->sk_err = ENOBUFS;
-		NETLINK_CB(in_skb).sk->sk_error_report(NETLINK_CB(in_skb).sk);
+		sk_error_report(NETLINK_CB(in_skb).sk);
 		return;
 	}
 

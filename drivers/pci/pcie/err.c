@@ -13,7 +13,6 @@
 #define dev_fmt(fmt) "AER: " fmt
 
 #include <linux/pci.h>
-#include <linux/pm_runtime.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -80,18 +79,6 @@ static int report_error_detected(struct pci_dev *dev,
 	return 0;
 }
 
-static int pci_pm_runtime_get_sync(struct pci_dev *pdev, void *data)
-{
-	pm_runtime_get_sync(&pdev->dev);
-	return 0;
-}
-
-static int pci_pm_runtime_put(struct pci_dev *pdev, void *data)
-{
-	pm_runtime_put(&pdev->dev);
-	return 0;
-}
-
 static int report_frozen_detected(struct pci_dev *dev, void *data)
 {
 	return report_error_detected(dev, pci_channel_io_frozen, data);
@@ -100,12 +87,6 @@ static int report_frozen_detected(struct pci_dev *dev, void *data)
 static int report_normal_detected(struct pci_dev *dev, void *data)
 {
 	return report_error_detected(dev, pci_channel_io_normal, data);
-}
-
-static int report_perm_failure_detected(struct pci_dev *dev, void *data)
-{
-	pci_uevent_ers(dev, PCI_ERS_RESULT_DISCONNECT);
-	return 0;
 }
 
 static int report_mmio_enabled(struct pci_dev *dev, void *data)
@@ -167,7 +148,7 @@ out:
 
 /**
  * pci_walk_bridge - walk bridges potentially AER affected
- * @bridge:	bridge which may be a Port or an RCEC
+ * @bridge:	bridge which may be a Port, an RCEC, or an RCiEP
  * @cb:		callback to be called for each device found
  * @userdata:	arbitrary pointer to be passed to callback
  *
@@ -175,8 +156,8 @@ out:
  * any bridged devices on buses under this bus.  Call the provided callback
  * on each device found.
  *
- * If the device provided has no subordinate bus, e.g., an RCEC, call the
- * callback on the device itself.
+ * If the device provided has no subordinate bus, e.g., an RCEC or RCiEP,
+ * call the callback on the device itself.
  */
 static void pci_walk_bridge(struct pci_dev *bridge,
 			    int (*cb)(struct pci_dev *, void *),
@@ -198,9 +179,9 @@ pci_ers_result_t pcie_do_recovery(struct pci_dev *dev,
 	struct pci_host_bridge *host = pci_find_host_bridge(dev->bus);
 
 	/*
-	 * If the error was detected by a Root Port, Downstream Port, or
-	 * RCEC, recovery runs on the device itself.  For Ports, that also
-	 * includes any subordinate devices.
+	 * If the error was detected by a Root Port, Downstream Port, RCEC,
+	 * or RCiEP, recovery runs on the device itself.  For Ports, that
+	 * also includes any subordinate devices.
 	 *
 	 * If it was detected by another device (Endpoint, etc), recovery
 	 * runs on the device and anything else under the same Port, i.e.,
@@ -208,12 +189,11 @@ pci_ers_result_t pcie_do_recovery(struct pci_dev *dev,
 	 */
 	if (type == PCI_EXP_TYPE_ROOT_PORT ||
 	    type == PCI_EXP_TYPE_DOWNSTREAM ||
-	    type == PCI_EXP_TYPE_RC_EC)
+	    type == PCI_EXP_TYPE_RC_EC ||
+	    type == PCI_EXP_TYPE_RC_END)
 		bridge = dev;
 	else
 		bridge = pci_upstream_bridge(dev);
-
-	pci_walk_bridge(bridge, pci_pm_runtime_get_sync, NULL);
 
 	pci_dbg(bridge, "broadcast error_detected message\n");
 	if (state == pci_channel_io_frozen) {
@@ -250,26 +230,20 @@ pci_ers_result_t pcie_do_recovery(struct pci_dev *dev,
 	pci_walk_bridge(bridge, report_resume, &status);
 
 	/*
-	 * If we have native control of AER, clear error status in the Root
-	 * Port or Downstream Port that signaled the error.  If the
-	 * platform retained control of AER, it is responsible for clearing
-	 * this status.  In that case, the signaling device may not even be
-	 * visible to the OS.
+	 * If we have native control of AER, clear error status in the device
+	 * that detected the error.  If the platform retained control of AER,
+	 * it is responsible for clearing this status.  In that case, the
+	 * signaling device may not even be visible to the OS.
 	 */
 	if (host->native_aer || pcie_ports_native) {
-		pcie_clear_device_status(bridge);
-		pci_aer_clear_nonfatal_status(bridge);
+		pcie_clear_device_status(dev);
+		pci_aer_clear_nonfatal_status(dev);
 	}
-
-	pci_walk_bridge(bridge, pci_pm_runtime_put, NULL);
-
 	pci_info(bridge, "device recovery successful\n");
 	return status;
 
 failed:
-	pci_walk_bridge(bridge, pci_pm_runtime_put, NULL);
-
-	pci_walk_bridge(bridge, report_perm_failure_detected, NULL);
+	pci_uevent_ers(bridge, PCI_ERS_RESULT_DISCONNECT);
 
 	/* TODO: Should kernel panic here? */
 	pci_info(bridge, "device recovery failed\n");

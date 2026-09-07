@@ -379,7 +379,7 @@ static struct attribute *channel_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group channel_attr_group = {
+static const struct attribute_group channel_attr_group = {
 	.attrs = channel_attrs,
 	.is_visible = channel_attr_is_visible,
 };
@@ -436,7 +436,7 @@ static struct attribute *interface_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group interface_attr_group = {
+static const struct attribute_group interface_attr_group = {
 	.attrs = interface_attrs,
 };
 
@@ -538,8 +538,8 @@ static struct most_channel *get_channel(char *mdev, char *mdev_ch)
 	dev = bus_find_device_by_name(&mostbus, NULL, mdev);
 	if (!dev)
 		return NULL;
-	iface = dev_get_drvdata(dev);
 	put_device(dev);
+	iface = dev_get_drvdata(dev);
 	list_for_each_entry_safe(c, tmp, &iface->p->channel_list, list) {
 		if (!strcmp(dev_name(&c->dev), mdev_ch))
 			return c;
@@ -718,7 +718,7 @@ static struct attribute *mc_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group mc_attr_group = {
+static const struct attribute_group mc_attr_group = {
 	.attrs = mc_attrs,
 };
 

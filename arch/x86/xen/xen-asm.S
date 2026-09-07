@@ -20,29 +20,7 @@
 
 #include <linux/init.h>
 #include <linux/linkage.h>
-#include <linux/objtool.h>
 #include <../entry/calling.h>
-
-/*
- * PV hypercall interface to the hypervisor.
- *
- * Called via inline asm(), so better preserve %rcx and %r11.
- *
- * Input:
- *	%eax: hypercall number
- *	%rdi, %rsi, %rdx, %r10, %r8: args 1..5 for the hypercall
- * Output: %rax
- */
-SYM_FUNC_START(xen_hypercall_pv)
-	push %rcx
-	push %r11
-	UNWIND_HINT_SAVE
-	syscall
-	UNWIND_HINT_RESTORE
-	pop %r11
-	pop %rcx
-	RET
-SYM_FUNC_END(xen_hypercall_pv)
 
 /*
  * Enable events.  This clears the event mask and tests the pending
@@ -95,34 +73,6 @@ SYM_FUNC_START(xen_save_fl_direct)
 	addb %ah, %ah
 	RET
 SYM_FUNC_END(xen_save_fl_direct)
-
-
-/*
- * In principle the caller should be passing us a value return from
- * xen_save_fl_direct, but for robustness sake we test only the
- * X86_EFLAGS_IF flag rather than the whole byte. After setting the
- * interrupt mask state, it checks for unmasked pending events and
- * enters the hypervisor to get them delivered if so.
- */
-SYM_FUNC_START(xen_restore_fl_direct)
-	FRAME_BEGIN
-	testw $X86_EFLAGS_IF, %di
-	setz PER_CPU_VAR(xen_vcpu_info) + XEN_vcpu_info_mask
-	/*
-	 * Preempt here doesn't matter because that will deal with any
-	 * pending interrupts.  The pending check may end up being run
-	 * on the wrong CPU, but that doesn't hurt.
-	 */
-
-	/* check for unmasked and pending */
-	cmpw $0x0001, PER_CPU_VAR(xen_vcpu_info) + XEN_vcpu_info_pending
-	jnz 1f
-	call check_events
-1:
-	FRAME_END
-	RET
-SYM_FUNC_END(xen_restore_fl_direct)
-
 
 /*
  * Force an event check by making a hypercall, but preserve regs
@@ -186,7 +136,7 @@ xen_pv_trap asm_exc_overflow
 xen_pv_trap asm_exc_bounds
 xen_pv_trap asm_exc_invalid_op
 xen_pv_trap asm_exc_device_not_available
-xen_pv_trap asm_exc_double_fault
+xen_pv_trap asm_xenpv_exc_double_fault
 xen_pv_trap asm_exc_coproc_segment_overrun
 xen_pv_trap asm_exc_invalid_tss
 xen_pv_trap asm_exc_segment_not_present
@@ -197,7 +147,7 @@ xen_pv_trap asm_exc_spurious_interrupt_bug
 xen_pv_trap asm_exc_coprocessor_error
 xen_pv_trap asm_exc_alignment_check
 #ifdef CONFIG_X86_MCE
-xen_pv_trap asm_exc_machine_check
+xen_pv_trap asm_xenpv_exc_machine_check
 #endif /* CONFIG_X86_MCE */
 xen_pv_trap asm_exc_simd_coprocessor_error
 #ifdef CONFIG_IA32_EMULATION
@@ -220,6 +170,7 @@ SYM_CODE_START(xen_early_idt_handler_array)
 SYM_CODE_END(xen_early_idt_handler_array)
 	__FINIT
 
+hypercall_iret = hypercall_page + __HYPERVISOR_iret * 32
 /*
  * Xen64 iret frame:
  *
@@ -229,27 +180,16 @@ SYM_CODE_END(xen_early_idt_handler_array)
  *	cs
  *	rip		<-- standard iret frame
  *
- *	flags		<-- xen_iret must push from here on
+ *	flags
  *
- *	rcx
- *	r11
- * rsp->rax
+ *	rcx		}
+ *	r11		}<-- pushed by hypercall page
+ * rsp->rax		}
  */
-.macro xen_hypercall_iret
-	pushq $0	/* Flags */
-	push %rcx
-	push %r11
-	push %rax
-	mov  $__HYPERVISOR_iret, %eax
-	syscall		/* Do the IRET. */
-#ifdef CONFIG_SLS
-	int3
-#endif
-.endm
-
 SYM_CODE_START(xen_iret)
 	UNWIND_HINT_EMPTY
-	xen_hypercall_iret
+	pushq $0
+	jmp hypercall_iret
 SYM_CODE_END(xen_iret)
 
 /*
@@ -350,7 +290,8 @@ SYM_CODE_START(xen_entry_SYSENTER_compat)
 	UNWIND_HINT_ENTRY
 	lea 16(%rsp), %rsp	/* strip %rcx, %r11 */
 	mov $-ENOSYS, %rax
-	xen_hypercall_iret
+	pushq $0
+	jmp hypercall_iret
 SYM_CODE_END(xen_entry_SYSENTER_compat)
 SYM_CODE_END(xen_entry_SYSCALL_compat)
 

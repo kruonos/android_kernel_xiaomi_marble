@@ -57,7 +57,7 @@ static const struct inet_diag_handler *inet_diag_lock_handler(int proto)
 		return ERR_PTR(-ENOENT);
 	}
 
-	if (!READ_ONCE(inet_diag_table[proto]))
+	if (!inet_diag_table[proto])
 		sock_load_diag_module(AF_INET, proto);
 
 	mutex_lock(&inet_diag_table_mutex);
@@ -414,7 +414,7 @@ EXPORT_SYMBOL_GPL(inet_sk_diag_fill);
 static int inet_twsk_diag_fill(struct sock *sk,
 			       struct sk_buff *skb,
 			       struct netlink_callback *cb,
-			       u16 nlmsg_flags)
+			       u16 nlmsg_flags, bool net_admin)
 {
 	struct inet_timewait_sock *tw = inet_twsk(sk);
 	struct inet_diag_msg *r;
@@ -441,6 +441,12 @@ static int inet_twsk_diag_fill(struct sock *sk,
 	r->idiag_wqueue	      = 0;
 	r->idiag_uid	      = 0;
 	r->idiag_inode	      = 0;
+
+	if (net_admin && nla_put_u32(skb, INET_DIAG_MARK,
+				     tw->tw_mark)) {
+		nlmsg_cancel(skb, nlh);
+		return -EMSGSIZE;
+	}
 
 	nlmsg_end(skb, nlh);
 	return 0;
@@ -492,7 +498,7 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 			u16 nlmsg_flags, bool net_admin)
 {
 	if (sk->sk_state == TCP_TIME_WAIT)
-		return inet_twsk_diag_fill(sk, skb, cb, nlmsg_flags);
+		return inet_twsk_diag_fill(sk, skb, cb, nlmsg_flags, net_admin);
 
 	if (sk->sk_state == TCP_NEW_SYN_RECV)
 		return inet_req_diag_fill(sk, skb, cb, nlmsg_flags, net_admin);
@@ -796,6 +802,8 @@ int inet_diag_bc_sk(const struct nlattr *bc, struct sock *sk)
 		entry.mark = sk->sk_mark;
 	else if (sk->sk_state == TCP_NEW_SYN_RECV)
 		entry.mark = inet_rsk(inet_reqsk(sk))->ir_mark;
+	else if (sk->sk_state == TCP_TIME_WAIT)
+		entry.mark = inet_twsk(sk)->tw_mark;
 	else
 		entry.mark = 0;
 #ifdef CONFIG_SOCK_CGROUP_DATA
@@ -1272,7 +1280,6 @@ static int inet_diag_dump_compat(struct sk_buff *skb,
 	req.sdiag_family = AF_UNSPEC; /* compatibility */
 	req.sdiag_protocol = inet_diag_type2proto(cb->nlh->nlmsg_type);
 	req.idiag_ext = rc->idiag_ext;
-	req.pad = 0;
 	req.idiag_states = rc->idiag_states;
 	req.id = rc->id;
 
@@ -1288,7 +1295,6 @@ static int inet_diag_get_exact_compat(struct sk_buff *in_skb,
 	req.sdiag_family = rc->idiag_family;
 	req.sdiag_protocol = inet_diag_type2proto(nlh->nlmsg_type);
 	req.idiag_ext = rc->idiag_ext;
-	req.pad = 0;
 	req.idiag_states = rc->idiag_states;
 	req.id = rc->id;
 
@@ -1412,7 +1418,7 @@ int inet_diag_register(const struct inet_diag_handler *h)
 	mutex_lock(&inet_diag_table_mutex);
 	err = -EEXIST;
 	if (!inet_diag_table[type]) {
-		WRITE_ONCE(inet_diag_table[type], h);
+		inet_diag_table[type] = h;
 		err = 0;
 	}
 	mutex_unlock(&inet_diag_table_mutex);
@@ -1429,7 +1435,7 @@ void inet_diag_unregister(const struct inet_diag_handler *h)
 		return;
 
 	mutex_lock(&inet_diag_table_mutex);
-	WRITE_ONCE(inet_diag_table[type], NULL);
+	inet_diag_table[type] = NULL;
 	mutex_unlock(&inet_diag_table_mutex);
 }
 EXPORT_SYMBOL_GPL(inet_diag_unregister);

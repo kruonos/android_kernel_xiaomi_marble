@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022,2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -15,21 +16,14 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
-#define NUM_LOG_PAGES		10
-#define MAX_PRINT_SIZE		200
-#define MAX_BUF_NUM		10
+#define MAX_PRINT_SIZE		1024
+#define MAX_BUF_NUM		4
 #define MAX_RESIDUAL_SIZE	MAX_PRINT_SIZE
-#define LOG_ID_MARKER	0x474F4C
-#define LOG_ID_MARKER_SHIFT	24
-#define LOG_ID_MARKER_MASK	0xFFFFFF
-#define LOG_ID_MASK	0xFF
-#define SIZE_ADJUST	4
-#define SRC_OFFSET	4
+#define SIZE_ADJUST		4
+#define SRC_OFFSET		4
 
-enum sync_mode {
-	ping_pong,
-	log_id
-};
+#define CREATE_TRACE_POINTS
+#include "trace_cpucp.h"
 
 struct remote_mem {
 	void __iomem *start;
@@ -50,10 +44,9 @@ struct rimps_log_info {
 	struct delayed_work work;
 	struct device *dev;
 	void __iomem *base;
-	void *ipc_log_ctxt;
-	enum sync_mode sync_mode;
 	unsigned int rmem_idx;
 	unsigned int num_bufs;
+	unsigned int total_buf_size;
 	char *rem_buf;
 	char *glb_buf;
 	int  rem_len;
@@ -65,20 +58,20 @@ static LIST_HEAD(full_buffers_list);
 static LIST_HEAD(free_buffers_list);
 static struct workqueue_struct *rimps_wq;
 
-static inline int get_next_logbuf(char *buf, int size)
+static inline bool get_last_newline(char *buf, int size, int *cnt)
 {
 	int i;
 
 	for (i = (size - 1); i >= 0 ; i--) {
-		if (buf[i] == '\n')
-			break;
+		if (buf[i] == '\n') {
+			buf[i] = '\0';
+			*cnt = i + 1;
+			return true;
+		}
 	}
-	if (i >= 0)
-		buf[i] = '\0';
-	else
-		return size;
 
-	return i + 1;
+	*cnt = size;
+	return false;
 }
 
 static void rimps_log_work(struct work_struct *work)
@@ -89,7 +82,8 @@ static void rimps_log_work(struct work_struct *work)
 	char *src;
 	int buf_start = 0;
 	int cnt = 0, print_size = 0, buf_size = 0;
-	char c;
+	bool ret;
+	char tmp_buf[MAX_PRINT_SIZE + 1];
 	struct rimps_buf *buf_node;
 	unsigned long flags;
 
@@ -104,35 +98,34 @@ static void rimps_log_work(struct work_struct *work)
 		list_del(&buf_node->node);
 		spin_unlock_irqrestore(&info->full_list_lock, flags);
 		buf_start = buf_node->cpy_idx - info->rem_len;
-		if (info->rem_len)
-			memcpy(&buf_node->buf[buf_start],
-					info->rem_buf, info->rem_len);
 		src = &buf_node->buf[buf_start];
 		buf_size = buf_node->size + info->rem_len;
+		if (info->rem_len) {
+			memcpy(&buf_node->buf[buf_start],
+					info->rem_buf, info->rem_len);
+			info->rem_len = 0;
+		}
 		do {
 			print_size = (buf_size >= MAX_PRINT_SIZE) ?
 						MAX_PRINT_SIZE : buf_size;
-			cnt = get_next_logbuf(src, print_size);
+			ret = get_last_newline(src, print_size, &cnt);
 			if (cnt == print_size) {
-				if (buf_size < MAX_PRINT_SIZE) {
+				if (!ret && buf_size < MAX_PRINT_SIZE) {
 					info->rem_len = buf_size;
 					memcpy(info->rem_buf, src, buf_size);
 					goto out;
 				} else {
-					c = src[cnt - 1];
-					src[cnt - 1] = '\0';
-					ipc_log_string(info->ipc_log_ctxt,
-							"%s%c\n", src, c);
+					snprintf(tmp_buf, print_size + 1, "%s", src);
+					trace_cpucp_log(tmp_buf);
 				}
-			} else {
-				ipc_log_string(info->ipc_log_ctxt,
-						"%s\n", src);
-			}
+			} else
+				trace_cpucp_log(src);
 
 			buf_start += cnt;
 			buf_size -= cnt;
 			src = &buf_node->buf[buf_start];
 		} while (buf_size > 0);
+
 out:
 		spin_lock_irqsave(&info->free_list_lock, flags);
 		list_add_tail(&buf_node->node, &free_buffers_list);
@@ -178,29 +171,27 @@ static void rimps_log_rx(struct mbox_client *client, void *msg)
 		return;
 	}
 
-	if (info->sync_mode == log_id) {
-		marker = *(u32 *)(info->rmem)->start;
-		if ((marker & LOG_ID_MARKER_MASK) != LOG_ID_MARKER) {
-			pr_err("%s: Log signature incorrect\n", __func__);
-			return;
-		}
-		info->rmem_idx = ((marker >> LOG_ID_MARKER_SHIFT)
-					& LOG_ID_MASK);
-		if (info->rmem_idx >= info->num_bufs) {
-			dev_err(dev, "wrong index id dropping\n");
-			return;
-		}
-		if (info->rmem_idx == 0) {
-			size_adj = SIZE_ADJUST;
-			src_offset = SRC_OFFSET;
-		}
+	marker = *(u32 *)(info->rmem)->start;
+	if (marker <= info->rmem->size) {
+		info->rmem_idx = 0;
+		rmem_size = marker;
+	} else if (marker <= info->total_buf_size) {
+		info->rmem_idx = 1;
+		rmem_size = marker - info->rmem->size;
+	} else {
+		pr_err("%s: Log marker incorrect: %u\n", __func__, marker);
+		return;
+	}
+
+	if (info->rmem_idx == 0) {
+		size_adj = SIZE_ADJUST;
+		src_offset = SRC_OFFSET;
 	}
 
 	rmem = info->rmem + info->rmem_idx;
-	rmem_size = rmem->size - size_adj;
+	rmem_size -= size_adj;
 	src = rmem->start + src_offset;
-	memcpy_fromio(&buf_node->buf[buf_node->cpy_idx],
-				src, rmem_size);
+	memcpy_fromio(&buf_node->buf[buf_node->cpy_idx], src, rmem_size);
 	buf_node->size = rmem_size;
 	spin_lock_irqsave(&info->full_list_lock, flags);
 	list_add_tail(&buf_node->node, &full_buffers_list);
@@ -208,12 +199,6 @@ static void rimps_log_rx(struct mbox_client *client, void *msg)
 
 	if (!delayed_work_pending(&info->work))
 		queue_delayed_work(rimps_wq, &info->work, 0);
-
-	if (info->sync_mode == ping_pong) {
-		info->rmem_idx++;
-		if (info->rmem_idx == info->num_bufs)
-			info->rmem_idx = 0;
-	}
 }
 
 static int populate_free_buffers(struct rimps_log_info *info,
@@ -276,6 +261,7 @@ static int rimps_log_probe(struct platform_device *pdev)
 					resource_size(res));
 		if (IS_ERR(mem_base)) {
 			ret =  PTR_ERR(mem_base);
+			dev_err(dev, "Failed to io remap the region err: %d\n", ret);
 			goto exit;
 		}
 		rmem->start = mem_base;
@@ -286,6 +272,8 @@ static int rimps_log_probe(struct platform_device *pdev)
 		} else if (!prev_size) {
 			prev_size = rmem->size;
 		}
+
+		info->total_buf_size += rmem->size;
 		info->num_bufs++;
 	}
 	info->glb_buf = devm_kzalloc(dev, MAX_BUF_NUM *
@@ -306,13 +294,17 @@ static int rimps_log_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto exit;
 
-	info->sync_mode = log_id;
-
 	cl = &info->cl;
 	cl->dev = dev;
 	cl->tx_block = false;
 	cl->knows_txdone = true;
 	cl->rx_callback = rimps_log_rx;
+
+	dev_set_drvdata(dev, info);
+	INIT_DEFERRABLE_WORK(&info->work, &rimps_log_work);
+	spin_lock_init(&info->free_list_lock);
+	spin_lock_init(&info->full_list_lock);
+	rimps_wq = create_freezable_workqueue("rimps_wq");
 
 	info->ch = mbox_request_channel(cl, 0);
 	if (IS_ERR(info->ch)) {
@@ -321,19 +313,7 @@ static int rimps_log_probe(struct platform_device *pdev)
 			dev_err(dev, "Failed to request mbox info: %d\n", ret);
 		goto exit;
 	}
-	info->ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES,
-					dev_name(dev), 0);
-	if (!info->ipc_log_ctxt) {
-		dev_err(dev, "failed to create log context\n");
-		ret = -ENOMEM;
-		goto exit;
-	}
 
-	dev_set_drvdata(dev, info);
-	INIT_DEFERRABLE_WORK(&info->work, &rimps_log_work);
-	spin_lock_init(&info->free_list_lock);
-	spin_lock_init(&info->full_list_lock);
-	rimps_wq = create_freezable_workqueue("rimps_wq");
 	dev_info(dev, "RIMPS logging initialized\n");
 
 	return 0;

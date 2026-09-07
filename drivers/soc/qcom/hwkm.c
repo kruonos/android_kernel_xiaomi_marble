@@ -2,7 +2,7 @@
 /*
  * QTI hardware key manager driver.
  *
- * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/types.h>
@@ -19,8 +19,6 @@
 #include <linux/delay.h>
 #include <linux/crypto.h>
 #include <linux/bitops.h>
-#include <crypto/hash.h>
-#include <crypto/sha.h>
 #include <linux/iommu.h>
 
 #include <linux/hwkm.h>
@@ -28,6 +26,7 @@
 #include "hwkmregs.h"
 #include "hwkm_serialize.h"
 #include "crypto-qti-ice-regs.h"
+
 #define ASYNC_CMD_HANDLING false
 
 // Maximum number of times to poll
@@ -65,7 +64,7 @@ static inline bool qti_hwkm_testb(void __iomem *ice_hwkm_mmio, u32 reg, u8 nr,
 	return true;
 }
 
-unsigned int qti_hwkm_get_reg_data(void __iomem *ice_hwkm_mmio,
+static inline unsigned int qti_hwkm_get_reg_data(void __iomem *ice_hwkm_mmio,
 						 u32 reg, u32 offset, u32 mask,
 						 enum hwkm_destination dest)
 {
@@ -74,7 +73,6 @@ unsigned int qti_hwkm_get_reg_data(void __iomem *ice_hwkm_mmio,
 	val = qti_hwkm_readl(ice_hwkm_mmio, reg, dest);
 	return ((val & mask) >> offset);
 }
-EXPORT_SYMBOL(qti_hwkm_get_reg_data);
 
 static void print_err_info(struct tme_ext_err_info *err)
 {
@@ -191,30 +189,15 @@ static int qti_hwkm_check_bist_status(const struct ice_mmio_data *mmio_data)
 
 bool qti_hwkm_init_required(const struct ice_mmio_data *mmio_data)
 {
-	u32 val = 0;
+        u32 val = 0;
 
 	val = ice_readl(mmio_data->ice_base_mmio, ICE_REGS_CONTROL);
 	val = val & 0x1;
-
 	return (val == 1);
 }
-EXPORT_SYMBOL_GPL(qti_hwkm_init_required);
+EXPORT_SYMBOL(qti_hwkm_init_required);
 
-bool qti_hwkm_is_ice_tpkey_set(const struct ice_mmio_data *mmio_data)
-{
-
-	u32 val = 0;
-
-	val = qti_hwkm_readl(mmio_data->ice_hwkm_mmio,
-			     QTI_HWKM_ICE_RG_TZ_TPKEY_RECEIVE_STATUS,
-			     ICE_SLAVE);
-	val = val >> 8;
-
-	return (val == 0x1);
-}
-EXPORT_SYMBOL_GPL(qti_hwkm_is_ice_tpkey_set);
-
-int qti_hwkm_ice_init_sequence(const struct ice_mmio_data *mmio_data)
+static int qti_hwkm_ice_init_sequence(const struct ice_mmio_data *mmio_data)
 {
 	int ret = 0;
 	u32 val = 0;
@@ -255,7 +238,6 @@ int qti_hwkm_ice_init_sequence(const struct ice_mmio_data *mmio_data)
 
 	return ret;
 }
-EXPORT_SYMBOL(qti_hwkm_ice_init_sequence);
 
 static void qti_hwkm_enable_slave_receive_mode(
 					const struct ice_mmio_data *mmio_data)

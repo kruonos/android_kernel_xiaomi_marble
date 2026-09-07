@@ -41,6 +41,7 @@
 #include "security.h"
 #include "objsec.h"
 #include "conditional.h"
+#include "ima.h"
 
 enum sel_inos {
 	SEL_ROOT_INO = 2,
@@ -182,6 +183,8 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
 		selinux_status_update_setenforce(state, new_value);
 		if (!new_value)
 			call_blocking_lsm_notifier(LSM_POLICY_CHANGE, NULL);
+
+		selinux_ima_measure_state(state);
 	}
 	length = count;
 out:
@@ -563,17 +566,13 @@ static int sel_make_policy_nodes(struct selinux_fs_info *fsi,
 
 	ret = sel_make_bools(newpolicy, tmp_bool_dir, &tmp_bool_num,
 			     &tmp_bool_names, &tmp_bool_values);
-	if (ret) {
-		pr_err("SELinux: failed to load policy booleans\n");
+	if (ret)
 		goto out;
-	}
 
 	ret = sel_make_classes(newpolicy, tmp_class_dir,
 			       &fsi->last_class_ino);
-	if (ret) {
-		pr_err("SELinux: failed to load policy classes\n");
+	if (ret)
 		goto out;
-	}
 
 	/* booleans */
 	old_dentry = fsi->bool_dir;
@@ -620,13 +619,6 @@ static ssize_t sel_write_load(struct file *file, const char __user *buf,
 	ssize_t length;
 	void *data = NULL;
 
-	/* no partial writes */
-	if (*ppos)
-		return -EINVAL;
-	/* no empty policies */
-	if (!count)
-		return -EINVAL;
-
 	mutex_lock(&fsi->state->policy_mutex);
 
 	length = avc_has_perm(&selinux_state,
@@ -635,34 +627,41 @@ static ssize_t sel_write_load(struct file *file, const char __user *buf,
 	if (length)
 		goto out;
 
+	/* No partial writes. */
+	length = -EINVAL;
+	if (*ppos != 0)
+		goto out;
+
+	length = -ENOMEM;
 	data = vmalloc(count);
-	if (!data) {
-		length = -ENOMEM;
+	if (!data)
 		goto out;
-	}
-	if (copy_from_user(data, buf, count) != 0) {
-		length = -EFAULT;
+
+	length = -EFAULT;
+	if (copy_from_user(data, buf, count) != 0)
 		goto out;
-	}
 
 	length = security_load_policy(fsi->state, data, count, &load_state);
 	if (length) {
 		pr_warn_ratelimited("SELinux: failed to load policy\n");
 		goto out;
 	}
+
 	length = sel_make_policy_nodes(fsi, load_state.policy);
 	if (length) {
+		pr_warn_ratelimited("SELinux: failed to initialize selinuxfs\n");
 		selinux_policy_cancel(fsi->state, &load_state);
 		goto out;
 	}
 
 	selinux_policy_commit(fsi->state, &load_state);
+
 	length = count;
+
 	audit_log(audit_context(), GFP_KERNEL, AUDIT_MAC_POLICY_LOAD,
 		"auid=%u ses=%u lsm=selinux res=1",
 		from_kuid(&init_user_ns, audit_get_loginuid(current)),
 		audit_get_sessionid(current));
-
 out:
 	mutex_unlock(&fsi->state->policy_mutex);
 	vfree(data);
@@ -762,6 +761,9 @@ static ssize_t sel_write_checkreqprot(struct file *file, const char __user *buf,
 
 	checkreqprot_set(fsi->state, (new_value ? 1 : 0));
 	length = count;
+
+	selinux_ima_measure_state(fsi->state);
+
 out:
 	kfree(page);
 	return length;
@@ -2206,8 +2208,8 @@ static struct file_system_type sel_fs_type = {
 	.kill_sb	= sel_kill_sb,
 };
 
-struct vfsmount *selinuxfs_mount;
-struct path selinux_null;
+static struct vfsmount *selinuxfs_mount __ro_after_init;
+struct path selinux_null __ro_after_init;
 
 static int __init init_sel_fs(void)
 {

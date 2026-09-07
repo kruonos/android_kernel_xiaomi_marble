@@ -25,7 +25,6 @@ files can be found in mm/swap.c.
 Currently, these files are in /proc/sys/vm:
 
 - admin_reserve_kbytes
-- block_dump
 - compact_memory
 - compaction_proactiveness
 - compact_unevictable_allowed
@@ -38,10 +37,8 @@ Currently, these files are in /proc/sys/vm:
 - dirty_writeback_centisecs
 - drop_caches
 - extfrag_threshold
-- extra_free_kbytes
 - highmem_is_dirtyable
 - hugetlb_shm_group
-- kswapd_threads
 - laptop_mode
 - legacy_va_layout
 - lowmem_reserve_ratio
@@ -66,7 +63,7 @@ Currently, these files are in /proc/sys/vm:
 - overcommit_ratio
 - page-cluster
 - panic_on_oom
-- percpu_pagelist_fraction
+- percpu_pagelist_high_fraction
 - stat_interval
 - stat_refresh
 - numa_stat
@@ -108,13 +105,6 @@ On x86_64 this is about 128MB.
 Changing this takes effect whenever an application requests memory.
 
 
-block_dump
-==========
-
-block_dump enables block I/O debugging when set to a nonzero value. More
-information on block I/O debugging is in Documentation/admin-guide/laptops/laptop-mode.rst.
-
-
 compact_memory
 ==============
 
@@ -128,7 +118,7 @@ compaction_proactiveness
 
 This tunable takes a value in the range [0, 100] with a default value of
 20. This tunable determines how aggressively compaction is done in the
-background. On write of non zero value to this tunable will immediately
+background. Write of a non zero value to this tunable will immediately
 trigger the proactive compaction. Setting it to 0 disables proactive compaction.
 
 Note that compaction has a non-trivial system-wide impact as pages
@@ -149,7 +139,7 @@ This should be used on systems where stalls for minor page faults are an
 acceptable trade for large contiguous free memory.  Set to 0 to prevent
 compaction from moving pages that are unevictable.  Default value is 1.
 On CONFIG_PREEMPT_RT the default value is 0 in order to avoid a page fault, due
-to compaction, which would block the task from becomming active until the fault
+to compaction, which would block the task from becoming active until the fault
 is resolved.
 
 
@@ -310,46 +300,12 @@ only use the low memory and they can fill it up with dirty data without
 any throttling.
 
 
-extra_free_kbytes
-
-This parameter tells the VM to keep extra free memory between the threshold
-where background reclaim (kswapd) kicks in, and the threshold where direct
-reclaim (by allocating processes) kicks in.
-
-This is useful for workloads that require low latency memory allocations
-and have a bounded burstiness in memory allocations, for example a
-realtime application that receives and transmits network traffic
-(causing in-kernel memory allocations) with a maximum total message burst
-size of 200MB may need 200MB of extra free memory to avoid direct reclaim
-related latencies.
-
-==============================================================
-
 hugetlb_shm_group
 =================
 
 hugetlb_shm_group contains group id that is allowed to create SysV
 shared memory segment using hugetlb page.
 
-kswapd_threads
-==============
-kswapd_threads allows you to control the number of kswapd threads per node
-running on the system. This provides the ability to devote additional CPU
-resources toward proactive page replacement with the goal of reducing
-direct reclaims. When direct reclaims are prevented, the CPU consumed
-by them is prevented as well. Depending on the workload, the result can
-cause aggregate CPU usage on the system to go up, down or stay the same.
-
-More aggressive page replacement can reduce direct reclaims which cause
-latency for tasks and decrease throughput when doing filesystem IO through
-the pagecache. Direct reclaims are recorded using the allocstall counter
-in /proc/vmstat.
-
-The default value is 1 and the range of acceptible values are 1-16.
-Always start with lower values in the 2-6 range. Higher values should
-be justified with testing. If direct reclaims occur in spite of high
-values, the cost of direct reclaims (in latency) that occur can be
-higher due to increased lock contention.
 
 laptop_mode
 ===========
@@ -465,7 +421,7 @@ While most applications need less than a thousand maps, certain
 programs, particularly malloc debuggers, may consume lots of them,
 e.g., up to one or two maps per allocation.
 
-The default value is 65536.
+The default value is 65530.
 
 
 memory_failure_early_kill:
@@ -827,22 +783,24 @@ panic_on_oom=2+kdump gives you very strong tool to investigate
 why oom happens. You can get snapshot.
 
 
-percpu_pagelist_fraction
-========================
+percpu_pagelist_high_fraction
+=============================
 
-This is the fraction of pages at most (high mark pcp->high) in each zone that
-are allocated for each per cpu page list.  The min value for this is 8.  It
-means that we don't allow more than 1/8th of pages in each zone to be
-allocated in any single per_cpu_pagelist.  This entry only changes the value
-of hot per cpu pagelists.  User can specify a number like 100 to allocate
-1/100th of each zone to each per cpu page list.
+This is the fraction of pages in each zone that are can be stored to
+per-cpu page lists. It is an upper boundary that is divided depending
+on the number of online CPUs. The min value for this is 8 which means
+that we do not allow more than 1/8th of pages in each zone to be stored
+on per-cpu page lists. This entry only changes the value of hot per-cpu
+page lists. A user can specify a number like 100 to allocate 1/100th of
+each zone between per-cpu lists.
 
-The batch value of each per cpu pagelist is also updated as a result.  It is
-set to pcp->high/4.  The upper limit of batch is (PAGE_SHIFT * 8)
+The batch value of each per-cpu page list remains the same regardless of
+the value of the high fraction so allocation latencies are unaffected.
 
-The initial value is zero.  Kernel does not use this value at boot time to set
-the high water marks for each per cpu page list.  If the user writes '0' to this
-sysctl, it will revert to this default behavior.
+The initial value is zero. Kernel uses this value to set the high pcp->high
+mark based on the low watermark for the zone and the number of local
+online CPUs.  If the user writes '0' to this sysctl, it will revert to
+this default behavior.
 
 
 stat_interval
@@ -973,12 +931,12 @@ allocations, THP and hugetlbfs pages.
 
 To make it sensible with respect to the watermark_scale_factor
 parameter, the unit is in fractions of 10,000. The default value of
-15,000 on !DISCONTIGMEM configurations means that up to 150% of the high
-watermark will be reclaimed in the event of a pageblock being mixed due
-to fragmentation. The level of reclaim is determined by the number of
-fragmentation events that occurred in the recent past. If this value is
-smaller than a pageblock then a pageblocks worth of pages will be reclaimed
-(e.g.  2MB on 64-bit x86). A boost factor of 0 will disable the feature.
+15,000 means that up to 150% of the high watermark will be reclaimed in the
+event of a pageblock being mixed due to fragmentation. The level of reclaim
+is determined by the number of fragmentation events that occurred in the
+recent past. If this value is smaller than a pageblock then a pageblocks
+worth of pages will be reclaimed (e.g.  2MB on 64-bit x86). A boost factor
+of 0 will disable the feature.
 
 
 watermark_scale_factor

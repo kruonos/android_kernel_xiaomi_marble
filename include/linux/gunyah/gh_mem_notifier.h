@@ -37,7 +37,7 @@ static inline void *gh_mem_notifier_register(enum gh_mem_notifier_tag tag,
 				      gh_mem_notifier_handler notif_handler,
 				      void *data)
 {
-	return ERR_PTR(-ENOTSUPP);
+	return ERR_PTR(-EOPNOTSUPP);
 }
 
 static inline void gh_mem_notifier_unregister(void *cookie)

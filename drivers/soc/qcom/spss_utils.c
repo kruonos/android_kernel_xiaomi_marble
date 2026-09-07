@@ -75,9 +75,8 @@ static bool is_ssr_disabled;
 #define CMAC_SIZE_IN_BYTES (128/8) /* 128 bit = 16 bytes */
 #define CMAC_SIZE_IN_DWORDS (CMAC_SIZE_IN_BYTES/sizeof(u32)) /* 4 dwords */
 
-/* MCP code size register holds size divided by a factor
- * To get the actual size, need to multiply by the same factor
- */
+// MCP code size register holds size divided by a factor
+// To get the actual size, need to multiply by the same factor
 #define MCP_SIZE_MUL_FACTOR (4)
 
 static u32 pil_addr;
@@ -215,6 +214,7 @@ static ssize_t spss_debug_reg_show(struct device *dev,
 	void __iomem *spss_debug_reg1 = NULL;
 	void __iomem *spss_debug_reg3 = NULL;
 	u32 val1, val2, val3, val4, val7, val8;
+
 	if (!dev || !attr || !buf) {
 		pr_err("invalid param.\n");
 		return -EINVAL;
@@ -603,7 +603,6 @@ static long spss_utils_ioctl(struct file *file,
 			pr_err("cmd [0x%x] copy_to_user failed - %d\n", cmd, ret);
 			return ret;
 		}
-
 		break;
 
 	case SPSS_IOC_IS_EVENT_SIGNALED:
@@ -747,9 +746,8 @@ static int get_pil_size(phys_addr_t base_addr)
 	pil_size = readl_relaxed(spss_code_size_reg);
 	iounmap(spss_code_size_reg);
 
-	/* Multiply the value read from code size register by factor
-	 * to get the actual size (see MCP_SIZE_MUL_FACTOR documentation)
-	 */
+	// Multiply the value read from code size register by factor
+	// to get the actual size (see MCP_SIZE_MUL_FACTOR documentation)
 	pil_size *= MCP_SIZE_MUL_FACTOR;
 
 	if (pil_size % SZ_4K) {

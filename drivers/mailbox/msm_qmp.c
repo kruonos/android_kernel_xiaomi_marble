@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/io.h>
@@ -213,7 +212,6 @@ struct qmp_device {
 
 	void *ilc;
 	bool early_boot;
-	bool hibernate_entry;
 };
 
 /**
@@ -394,9 +392,6 @@ static int qmp_send_data(struct mbox_chan *chan, void *data)
 
 	mdev = mbox->mdev;
 
-	if (mdev->hibernate_entry)
-		return -ENXIO;
-
 	spin_lock_irqsave(&mbox->tx_lock, flags);
 	addr = mbox->desc + mbox->mcore_mbox_offset;
 	if (mbox->tx_sent) {
@@ -506,6 +501,24 @@ static void qmp_recv_data(struct qmp_mbox *mbox, u32 mbox_of)
 	send_irq(mbox->mdev);
 }
 
+void qmp_rx_callback(void *rx_bf, void *priv, u32 len)
+{
+	struct qmp_mbox *mbox = NULL;
+	struct qmp_pkt pkt;
+
+	if (!rx_bf || !priv || !len) {
+		pr_err("Invalid packet\n");
+		return;
+	}
+
+	mbox = (struct qmp_mbox *)priv;
+	pkt.size = len;
+	pkt.data = rx_bf;
+
+	QMP_INFO(mbox->mdev->ilc, "rx_buf = %s\n", (char *)rx_bf);
+	mbox_chan_received_data(&mbox->ctrl.chans[mbox->idx_in_flight], &pkt);
+}
+
 /**
  * init_mcore_state() - initialize the mcore state of a mailbox.
  * @mdev:	mailbox device to be initialized.
@@ -532,16 +545,6 @@ static void init_mcore_state(struct qmp_mbox *mbox)
 static irqreturn_t qmp_irq_handler(int irq, void *priv)
 {
 	struct qmp_device *mdev = (struct qmp_device *)priv;
-
-	/* QMP comes very early in cold boot, so there is
-	 * a chance to miss the interrupt from remote qmp.
-	 * In case of hibernate, early interrupt corrupts the
-	 * QMP state machine and endup with invalid values.
-	 * By ignore the first interrupt after hibernate exit
-	 * this can be avoided.
-	 */
-	if (mdev->hibernate_entry && mdev->early_boot)
-		return IRQ_NONE;
 
 	if (mdev->rx_reset_reg)
 		writel_relaxed(mdev->irq_mask, mdev->rx_reset_reg);
@@ -821,6 +824,7 @@ static void qmp_shim_worker(struct work_struct *work)
 		if (!send)
 			continue;
 
+		mbox->idx_in_flight = i;
 		QMP_INFO(mdev->ilc, "Calling qmp_send msg:%s\n", pkt->data);
 		rc = qmp_send(mbox->mdev->qmp, pkt->data, pkt->size);
 
@@ -853,9 +857,6 @@ static int qmp_shim_send_data(struct mbox_chan *chan, void *data)
 		return -EINVAL;
 
 	mdev = mbox->mdev;
-
-	if (mdev->hibernate_entry)
-		return -ENXIO;
 
 	if (pkt->size > SZ_4K)
 		return -EINVAL;
@@ -971,7 +972,6 @@ static int qmp_mbox_init(struct device_node *n, struct qmp_device *mdev)
 	INIT_DELAYED_WORK(&mbox->dwork, qmp_notify_timeout);
 	mbox->suspend_flag = false;
 
-	mdev->hibernate_entry = false;
 	mdev_add_mbox(mdev, mbox);
 	return 0;
 }
@@ -1070,9 +1070,10 @@ static int qmp_shim_init(struct platform_device *pdev, struct qmp_device *mdev)
 		return rc;
 	}
 	mdev_add_mbox(mdev, mbox);
+	qmp_register_rx_cb(mdev->qmp, (void *)mbox, qmp_rx_callback);
+
 	mdev->ilc = ipc_log_context_create(QMP_IPC_LOG_PAGE_CNT, mdev->name, 0);
 
-	mdev->hibernate_entry = false;
 	return 0;
 }
 
@@ -1225,10 +1226,6 @@ static int qmp_mbox_probe(struct platform_device *pdev)
 
 static int qmp_mbox_freeze(struct device *dev)
 {
-	struct qmp_device *mdev = dev_get_drvdata(dev);
-
-	mdev->hibernate_entry = true;
-	dev_info(dev, "QMP: Hibernate entry\n");
 	return 0;
 }
 
@@ -1236,11 +1233,6 @@ static int qmp_mbox_restore(struct device *dev)
 {
 	struct qmp_device *mdev = dev_get_drvdata(dev);
 	struct qmp_mbox *mbox;
-	struct device_node *edge_node = dev->of_node;
-
-	/* skip negotiation if device has shim layer */
-	if (of_parse_phandle(edge_node, "qcom,qmp", 0))
-		goto end;
 
 	list_for_each_entry(mbox, &mdev->mboxes, list) {
 		mbox->local_state = LINK_DISCONNECTED;
@@ -1259,11 +1251,6 @@ static int qmp_mbox_restore(struct device *dev)
 			__qmp_rx_worker(mbox);
 	}
 
-end:
-	if (mdev->hibernate_entry)
-		mdev->hibernate_entry = false;
-
-	dev_info(dev, "QMP: Hibernate exit\n");
 	return 0;
 }
 
@@ -1271,6 +1258,7 @@ static const struct dev_pm_ops qmp_mbox_pm_ops = {
 	.freeze_late = qmp_mbox_freeze,
 	.restore_early = qmp_mbox_restore,
 };
+
 static const struct of_device_id qmp_mbox_dt_match[] = {
 	{ .compatible = "qcom,qmp-mbox" },
 	{},

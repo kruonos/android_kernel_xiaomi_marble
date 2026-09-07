@@ -1,390 +1,338 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
-#ifndef _UAPI_LINUX_GUNYAH_H
-#define _UAPI_LINUX_GUNYAH_H
+#ifndef _UAPI_LINUX_GUNYAH
+#define _UAPI_LINUX_GUNYAH
 
 /*
  * Userspace interface for /dev/gunyah - gunyah based virtual machine
+ *
+ * Note: this interface is considered experimental and may change without
+ *       notice.
  */
 
 #include <linux/types.h>
 #include <linux/ioctl.h>
+#include <linux/virtio_types.h>
 
-#define GUNYAH_IOCTL_TYPE 'G'
+#define GH_IOCTL_TYPE			0xB2
+
+/*
+ * fw_name is used to find the secure VM image by name to be loaded.
+ */
+#define GH_VM_FW_NAME_MAX		16
+
+/** @struct gh_fw_name
+ * A structure to be passed to GH_VM_SET_FM_NAME ioctl
+ * @name - name of the secure VM image
+ */
+struct gh_fw_name {
+	char name[GH_VM_FW_NAME_MAX];
+};
+
+#define VBE_ASSIGN_IOEVENTFD	1
+#define VBE_DEASSIGN_IOEVENTFD	2
+
+#define VBE_ASSIGN_IRQFD	1
+#define VBE_DEASSIGN_IRQFD	2
+
+#define EVENT_NEW_BUFFER	1
+#define EVENT_RESET_RQST	2
+#define EVENT_INTERRUPT_ACK	4
+#define EVENT_DRIVER_OK		8
+#define EVENT_DRIVER_FAILED	0x10
+#define EVENT_MODULE_EXIT	0x20
+#define EVENT_VM_EXIT		0x40
+#define EVENT_APP_EXIT		0x100
+
+/*
+ * gh_vm_exit_reasons specifies the various reasons why
+ * the secondary VM ended its execution. VCPU_RUN returns these values
+ * to userspace.
+ */
+#define GH_VM_EXIT_REASON_UNKNOWN		0
+#define GH_VM_EXIT_REASON_SHUTDOWN		1
+#define GH_VM_EXIT_REASON_RESTART		2
+#define GH_VM_EXIT_REASON_PANIC			3
+#define GH_VM_EXIT_REASON_NSWD			4
+#define GH_VM_EXIT_REASON_HYP_ERROR		5
+#define GH_VM_EXIT_REASON_ASYNC_EXT_ABORT	6
+#define GH_VM_EXIT_REASON_FORCE_STOPPED		7
+#define GH_VM_EXIT_REASONS_MAX			8
 
 /*
  * ioctls for /dev/gunyah fds:
  */
-#define GUNYAH_CREATE_VM _IO(GUNYAH_IOCTL_TYPE, 0x0) /* Returns a Gunyah VM fd */
+/**
+ * GH_CREATE_VM - Driver creates a VM sepecific structure. An anon file is
+ *		  also created per VM. This would be the first IOCTL made
+ *		  on /dev/gunyah node to obtain a per VM fd for futher
+ *		  VM specific operations like VCPU creation, memory etc.
+ *
+ * Return: an fd for the per VM file created, -errno on failure
+ */
+#define GH_CREATE_VM			_IO(GH_IOCTL_TYPE, 0x01)
 
 /*
- * ioctls for gunyah-vm fds (returned by GUNYAH_CREATE_VM)
+ * ioctls for VM fd.
  */
+/**
+ * GH_CREATE_VCPU - Driver creates a VCPU sepecific structure. It takes
+ *		    vcpu id as the input. This also creates an anon file
+ *		    per vcpu which is used for further vcpu specific
+ *		    operations.
+ *
+ * Return: an fd for the per VCPU file created, -errno on failure
+ */
+#define GH_CREATE_VCPU			_IO(GH_IOCTL_TYPE, 0x40)
+/*
+ * ioctls for VM properties
+ */
+/**
+ * GH_VM_SET_FW_NAME - Userspace will specify the name of the firmware
+ *		       image that needs to be loaded into VM's memory
+ *		       after authentication. The loaded VM memory details
+ *		       are forwarded to Gunyah Hypervisor underneath.
+ *
+ * Input: gh_fw_name structure with Secure VM name as name attribute of
+ *        the struct.
+ * Return: 0 if success, -errno on failure
+ */
+#define GH_VM_SET_FW_NAME		_IOW(GH_IOCTL_TYPE, 0x41, struct gh_fw_name)
+/**
+ * GH_VM_GET_FW_NAME - Userspace can use this IOCTL to query the name of
+ *		       the secure VM image that was loaded.
+ *
+ * Input: gh_fw_name structure to be filled with Secure VM name as the
+ *	  name attribute of the struct.
+ * Return: 0 if success and firmware name in struct fw_name that
+ *         represents the firmware image name currently associated with
+ *         the VM if a call to GH_VM_SET_FW_NAME ioctl previously was
+ *         successful, -errno on failure
+ */
+#define GH_VM_GET_FW_NAME		_IOR(GH_IOCTL_TYPE, 0x42, struct gh_fw_name)
+/**
+ * GH_VM_GET_VCPU_COUNT - Userspace can use this IOCTL to query the number
+ *			  of vcpus that are supported for the VM. Userspace
+ *			  can further use this count to create VCPUs.
+ *
+ * Return: nr_vcpus for proxy scheduled VMs, 1 for hypervisor scheduled VMs,
+ *         -errno on failure
+ */
+#define GH_VM_GET_VCPU_COUNT		_IO(GH_IOCTL_TYPE, 0x43)
+/*
+ *  IOCTLs supported by virtio backend driver
+ */
+/**
+ * GH_GET_SHARED_MEMORY_SIZE - Userspace can use this IOCTL to query the virtio
+ *                             shared memory size of the VM. Userpsace can use
+ *                             it for mmap.
+ *
+ * Input: 64 bit unsigned integer variable to be filled with shared memory size.
+ *
+ * Return: 0 if success with shared memory size as u64 in the third argument,
+ *         -errno on failure
+ */
+#define GH_GET_SHARED_MEMORY_SIZE	_IOR(GH_IOCTL_TYPE, 0x61, __u64)
+/**
+ * GH_IOEVENTFD - Eventfd created in userspace is passed to kernel using this
+ *                ioctl. Userspace is signalled by virtio backend driver through
+ *                this fd when data is available in the ring.
+ *
+ * Input: virtio_eventfd structure with required attributes.
+ *
+ * Return: 0 if success, -errno on failure
+ */
+#define GH_IOEVENTFD		_IOW(GH_IOCTL_TYPE, 0x62, \
+						struct virtio_eventfd)
+/**
+ * GH_IRQFD - Eventfd created in userspace is passed to kernel using this ioctl.
+ *            Virtio backned driver is signalled by userspace using this fd when
+ *            the ring is serviced.
+ *
+ * Input: virtio_irqfd structure with required attributes.
+ *
+ * Return: 0 if success, -errno on failure
+ */
+#define GH_IRQFD			_IOW(GH_IOCTL_TYPE, 0x63, \
+						struct virtio_irqfd)
+/**
+ * GH_WAIT_FOR_EVENT - Userspace waits for events from the virtio backend driver
+ *                     for indefinite time. For example when hypervisor detects
+ *                     a DRIVER_OK event, it is passed to userspace using this
+ *                     ioctl.
+ *
+ * Input: virtio_event structure with required attributes.
+ *
+ * Return: 0 if success, with the event data in struct virtio_event
+ *         -errno on failure
+ */
+#define GH_WAIT_FOR_EVENT        _IOWR(GH_IOCTL_TYPE, 0x64, \
+						struct virtio_event)
 
 /**
- * struct gunyah_vm_dtb_config - Set the location of the VM's devicetree blob
- * @guest_phys_addr: Address of the VM's devicetree in guest memory.
- * @size: Maximum size of the devicetree including space for overlays.
- *        Resource manager applies an overlay to the DTB and dtb_size should
- *        include room for the overlay. A page of memory is typicaly plenty.
+ * GH_SET_DEVICE_FEATURES - This ioctl writes virtio device features supported
+ *                          by the userspace to a page that is shared with
+ *                          guest VM.
+ *
+ * Input: virtio_dev_features structure with required attributes.
+ *
+ * Return: 0 if success, -errno on failure
  */
-struct gunyah_vm_dtb_config {
-	__u64 guest_phys_addr;
-	__u64 size;
-};
-#define GUNYAH_VM_SET_DTB_CONFIG	_IOW(GUNYAH_IOCTL_TYPE, 0x2, struct gunyah_vm_dtb_config)
-
-#define GUNYAH_VM_START		_IO(GUNYAH_IOCTL_TYPE, 0x3)
-
+#define GH_SET_DEVICE_FEATURES        _IOW(GH_IOCTL_TYPE, 0x65, \
+						struct virtio_dev_features)
 /**
- * enum gunyah_fn_type - Valid types of Gunyah VM functions
- * @GUNYAH_FN_VCPU: create a vCPU instance to control a vCPU
- *              &struct gunyah_fn_desc.arg is a pointer to &struct gunyah_fn_vcpu_arg
- *              Return: file descriptor to manipulate the vcpu.
- * @GUNYAH_FN_IRQFD: register eventfd to assert a Gunyah doorbell
- *               &struct gunyah_fn_desc.arg is a pointer to &struct gunyah_fn_irqfd_arg
- * @GUNYAH_FN_IOEVENTFD: register ioeventfd to trigger when VM faults on parameter
- *                   &struct gunyah_fn_desc.arg is a pointer to &struct gunyah_fn_ioeventfd_arg
+ * GH_SET_QUEUE_NUM_MAX - This ioctl writes max virtio queue size supported by
+ *                        the userspace to a page that is shared with guest VM.
+ *
+ * Input: virtio_queue_max structure with required attributes.
+ *
+ * Return: 0 if success, -errno on failure
  */
-enum gunyah_fn_type {
-	GUNYAH_FN_VCPU = 1,
-	GUNYAH_FN_IRQFD,
-	GUNYAH_FN_IOEVENTFD,
-};
-
-#define GUNYAH_FN_MAX_ARG_SIZE		256
-
+#define GH_SET_QUEUE_NUM_MAX        _IOW(GH_IOCTL_TYPE, 0x66, \
+						struct virtio_queue_max)
 /**
- * struct gunyah_fn_vcpu_arg - Arguments to create a vCPU.
- * @id: vcpu id
+ * GH_SET_DEVICE_CONFIG_DATA - This ioctl writes device configuration data
+ *                             to a page that is shared with guest VM.
  *
- * Create this function with &GUNYAH_VM_ADD_FUNCTION using type &GUNYAH_FN_VCPU.
+ * Input: virtio_config_data structure with required attributes.
  *
- * The vcpu type will register with the VM Manager to expect to control
- * vCPU number `vcpu_id`. It returns a file descriptor allowing interaction with
- * the vCPU. See the Gunyah vCPU API description sections for interacting with
- * the Gunyah vCPU file descriptors.
+ * Return: 0 if success, -errno on failure
  */
-struct gunyah_fn_vcpu_arg {
-	__u32 id;
-};
-
+#define GH_SET_DEVICE_CONFIG_DATA        _IOW(GH_IOCTL_TYPE, 0x67, \
+						struct virtio_config_data)
 /**
- * enum gunyah_irqfd_flags - flags for use in gunyah_fn_irqfd_arg
- * @GUNYAH_IRQFD_FLAGS_LEVEL: make the interrupt operate like a level triggered
- *                        interrupt on guest side. Triggering IRQFD before
- *                        guest handles the interrupt causes interrupt to
- *                        stay asserted.
+ * GH_GET_DRIVER_CONFIG_DATA - This ioctl reads the driver supported virtio
+ *                             device configuration data from a page that is
+ *                             shared with guest VM.
+ *
+ * Input: virtio_config_data structure with required attributes.
+ *
+ * Return: 0 if success with driver config data in struct virtio_config_data,
+ *         -errno on failure
  */
-enum gunyah_irqfd_flags {
-	GUNYAH_IRQFD_FLAGS_LEVEL		= 1UL << 0,
-};
-
+#define GH_GET_DRIVER_CONFIG_DATA        _IOWR(GH_IOCTL_TYPE, 0x68, \
+						struct virtio_config_data)
 /**
- * struct gunyah_fn_irqfd_arg - Arguments to create an irqfd function.
+ * GH_GET_QUEUE_INFO - This ioctl reads the driver supported virtqueue info from
+ *                     a page that is shared with guest VM.
  *
- * Create this function with &GUNYAH_VM_ADD_FUNCTION using type &GUNYAH_FN_IRQFD.
+ * Input: virtio_queue_info structure with required attributes.
  *
- * Allows setting an eventfd to directly trigger a guest interrupt.
- * irqfd.fd specifies the file descriptor to use as the eventfd.
- * irqfd.label corresponds to the doorbell label used in the guest VM's devicetree.
- *
- * @fd: an eventfd which when written to will raise a doorbell
- * @label: Label of the doorbell created on the guest VM
- * @flags: see &enum gunyah_irqfd_flags
- * @padding: padding bytes
+ * Return: 0 if success with virtqueue info in struct virtio_queue_info,
+ *         -errno on failure
  */
-struct gunyah_fn_irqfd_arg {
-	__u32 fd;
+#define GH_GET_QUEUE_INFO        _IOWR(GH_IOCTL_TYPE, 0x69, \
+						struct virtio_queue_info)
+/**
+ * GH_GET_DRIVER_FEATURES - This ioctl reads the driver supported features from
+ *                          a page that is shared with guest VM.
+ *
+ * Input: virtio_driver_features structure with required attributes.
+ *
+ * Return: 0 if success with driver features in struct virtio_driver_features,
+ *         -errno on failure
+ */
+#define GH_GET_DRIVER_FEATURES        _IOWR(GH_IOCTL_TYPE, 0x6a, \
+						struct virtio_driver_features)
+/**
+ * GH_ACK_DRIVER_OK - This ioctl acknowledges the DRIVER_OK event from virtio
+ *                    backend driver.
+ *
+ * Input: 32 bit unsigned integer virtio device label.
+ *
+ * Return: 0 if success, -errno on failure
+ */
+#define GH_ACK_DRIVER_OK        _IOWR(GH_IOCTL_TYPE, 0x6b, __u32)
+/**
+ * GH_ACK_RESET - This ioctl acknowledges the RESET event from virtio
+ *                backend driver.
+ *
+ * Input: virtio_ack_reset structure with required attributes.
+ *
+ * Return: 0 if success, -errno on failure
+ */
+#define GH_ACK_RESET		_IOW(GH_IOCTL_TYPE, 0x6d, struct virtio_ack_reset)
+
+/*
+ * ioctls for vcpu fd.
+ */
+/**
+ * GH_VCPU_RUN - This command is used to run the vcpus created. VCPU_RUN
+ *		 is called on vcpu fd created previously. VCPUs are
+ *		 started individually if proxy scheduling is chosen as the
+ *		 scheduling policy and vcpus are started simultaneously
+ *		 in case of VMs whose scheduling is controlled by the
+ *		 hypervisor. In the latter case, VCPU_RUN is blocked
+ *		 until the VM terminates.
+ *
+ * Return: Reason for vm termination, -errno on failure
+ */
+#define GH_VCPU_RUN			_IO(GH_IOCTL_TYPE, 0x80)
+
+struct virtio_ack_reset {
 	__u32 label;
-	__u32 flags;
-	__u32 padding;
-};
-
-/**
- * enum gunyah_ioeventfd_flags - flags for use in gunyah_fn_ioeventfd_arg
- * @GUNYAH_IOEVENTFD_FLAGS_DATAMATCH: the event will be signaled only if the
- *                                written value to the registered address is
- *                                equal to &struct gunyah_fn_ioeventfd_arg.datamatch
- */
-enum gunyah_ioeventfd_flags {
-	GUNYAH_IOEVENTFD_FLAGS_DATAMATCH	= 1UL << 0,
-};
-
-/**
- * struct gunyah_fn_ioeventfd_arg - Arguments to create an ioeventfd function
- * @datamatch: data used when GUNYAH_IOEVENTFD_DATAMATCH is set
- * @addr: Address in guest memory
- * @len: Length of access
- * @fd: When ioeventfd is matched, this eventfd is written
- * @flags: See &enum gunyah_ioeventfd_flags
- * @padding: padding bytes
- *
- * Create this function with &GUNYAH_VM_ADD_FUNCTION using type &GUNYAH_FN_IOEVENTFD.
- *
- * Attaches an ioeventfd to a legal mmio address within the guest. A guest write
- * in the registered address will signal the provided event instead of triggering
- * an exit on the GUNYAH_VCPU_RUN ioctl.
- */
-struct gunyah_fn_ioeventfd_arg {
-	__u64 datamatch;
-	__u64 addr;        /* legal mmio address */
-	__u32 len;         /* 1, 2, 4, or 8 bytes; or 0 to ignore length */
-	__s32 fd;
-	__u32 flags;
-	__u32 padding;
-};
-
-/**
- * struct gunyah_fn_desc - Arguments to create a VM function
- * @type: Type of the function. See &enum gunyah_fn_type.
- * @arg_size: Size of argument to pass to the function. arg_size <= GUNYAH_FN_MAX_ARG_SIZE
- * @arg: Pointer to argument given to the function. See &enum gunyah_fn_type for expected
- *       arguments for a function type.
- */
-struct gunyah_fn_desc {
-	__u32 type;
-	__u32 arg_size;
-	__u64 arg;
-};
-
-#define GUNYAH_VM_ADD_FUNCTION	_IOW(GUNYAH_IOCTL_TYPE, 0x4, struct gunyah_fn_desc)
-#define GUNYAH_VM_REMOVE_FUNCTION	_IOW(GUNYAH_IOCTL_TYPE, 0x7, struct gunyah_fn_desc)
-
-/**
- * enum gunyah_map_flags- Possible flags on &struct gunyah_map_mem_args
- * @GUNYAH_MEM_DEFAULT_SHARE: Use default host access for the VM type
- * @GUNYAH_MEM_FORCE_LEND: Force unmapping the memory once the guest starts to use
- * @GUNYAH_MEM_FORCE_SHARE: Allow host to continue accessing memory when guest starts to use
- * @GUNYAH_MEM_ALLOW_READ: Allow guest to read memory
- * @GUNYAH_MEM_ALLOW_WRITE: Allow guest to write to the memory
- * @GUNYAH_MEM_ALLOW_EXEC: Allow guest to execute instructions in the memory
- */
-enum gunyah_map_flags {
-	GUNYAH_MEM_ALLOW_READ = 1UL << 0,
-	GUNYAH_MEM_ALLOW_WRITE = 1UL << 1,
-	GUNYAH_MEM_ALLOW_EXEC = 1UL << 2,
-	GUNYAH_MEM_ALLOW_RWX =
-		(GUNYAH_MEM_ALLOW_READ | GUNYAH_MEM_ALLOW_WRITE | GUNYAH_MEM_ALLOW_EXEC),
-	GUNYAH_MEM_DEFAULT_ACCESS = 0x00,
-	GUNYAH_MEM_FORCE_LEND = 0x10,
-	GUNYAH_MEM_FORCE_SHARE = 0x20,
-#define GUNYAH_MEM_ACCESS_MASK 0x70
-
-	GUNYAH_MEM_UNMAP = 1UL << 8,
-};
-
-/**
- * struct gunyah_map_mem_args - Description to provide guest memory into a VM
- * @guest_addr: Location in guest address space to place the memory
- * @flags: See &enum gunyah_map_flags.
- * @guest_mem_fd: File descriptor created by GUNYAH_CREATE_GUEST_MEM
- * @offset: Offset into the guest memory file
- */
-struct gunyah_map_mem_args {
-	__u64 guest_addr;
-	__u32 flags;
-	__u32 guest_mem_fd;
-	__u64 offset;
-	__u64 size;
-};
-
-#define GUNYAH_VM_MAP_MEM _IOW(GUNYAH_IOCTL_TYPE, 0x9, struct gunyah_map_mem_args)
-
-enum gunyah_vm_boot_context_reg {
-	REG_SET_X		= 0,
-	REG_SET_PC		= 1,
-	REG_SET_SP		= 2,
-};
-
-#define GUNYAH_VM_BOOT_CONTEXT_REG_SHIFT	8
-#define GUNYAH_VM_BOOT_CONTEXT_REG(reg, idx) (((reg & 0xff) << GUNYAH_VM_BOOT_CONTEXT_REG_SHIFT) |\
-					      (idx & 0xff))
-
-/**
- * struct gunyah_vm_boot_context - Set an initial register for the VM
- * @reg: Register to set. See GUNYAH_VM_BOOT_CONTEXT_REG_* macros
- * @reserved: reserved for alignment
- * @value: value to fill in the register
- */
-struct gunyah_vm_boot_context {
-	__u32 reg;
 	__u32 reserved;
-	__u64 value;
-};
-#define GUNYAH_VM_SET_BOOT_CONTEXT	_IOW(GUNYAH_IOCTL_TYPE, 0xa, struct gunyah_vm_boot_context)
-
-/*
- * ioctls for vCPU fds
- */
-
-/**
- * enum gunyah_vm_status - Stores status reason why VM is not runnable (exited).
- * @GUNYAH_VM_STATUS_LOAD_FAILED: VM didn't start because it couldn't be loaded.
- * @GUNYAH_VM_STATUS_EXITED: VM requested shutdown/reboot.
- *                       Use &struct gunyah_vm_exit_info.reason for further details.
- * @GUNYAH_VM_STATUS_CRASHED: VM state is unknown and has crashed.
- */
-enum gunyah_vm_status {
-	GUNYAH_VM_STATUS_LOAD_FAILED	= 1,
-	GUNYAH_VM_STATUS_EXITED		= 2,
-	GUNYAH_VM_STATUS_CRASHED		= 3,
 };
 
-/*
- * Gunyah presently sends max 4 bytes of exit_reason.
- * If that changes, this macro can be safely increased without breaking
- * userspace so long as struct gunyah_vcpu_run < PAGE_SIZE.
- */
-#define GUNYAH_VM_MAX_EXIT_REASON_SIZE	8u
-
-/**
- * struct gunyah_vm_exit_info - Reason for VM exit as reported by Gunyah
- * See Gunyah documentation for values.
- * @type: Describes how VM exited
- * @padding: padding bytes
- * @reason_size: Number of bytes valid for `reason`
- * @reason: See Gunyah documentation for interpretation. Note: these values are
- *          not interpreted by Linux and need to be converted from little-endian
- *          as applicable.
- */
-struct gunyah_vm_exit_info {
-	__u16 type;
-	__u16 padding;
-	__u32 reason_size;
-	__u8 reason[GUNYAH_VM_MAX_EXIT_REASON_SIZE];
+struct virtio_driver_features {
+	__u32 label;
+	__u32 reserved;
+	__u32 features_sel;
+	__u32 features;
 };
 
-/**
- * enum gunyah_vcpu_exit - Stores reason why &GUNYAH_VCPU_RUN ioctl recently exited with status 0
- * @GUNYAH_VCPU_EXIT_UNKNOWN: Not used, status != 0
- * @GUNYAH_VCPU_EXIT_MMIO: vCPU performed a read or write that could not be handled
- *                     by hypervisor or Linux. Use @struct gunyah_vcpu_run.mmio for
- *                     details of the read/write.
- * @GUNYAH_VCPU_EXIT_STATUS: vCPU not able to run because the VM has exited.
- *                       Use @struct gunyah_vcpu_run.status for why VM has exited.
- * @GUNYAH_VCPU_EXIT_PAGE_FAULT: vCPU tried to execute an instruction at an address
- *                               for which memory hasn't been provided. Use
- *                               @struct gunyah_vcpu_run.page_fault for details.
- */
-enum gunyah_vcpu_exit {
-	GUNYAH_VCPU_EXIT_UNKNOWN,
-	GUNYAH_VCPU_EXIT_MMIO,
-	GUNYAH_VCPU_EXIT_STATUS,
-	GUNYAH_VCPU_EXIT_PAGE_FAULT,
+struct virtio_queue_info {
+	__u32 label;
+	__u32 queue_sel;
+	__u32 queue_num;
+	__u32 queue_ready;
+	__u64 queue_desc;
+	__u64 queue_driver;
+	__u64 queue_device;
 };
 
-/**
- * enum gunyah_vcpu_resume_action - Provide resume action after an MMIO or page fault
- * @GUNYAH_VCPU_RESUME_HANDLED: The mmio or page fault has been handled, continue
- *                              normal operation of vCPU
- * @GUNYAH_VCPU_RESUME_FAULT: The mmio or page fault could not be satisfied and
- *                            inject the original fault back to the guest.
- * @GUNYAH_VCPU_RESUME_RETRY: Retry the faulting instruction. Perhaps you added
- *                            memory binding to satisfy the request.
- */
-enum gunyah_vcpu_resume_action {
-	GUNYAH_VCPU_RESUME_HANDLED = 0,
-	GUNYAH_VCPU_RESUME_FAULT,
-	GUNYAH_VCPU_RESUME_RETRY,
+struct virtio_config_data {
+	__u32 label;
+	__u32 config_size;
+	__u64 config_data;
 };
 
-/**
- * struct gunyah_vcpu_run - Application code obtains a pointer to the gunyah_vcpu_run
- *                      structure by mmap()ing a vcpu fd.
- * @immediate_exit: polled when scheduling the vcpu. If set, immediately returns -EINTR.
- * @padding: padding bytes
- * @exit_reason: Set when GUNYAH_VCPU_RUN returns successfully and gives reason why
- *               GUNYAH_VCPU_RUN has stopped running the vCPU. See &enum gunyah_vcpu_exit.
- * @mmio: Used when exit_reason == GUNYAH_VCPU_EXIT_MMIO
- *        The guest has faulted on an memory-mapped I/O that
- *        couldn't be satisfied by gunyah.
- * @mmio.phys_addr: Address guest tried to access
- * @mmio.data: the value that was written if `is_write == 1`. Filled by
- *        user for reads (`is_write == 0`).
- * @mmio.len: Length of write. Only the first `len` bytes of `data`
- *       are considered by Gunyah.
- * @mmio.is_write: 1 if VM tried to perform a write, 0 for a read
- * @mmio.resume_action: See &enum gunyah_vcpu_resume_action
- * @status: Used when exit_reason == GUNYAH_VCPU_EXIT_STATUS.
- *          The guest VM is no longer runnable. This struct informs why.
- * @status.status: See &enum gunyah_vm_status for possible values
- * @status.exit_info: Used when status == GUNYAH_VM_STATUS_EXITED
- * @page_fault: Used when EXIT_REASON == GUNYAH_VCPU_EXIT_PAGE_FAULT
- *              The guest has faulted on a region that can only be provided
- *              by mapping memory at phys_addr.
- * @page_fault.phys_addr: Address guest tried to access.
- * @page_fault.attempt: Error code why Linux wasn't able to handle fault itself
- *                      Typically, if no memory was mapped: -ENOENT,
- *                      If permission bits weren't what the VM wanted: -EPERM
- * @page_fault.resume_action: See &enum gunyah_vcpu_resume_action
- */
-struct gunyah_vcpu_run {
-	/* in */
-	__u8 immediate_exit;
-	__u8 padding[7];
-
-	/* out */
-	__u32 exit_reason;
-
-	union {
-		struct {
-			__u64 phys_addr;
-			__u8  data[8];
-			__u32 len;
-			__u8  is_write;
-			__u8  resume_action;
-		} mmio;
-
-		struct {
-			enum gunyah_vm_status status;
-			struct gunyah_vm_exit_info exit_info;
-		} status;
-
-		struct {
-			__u64 phys_addr;
-			__s32 attempt;
-			__u8  resume_action;
-		} page_fault;
-	};
+struct virtio_dev_features {
+	__u32 label;
+	__u32 reserved;
+	__u32 features_sel;
+	__u32 features;
 };
 
-#define GUNYAH_VCPU_RUN		_IO(GUNYAH_IOCTL_TYPE, 0x5)
-#define GUNYAH_VCPU_MMAP_SIZE	_IO(GUNYAH_IOCTL_TYPE, 0x6)
+struct virtio_queue_max {
+	__u32 label;
+	__u32 reserved;
+	__u32 queue_sel;
+	__u32 queue_num_max;
+};
 
-/**
- * struct gunyah_userspace_memory_region - Userspace memory descripion for GH_VM_SET_USER_MEM_REGION
- * @label: Identifer to the region which is unique to the VM.
- * @flags: Flags for memory parcel behavior. See &enum gh_mem_flags.
- * @guest_phys_addr: Location of the memory region in guest's memory space (page-aligned)
- * @memory_size: Size of the region (page-aligned)
- * @userspace_addr: Location of the memory region in caller (userspace)'s memory
- *
- * See Documentation/virt/gunyah/vm-manager.rst for further details.
- */
-struct gunyah_userspace_memory_region {
+struct virtio_event {
+	__u32 label;
+	__u32 event;
+	__u32 event_data;
+	__u32 reserved;
+};
+
+struct virtio_eventfd {
 	__u32 label;
 	__u32 flags;
-	__u64 guest_phys_addr;
-	__u64 memory_size;
-	__u64 userspace_addr;
+	__u32 queue_num;
+	__s32 fd;
 };
 
-#define GH_VM_SET_USER_MEM_REGION	_IOW(GUNYAH_IOCTL_TYPE, 0x1, \
-						struct gunyah_userspace_memory_region)
-#define GH_ANDROID_IOCTL_TYPE		'A'
-
-#define GH_VM_ANDROID_LEND_USER_MEM	_IOW(GH_ANDROID_IOCTL_TYPE, 0x11, \
-						struct gunyah_userspace_memory_region)
-
-struct gunyah_vm_firmware_config {
-	__u64 guest_phys_addr;
-	__u64 size;
+struct virtio_irqfd {
+	__u32 label;
+	__u32 flags;
+	__s32 fd;
+	__u32 reserved;
 };
 
-#define GH_VM_ANDROID_SET_FW_CONFIG	_IOW(GH_ANDROID_IOCTL_TYPE, 0x12, \
-						struct gunyah_vm_firmware_config)
-#endif
+#endif /* _UAPI_LINUX_GUNYAH */

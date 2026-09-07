@@ -1037,7 +1037,7 @@ void rt2800_txdone_entry(struct queue_entry *entry, u32 status, __le32 *txwi,
 	 * FIXME: if we do not find matching entry, we tell that frame was
 	 * posted without any retries. We need to find a way to fix that
 	 * and provide retry count.
- 	 */
+	 */
 	if (unlikely((aggr == 1 && ampdu == 0 && real_mcs != mcs)) || !match) {
 		rt2800_rate_from_status(skbdesc, status, rt2x00dev->curr_band);
 		mcs = real_mcs;
@@ -1228,6 +1228,17 @@ static int rt2800_check_hung(struct data_queue *queue)
 	return queue->wd_count > 16;
 }
 
+static void rt2800_update_survey(struct rt2x00_dev *rt2x00dev)
+{
+	struct ieee80211_channel *chan = rt2x00dev->hw->conf.chandef.chan;
+	struct rt2x00_chan_survey *chan_survey =
+		   &rt2x00dev->chan_survey[chan->hw_value];
+
+	chan_survey->time_idle += rt2800_register_read(rt2x00dev, CH_IDLE_STA);
+	chan_survey->time_busy += rt2800_register_read(rt2x00dev, CH_BUSY_STA);
+	chan_survey->time_ext_busy += rt2800_register_read(rt2x00dev, CH_BUSY_STA_SEC);
+}
+
 void rt2800_watchdog(struct rt2x00_dev *rt2x00dev)
 {
 	struct data_queue *queue;
@@ -1236,6 +1247,8 @@ void rt2800_watchdog(struct rt2x00_dev *rt2x00dev)
 
 	if (test_bit(DEVICE_STATE_SCANNING, &rt2x00dev->flags))
 		return;
+
+	rt2800_update_survey(rt2x00dev);
 
 	queue_for_each(rt2x00dev, queue) {
 		switch (queue->qid) {
@@ -3297,10 +3310,10 @@ static void rt2800_config_channel_rf53xx(struct rt2x00_dev *rt2x00dev,
 	if (rt2x00_has_cap_bt_coexist(rt2x00dev)) {
 		if (rt2x00_rt_rev_gte(rt2x00dev, RT5390, REV_RT5390F)) {
 			/* r55/r59 value array of channel 1~14 */
-			static const u8 r55_bt_rev[] = {0x83, 0x83,
+			static const char r55_bt_rev[] = {0x83, 0x83,
 				0x83, 0x73, 0x73, 0x63, 0x53, 0x53,
 				0x53, 0x43, 0x43, 0x43, 0x43, 0x43};
-			static const u8 r59_bt_rev[] = {0x0e, 0x0e,
+			static const char r59_bt_rev[] = {0x0e, 0x0e,
 				0x0e, 0x0e, 0x0e, 0x0b, 0x0a, 0x09,
 				0x07, 0x07, 0x07, 0x07, 0x07, 0x07};
 
@@ -3309,7 +3322,7 @@ static void rt2800_config_channel_rf53xx(struct rt2x00_dev *rt2x00dev,
 			rt2800_rfcsr_write(rt2x00dev, 59,
 					   r59_bt_rev[idx]);
 		} else {
-			static const u8 r59_bt[] = {0x8b, 0x8b, 0x8b,
+			static const char r59_bt[] = {0x8b, 0x8b, 0x8b,
 				0x8b, 0x8b, 0x8b, 0x8b, 0x8a, 0x89,
 				0x88, 0x88, 0x86, 0x85, 0x84};
 
@@ -3317,10 +3330,10 @@ static void rt2800_config_channel_rf53xx(struct rt2x00_dev *rt2x00dev,
 		}
 	} else {
 		if (rt2x00_rt_rev_gte(rt2x00dev, RT5390, REV_RT5390F)) {
-			static const u8 r55_nonbt_rev[] = {0x23, 0x23,
+			static const char r55_nonbt_rev[] = {0x23, 0x23,
 				0x23, 0x23, 0x13, 0x13, 0x03, 0x03,
 				0x03, 0x03, 0x03, 0x03, 0x03, 0x03};
-			static const u8 r59_nonbt_rev[] = {0x07, 0x07,
+			static const char r59_nonbt_rev[] = {0x07, 0x07,
 				0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
 				0x07, 0x07, 0x06, 0x05, 0x04, 0x04};
 
@@ -3331,14 +3344,14 @@ static void rt2800_config_channel_rf53xx(struct rt2x00_dev *rt2x00dev,
 		} else if (rt2x00_rt(rt2x00dev, RT5390) ||
 			   rt2x00_rt(rt2x00dev, RT5392) ||
 			   rt2x00_rt(rt2x00dev, RT6352)) {
-			static const u8 r59_non_bt[] = {0x8f, 0x8f,
+			static const char r59_non_bt[] = {0x8f, 0x8f,
 				0x8f, 0x8f, 0x8f, 0x8f, 0x8f, 0x8d,
 				0x8a, 0x88, 0x88, 0x87, 0x87, 0x86};
 
 			rt2800_rfcsr_write(rt2x00dev, 59,
 					   r59_non_bt[idx]);
 		} else if (rt2x00_rt(rt2x00dev, RT5350)) {
-			static const u8 r59_non_bt[] = {0x0b, 0x0b,
+			static const char r59_non_bt[] = {0x0b, 0x0b,
 				0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0a,
 				0x0a, 0x09, 0x08, 0x07, 0x07, 0x06};
 
@@ -3961,23 +3974,23 @@ static void rt2800_iq_calibrate(struct rt2x00_dev *rt2x00dev, int channel)
 	rt2800_bbp_write(rt2x00dev, 159, cal != 0xff ? cal : 0);
 }
 
-static s8 rt2800_txpower_to_dev(struct rt2x00_dev *rt2x00dev,
+static char rt2800_txpower_to_dev(struct rt2x00_dev *rt2x00dev,
 				  unsigned int channel,
-				  s8 txpower)
+				  char txpower)
 {
 	if (rt2x00_rt(rt2x00dev, RT3593) ||
 	    rt2x00_rt(rt2x00dev, RT3883))
 		txpower = rt2x00_get_field8(txpower, EEPROM_TXPOWER_ALC);
 
 	if (channel <= 14)
-		return clamp_t(s8, txpower, MIN_G_TXPOWER, MAX_G_TXPOWER);
+		return clamp_t(char, txpower, MIN_G_TXPOWER, MAX_G_TXPOWER);
 
 	if (rt2x00_rt(rt2x00dev, RT3593) ||
 	    rt2x00_rt(rt2x00dev, RT3883))
-		return clamp_t(s8, txpower, MIN_A_TXPOWER_3593,
+		return clamp_t(char, txpower, MIN_A_TXPOWER_3593,
 			       MAX_A_TXPOWER_3593);
 	else
-		return clamp_t(s8, txpower, MIN_A_TXPOWER, MAX_A_TXPOWER);
+		return clamp_t(char, txpower, MIN_A_TXPOWER, MAX_A_TXPOWER);
 }
 
 static void rt3883_bbp_adjust(struct rt2x00_dev *rt2x00dev,
@@ -5557,6 +5570,12 @@ void rt2800_config(struct rt2x00_dev *rt2x00dev,
 	rt2800_config_lna_gain(rt2x00dev, libconf);
 
 	if (flags & IEEE80211_CONF_CHANGE_CHANNEL) {
+		/*
+		 * To provide correct survey data for survey-based ACS algorithm
+		 * we have to save survey data for current channel before switching.
+		 */
+		rt2800_update_survey(rt2x00dev);
+
 		rt2800_config_channel(rt2x00dev, libconf->conf,
 				      &libconf->rf, &libconf->channel);
 		rt2800_config_txpower(rt2x00dev, libconf->conf->chandef.chan,
@@ -8473,11 +8492,11 @@ static int rt2800_rf_lp_config(struct rt2x00_dev *rt2x00dev, bool btxcal)
 	return 0;
 }
 
-static s8 rt2800_lp_tx_filter_bw_cal(struct rt2x00_dev *rt2x00dev)
+static char rt2800_lp_tx_filter_bw_cal(struct rt2x00_dev *rt2x00dev)
 {
 	unsigned int cnt;
 	u8 bbp_val;
-	s8 cal_val;
+	char cal_val;
 
 	rt2800_bbp_dcoc_write(rt2x00dev, 0, 0x82);
 
@@ -8509,7 +8528,7 @@ static void rt2800_bw_filter_calibration(struct rt2x00_dev *rt2x00dev,
 	u8 rx_filter_target_20m = 0x27, rx_filter_target_40m = 0x31;
 	int loop = 0, is_ht40, cnt;
 	u8 bbp_val, rf_val;
-	s8 cal_r32_init, cal_r32_val, cal_diff;
+	char cal_r32_init, cal_r32_val, cal_diff;
 	u8 saverfb5r00, saverfb5r01, saverfb5r03, saverfb5r04, saverfb5r05;
 	u8 saverfb5r06, saverfb5r07;
 	u8 saverfb5r08, saverfb5r17, saverfb5r18, saverfb5r19, saverfb5r20;
@@ -9960,9 +9979,9 @@ static int rt2800_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 {
 	struct hw_mode_spec *spec = &rt2x00dev->spec;
 	struct channel_info *info;
-	s8 *default_power1;
-	s8 *default_power2;
-	s8 *default_power3;
+	char *default_power1;
+	char *default_power2;
+	char *default_power3;
 	unsigned int i, tx_chains, rx_chains;
 	u32 reg;
 
@@ -10137,11 +10156,19 @@ static int rt2800_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 	}
 
 	/*
-	 * Create channel information array
+	 * Create channel information and survey arrays
 	 */
 	info = kcalloc(spec->num_channels, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
+
+	rt2x00dev->chan_survey =
+		kcalloc(spec->num_channels, sizeof(struct rt2x00_chan_survey),
+			GFP_KERNEL);
+	if (!rt2x00dev->chan_survey) {
+		kfree(info);
+		return -ENOMEM;
+	}
 
 	spec->channels_info = info;
 
@@ -10529,27 +10556,30 @@ int rt2800_get_survey(struct ieee80211_hw *hw, int idx,
 		      struct survey_info *survey)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
-	struct ieee80211_conf *conf = &hw->conf;
-	u32 idle, busy, busy_ext;
+	struct rt2x00_chan_survey *chan_survey =
+		   &rt2x00dev->chan_survey[idx];
+	enum nl80211_band band = NL80211_BAND_2GHZ;
 
-	if (idx != 0)
+	if (idx >= rt2x00dev->bands[band].n_channels) {
+		idx -= rt2x00dev->bands[band].n_channels;
+		band = NL80211_BAND_5GHZ;
+	}
+
+	if (idx >= rt2x00dev->bands[band].n_channels)
 		return -ENOENT;
 
-	survey->channel = conf->chandef.chan;
+	if (idx == 0)
+		rt2800_update_survey(rt2x00dev);
 
-	idle = rt2800_register_read(rt2x00dev, CH_IDLE_STA);
-	busy = rt2800_register_read(rt2x00dev, CH_BUSY_STA);
-	busy_ext = rt2800_register_read(rt2x00dev, CH_BUSY_STA_SEC);
+	survey->channel = &rt2x00dev->bands[band].channels[idx];
 
-	if (idle || busy) {
-		survey->filled = SURVEY_INFO_TIME |
-				 SURVEY_INFO_TIME_BUSY |
-				 SURVEY_INFO_TIME_EXT_BUSY;
+	survey->filled = SURVEY_INFO_TIME |
+			 SURVEY_INFO_TIME_BUSY |
+			 SURVEY_INFO_TIME_EXT_BUSY;
 
-		survey->time = (idle + busy) / 1000;
-		survey->time_busy = busy / 1000;
-		survey->time_ext_busy = busy_ext / 1000;
-	}
+	survey->time = div_u64(chan_survey->time_idle + chan_survey->time_busy, 1000);
+	survey->time_busy = div_u64(chan_survey->time_busy, 1000);
+	survey->time_ext_busy = div_u64(chan_survey->time_ext_busy, 1000);
 
 	if (!(hw->conf.flags & IEEE80211_CONF_OFFCHANNEL))
 		survey->filled |= SURVEY_INFO_IN_USE;

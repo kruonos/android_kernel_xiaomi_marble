@@ -83,11 +83,13 @@ free_skb:
 static int qcom_mhi_qrtr_send(struct qrtr_endpoint *ep, struct sk_buff *skb)
 {
 	int rc;
+	int retry = 5;
 
 	do {
 		rc = __qcom_mhi_qrtr_send(ep, skb);
-		usleep_range(1000, 2000);
-	} while (rc == -EAGAIN);
+		if (rc == -EAGAIN)
+			usleep_range(1000, 2000);
+	} while (rc == -EAGAIN && --retry);
 
 	return rc;
 }
@@ -102,7 +104,6 @@ static void qrtr_mhi_of_parse(struct mhi_device *mhi_dev,
 	int rc;
 
 	*net_id = QRTR_EP_NET_ID_AUTO;
-	*rt = false;
 
 	np = of_find_compatible_node(np, NULL, "qcom,qrtr-mhi");
 	if (!np)
@@ -147,7 +148,7 @@ static int qcom_mhi_qrtr_probe(struct mhi_device *mhi_dev,
 		return rc;
 
 	/* start channels */
-	rc = mhi_prepare_for_transfer(mhi_dev);
+	rc = mhi_prepare_for_transfer(mhi_dev, MHI_CH_INBOUND_ALLOC_BUFS);
 	if (rc) {
 		qrtr_endpoint_unregister(&qdev->ep);
 		dev_set_drvdata(&mhi_dev->dev, NULL);

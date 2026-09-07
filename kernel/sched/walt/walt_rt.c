@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <trace/hooks/sched.h>
@@ -9,9 +10,89 @@
 #include "trace.h"
 
 static DEFINE_PER_CPU(cpumask_var_t, walt_local_cpu_mask);
+DEFINE_PER_CPU(u64, rt_task_arrival_time) = 0;
+static bool long_running_rt_task_trace_rgstrd;
 
-static void walt_rt_energy_aware_wake_cpu(void *unused, struct task_struct *task,
-				struct cpumask *lowest_mask, int ret, int *best_cpu)
+static void rt_task_arrival_marker(void *unused, bool preempt,
+	struct task_struct *prev, struct task_struct *next)
+{
+	unsigned int cpu = raw_smp_processor_id();
+
+	if (next->policy == SCHED_FIFO && next != cpu_rq(cpu)->stop)
+		per_cpu(rt_task_arrival_time, cpu) = rq_clock_task(this_rq());
+	else
+		per_cpu(rt_task_arrival_time, cpu) = 0;
+}
+
+static void long_running_rt_task_notifier(void *unused, struct rq *rq)
+{
+	struct task_struct *curr = rq->curr;
+	unsigned int cpu = raw_smp_processor_id();
+
+	if (!sysctl_sched_long_running_rt_task_ms)
+		return;
+
+	if (!per_cpu(rt_task_arrival_time, cpu))
+		return;
+
+	if (per_cpu(rt_task_arrival_time, cpu) && curr->policy != SCHED_FIFO) {
+		/*
+		 * It is possible that the scheduling policy for the current
+		 * task might get changed after task arrival time stamp is
+		 * noted during sched_switch of RT task. To avoid such false
+		 * positives, reset arrival time stamp.
+		 */
+		per_cpu(rt_task_arrival_time, cpu) = 0;
+		return;
+	}
+
+	/*
+	 * Since we are called from the main tick, rq clock task must have
+	 * been updated very recently. Use it directly, instead of
+	 * update_rq_clock_task() to avoid warnings.
+	 */
+	if (rq->clock_task -
+		per_cpu(rt_task_arrival_time, cpu)
+			> sysctl_sched_long_running_rt_task_ms * MSEC_TO_NSEC) {
+		printk_deferred("RT task %s (%d) runtime > %u now=%llu task arrival time=%llu runtime=%llu\n",
+				curr->comm, curr->pid,
+				sysctl_sched_long_running_rt_task_ms * MSEC_TO_NSEC,
+				rq->clock_task,
+				per_cpu(rt_task_arrival_time, cpu),
+				rq->clock_task -
+				per_cpu(rt_task_arrival_time, cpu));
+		BUG();
+	}
+}
+
+int sched_long_running_rt_task_ms_handler(struct ctl_table *table, int write,
+				       void __user *buffer, size_t *lenp,
+				       loff_t *ppos)
+{
+	int ret;
+	static DEFINE_MUTEX(mutex);
+
+	mutex_lock(&mutex);
+
+	ret = proc_douintvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (sysctl_sched_long_running_rt_task_ms > 0 &&
+			sysctl_sched_long_running_rt_task_ms < 800)
+		sysctl_sched_long_running_rt_task_ms = 800;
+
+	if (write && !long_running_rt_task_trace_rgstrd) {
+		register_trace_sched_switch(rt_task_arrival_marker, NULL);
+		register_trace_android_vh_scheduler_tick(long_running_rt_task_notifier, NULL);
+		long_running_rt_task_trace_rgstrd = true;
+	}
+
+	mutex_unlock(&mutex);
+
+	return ret;
+}
+
+static void walt_rt_energy_aware_wake_cpu(struct task_struct *task, struct cpumask *lowest_mask,
+					  int ret, int *best_cpu)
 {
 	int cpu;
 	unsigned long util, best_cpu_util = ULONG_MAX;
@@ -36,9 +117,12 @@ static void walt_rt_energy_aware_wake_cpu(void *unused, struct task_struct *task
 		for_each_cpu_and(cpu, lowest_mask, &cpu_array[order_index][cluster]) {
 			bool lt;
 
-			trace_sched_cpu_util(cpu);
+			trace_sched_cpu_util(cpu, lowest_mask);
 
 			if (!cpu_active(cpu))
+				continue;
+
+			if (cpu_halted(cpu))
 				continue;
 
 			if (sched_cpu_high_irqload(cpu))
@@ -139,6 +223,14 @@ static inline bool walt_should_honor_rt_sync(struct rq *rq, struct task_struct *
 		rq->rt.rt_nr_running <= 2;
 }
 
+enum rt_fastpaths {
+	NONE = 0,
+	NON_WAKEUP,
+	SYNC_WAKEUP,
+	CLUSTER_PACKING_FASTPATH,
+};
+
+
 static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int cpu,
 					int sd_flag, int wake_flags, int *new_cpu)
 {
@@ -148,13 +240,17 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
 	bool sync = !!(wake_flags & WF_SYNC);
 	int ret, target = -1, this_cpu;
 	struct cpumask *lowest_mask;
+	int packing_cpu;
+	int fastpath = NONE;
 
 	if (unlikely(walt_disabled))
 		return;
 
 	/* For anything but wake ups, just return the task_cpu */
-	if (sd_flag != SD_BALANCE_WAKE && sd_flag != SD_BALANCE_FORK)
-		return;
+	if (sd_flag != SD_BALANCE_WAKE && sd_flag != SD_BALANCE_FORK) {
+		fastpath = NON_WAKEUP;
+		goto out;
+	}
 
 	this_cpu = raw_smp_processor_id();
 	this_cpu_rq = cpu_rq(this_cpu);
@@ -162,11 +258,12 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
 	/*
 	 * Respect the sync flag as long as the task can run on this CPU.
 	 */
-	if (sysctl_sched_sync_hint_enable && cpu_active(this_cpu) &&
+	if (sysctl_sched_sync_hint_enable && cpu_active(this_cpu) && !cpu_halted(this_cpu) &&
 	    cpumask_test_cpu(this_cpu, task->cpus_ptr) &&
 	    walt_should_honor_rt_sync(this_cpu_rq, task, sync)) {
+		fastpath = SYNC_WAKEUP;
 		*new_cpu = this_cpu;
-		return;
+		goto out;
 	}
 
 	*new_cpu = cpu; /* previous CPU as back up */
@@ -202,7 +299,15 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
 	ret = cpupri_find_fitness(&task_rq(task)->rd->cpupri, task,
 				lowest_mask, walt_rt_task_fits_capacity);
 
-	walt_rt_energy_aware_wake_cpu(NULL, task, lowest_mask, ret, &target);
+	/* create a fastpath for finding a packing cpu */
+	packing_cpu = walt_find_and_choose_cluster_packing_cpu(task_cpu(task), task);
+	if (packing_cpu >= 0) {
+		fastpath = CLUSTER_PACKING_FASTPATH;
+		*new_cpu = packing_cpu;
+		goto unlock;
+	}
+
+	walt_rt_energy_aware_wake_cpu(task, lowest_mask, ret, &target);
 
 	/*
 	 * If cpu is non-preemptible, prefer remote cpu
@@ -214,7 +319,48 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
 	    (may_not_preempt || task->prio < cpu_rq(target)->rt.highest_prio.curr))
 		*new_cpu = target;
 
+	/* if backup or chosen cpu is halted, pick something else */
+	if (cpu_halted(*new_cpu)) {
+		cpumask_t non_halted;
+
+		/* choose the lowest-order, unhalted, allowed CPU */
+		cpumask_andnot(&non_halted, task->cpus_ptr, cpu_halt_mask);
+		target = cpumask_first(&non_halted);
+		if (target < nr_cpu_ids)
+			*new_cpu = target;
+	}
+unlock:
 	rcu_read_unlock();
+out:
+	trace_sched_select_task_rt(task, fastpath);
+}
+
+
+static void walt_rt_find_lowest_rq(void *unused, struct task_struct *task,
+				   struct cpumask *lowest_mask, int ret, int *best_cpu)
+
+{
+	int packing_cpu;
+
+	if (unlikely(walt_disabled))
+		return;
+
+	/* create a fastpath for finding a packing cpu */
+	packing_cpu = walt_find_and_choose_cluster_packing_cpu(task_cpu(task), task);
+	if (packing_cpu >= 0) {
+		*best_cpu = packing_cpu;
+		return;
+	}
+
+	walt_rt_energy_aware_wake_cpu(task, lowest_mask, ret, best_cpu);
+
+	/*
+	 * Walt was not able to find a non-halted best cpu. Ensure that
+	 * find_lowest_rq doesn't use a halted cpu going forward, but
+	 * does a best effort itself to find a good CPU.
+	 */
+	if (*best_cpu == -1)
+		cpumask_andnot(lowest_mask, lowest_mask, cpu_halt_mask);
 }
 
 void walt_rt_init(void)
@@ -230,5 +376,5 @@ void walt_rt_init(void)
 	}
 
 	register_trace_android_rvh_select_task_rq_rt(walt_select_task_rq_rt, NULL);
-	register_trace_android_rvh_find_lowest_rq(walt_rt_energy_aware_wake_cpu, NULL);
+	register_trace_android_rvh_find_lowest_rq(walt_rt_find_lowest_rq, NULL);
 }

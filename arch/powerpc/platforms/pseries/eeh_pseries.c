@@ -43,7 +43,7 @@ static int ibm_get_config_addr_info;
 static int ibm_get_config_addr_info2;
 static int ibm_configure_pe;
 
-void pseries_pcibios_bus_add_device(struct pci_dev *pdev)
+static void pseries_pcibios_bus_add_device(struct pci_dev *pdev)
 {
 	struct pci_dn *pdn = pci_get_pdn(pdev);
 
@@ -578,10 +578,8 @@ static int pseries_eeh_get_state(struct eeh_pe *pe, int *delay)
 
 	switch(rets[0]) {
 	case 0:
-		result = EEH_STATE_MMIO_ACTIVE	|
-			 EEH_STATE_DMA_ACTIVE	|
-			 EEH_STATE_MMIO_ENABLED	|
-			 EEH_STATE_DMA_ENABLED;
+		result = EEH_STATE_MMIO_ACTIVE |
+			 EEH_STATE_DMA_ACTIVE;
 		break;
 	case 1:
 		result = EEH_STATE_RESET_ACTIVE |
@@ -696,8 +694,7 @@ static int pseries_eeh_write_config(struct eeh_dev *edev, int where, int size, u
 }
 
 #ifdef CONFIG_PCI_IOV
-int pseries_send_allow_unfreeze(struct pci_dn *pdn,
-				u16 *vf_pe_array, int cur_vfs)
+static int pseries_send_allow_unfreeze(struct pci_dn *pdn, u16 *vf_pe_array, int cur_vfs)
 {
 	int rc;
 	int ibm_allow_unfreeze = rtas_token("ibm,open-sriov-allow-unfreeze");

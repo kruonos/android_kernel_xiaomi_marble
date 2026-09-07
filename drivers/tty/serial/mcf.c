@@ -319,9 +319,7 @@ static void mcf_rx_chars(struct mcf_uart *pp)
 		uart_insert_char(port, status, MCFUART_USR_RXOVERRUN, ch, flag);
 	}
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(&port->state->port);
-	spin_lock(&port->lock);
 }
 
 /****************************************************************************/
@@ -479,7 +477,7 @@ static const struct uart_ops mcf_uart_ops = {
 	.verify_port	= mcf_verify_port,
 };
 
-static struct mcf_uart mcf_ports[10];
+static struct mcf_uart mcf_ports[4];
 
 #define	MCF_MAXPORTS	ARRAY_SIZE(mcf_ports)
 

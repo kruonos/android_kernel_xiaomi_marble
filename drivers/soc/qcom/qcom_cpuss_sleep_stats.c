@@ -6,6 +6,7 @@
  */
 
 #include <asm/cputype.h>
+#include <linux/cpumask.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/init.h>
@@ -442,7 +443,7 @@ static int store_stats_data(struct qcom_target_info *t_info, char *str,
 		return -ENOMEM;
 
 	store_stats_data->reg = reg;
-	strlcpy(store_stats_data->mode_name, str,
+	strscpy(store_stats_data->mode_name, str,
 		sizeof(store_stats_data->mode_name));
 
 	list_add_tail(&store_stats_data->node, &t_info->complete_stats.node);

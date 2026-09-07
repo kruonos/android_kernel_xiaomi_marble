@@ -178,7 +178,6 @@ static int ch9200_mdio_read(struct net_device *netdev, int phy_id, int loc)
 {
 	struct usbnet *dev = netdev_priv(netdev);
 	unsigned char buff[2];
-	int ret;
 
 	netdev_dbg(netdev, "%s phy_id:%02x loc:%02x\n",
 		   __func__, phy_id, loc);
@@ -186,10 +185,8 @@ static int ch9200_mdio_read(struct net_device *netdev, int phy_id, int loc)
 	if (phy_id != 0)
 		return -ENODEV;
 
-	ret = control_read(dev, REQUEST_READ, 0, loc * 2, buff, 0x02,
-			   CONTROL_TIMEOUT_MS);
-	if (ret < 0)
-		return ret;
+	control_read(dev, REQUEST_READ, 0, loc * 2, buff, 0x02,
+		     CONTROL_TIMEOUT_MS);
 
 	return (buff[0] | buff[1] << 8);
 }
@@ -339,7 +336,6 @@ static int ch9200_bind(struct usbnet *dev, struct usb_interface *intf)
 {
 	int retval = 0;
 	unsigned char data[2];
-	u8 addr[ETH_ALEN];
 
 	retval = usbnet_get_endpoints(dev, intf);
 	if (retval)
@@ -387,8 +383,7 @@ static int ch9200_bind(struct usbnet *dev, struct usb_interface *intf)
 	retval = control_write(dev, REQUEST_WRITE, 0, MAC_REG_CTRL, data, 0x02,
 			       CONTROL_TIMEOUT_MS);
 
-	retval = get_mac_address(dev, addr);
-	eth_hw_addr_set(dev->net, addr);
+	retval = get_mac_address(dev, dev->net->dev_addr);
 
 	return retval;
 }

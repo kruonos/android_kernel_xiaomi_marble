@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023,  Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/platform_device.h>
@@ -28,6 +28,9 @@
 #define LLCC_MDMHPFX     20
 #define LLCC_MDMPNG      21
 #define LLCC_AUDHW       22
+#define LLCC_NPU         23
+#define LLCC_WLNHW       24
+#define LLCC_PIMEM       25
 #define LLCC_ECC         26
 #define LLCC_CVP         28
 #define LLCC_MDMVPE      29
@@ -40,85 +43,19 @@
 #define LLCC_CPUHWT      36
 #define LLCC_MDMCLAD2    37
 #define LLCC_CAMEXP1     38
+#define LLCC_CMPTHCP     39
 #define LLCC_LCPDARE     40
 #define LLCC_AENPU       45
-#define LLCC_VIEYE       57
-#define LLCC_VIDPTH      58
-#define LLCC_GPUMV       59
-#define LLCC_EVALFT      60
-#define LLCC_EVARGHT     61
-#define LLCC_EVAGAIN     62
-#define LLCC_VIPTH       63
-#define LLCC_DISLFT      65
-#define LLCC_DISRGHT     66
-#define LLCC_EVCSLFT     67
-#define LLCC_EVCSRGHT    68
-#define LLCC_SPAD        69
-
-
-/**
- * llcc_slice_config - Data associated with the llcc slice
- * @usecase_id: Unique id for the client's use case
- * @slice_id: llcc slice id for each client
- * @max_cap: The maximum capacity of the cache slice provided in KB
- * @priority: Priority of the client used to select victim line for replacement
- * @fixed_size: Boolean indicating if the slice has a fixed capacity
- * @bonus_ways: Bonus ways are additional ways to be used for any slice,
- *		if client ends up using more than reserved cache ways. Bonus
- *		ways are allocated only if they are not reserved for some
- *		other client.
- * @res_ways: Reserved ways for the cache slice, the reserved ways cannot
- *		be used by any other client than the one its assigned to.
- * @cache_mode: Each slice operates as a cache, this controls the mode of the
- *             slice: normal or TCM(Tightly Coupled Memory)
- * @probe_target_ways: Determines what ways to probe for access hit. When
- *                    configured to 1 only bonus and reserved ways are probed.
- *                    When configured to 0 all ways in llcc are probed.
- * @dis_cap_alloc: Disable capacity based allocation for a client
- * @retain_on_pc: If this bit is set and client has maintained active vote
- *               then the ways assigned to this client are not flushed on power
- *               collapse.
- * @activate_on_init: Activate the slice immediately after it is programmed
- * @write_scid_en: Enables write cache support for a given scid.
- * @write_scid_cacheable_en: Enables write cache cacheable support for a
- *                          given scid.(Not supported on V2 or older hardware)
- * @stale_en: Enable global staling for the Clients.
- * @stale_cap_en: Enable global staling on over capacity for the Clients
- * @mru_uncap_en: Enable roll over on reserved ways if the current SCID is under capacity.
- * @mru_rollover: Roll over on reserved ways for the client.
- * @alloc_oneway_en: Always allocate one way on over capacity even if there
- *			is no same scid lines for replacement.
- * @ovcap_en: Once current scid is over capacity, allocate other over capacity scid.
- * @ovcap_prio: Once current scid is over capacity, allocate other lower priority
- *			over capacity scid. This setting is ignored if ovcap_en is not set.
- * @vict_prio: When current SCID is under capacity, allocate over other lower than
- *		VICTIM_PL_THRESHOLD priority SCID.
- */
-struct llcc_slice_config {
-	u32 usecase_id;
-	u32 slice_id;
-	u32 max_cap;
-	u32 priority;
-	bool fixed_size;
-	u32 bonus_ways;
-	u32 res_ways;
-	u32 cache_mode;
-	u32 probe_target_ways;
-	bool dis_cap_alloc;
-	bool retain_on_pc;
-	bool activate_on_init;
-	bool write_scid_en;
-	bool write_scid_cacheable_en;
-	bool stale_en;
-	bool stale_cap_en;
-	bool mru_uncap_en;
-	bool mru_rollover;
-	bool alloc_oneway_en;
-	bool ovcap_en;
-	bool ovcap_prio;
-	bool vict_prio;
-};
-
+#define LLCC_ISLAND1     46
+#define LLCC_ISLAND2     47
+#define LLCC_ISLAND3     48
+#define LLCC_ISLAND4     49
+#define LLCC_CAMEXP2     50
+#define LLCC_CAMEXP3     51
+#define LLCC_CAMEXP4     52
+#define LLCC_DISP_WB     53
+#define LLCC_DISP_1      54
+#define LLCC_VIDVSP      64
 
 /**
  * llcc_slice_desc - Cache slice descriptor
@@ -186,21 +123,33 @@ struct llcc_drv_data {
 	int llcc_ver;
 	bool cap_based_alloc_and_pwr_collapse;
 	struct llcc_slice_desc *desc;
-	struct regmap *spad_or_bcast_regmap;
-	struct regmap *spad_and_bcast_regmap;
-	bool spad_act_slp_wake_enable;
 };
 
 /**
- * llcc_tcm_data - Data associated with the llcc tcm driver
- *
+ * Enum describing the various staling modes available for clients to use.
  */
-struct llcc_tcm_data {
-	phys_addr_t phys_addr;
-	void __iomem *virt_addr;
-	size_t mem_size;
+enum llcc_staling_mode {
+	LLCC_STALING_MODE_CAPACITY, /* Default option on reset */
+	LLCC_STALING_MODE_NOTIFY,
+	LLCC_STALING_MODE_MAX
 };
 
+enum llcc_staling_notify_op {
+	LLCC_NOTIFY_STALING_WRITEBACK,
+	/* LLCC_NOTIFY_STALING_NO_WRITEBACK, */
+	LLCC_NOTIFY_STALING_OPS_MAX
+};
+
+struct llcc_staling_mode_params {
+	enum llcc_staling_mode staling_mode;
+	union {
+		/* STALING_MODE_CAPACITY needs no params */
+		struct staling_mode_notify_params {
+			u8 staling_distance;
+			enum llcc_staling_notify_op op;
+		} notify_params;
+	};
+};
 
 #if IS_ENABLED(CONFIG_QCOM_LLCC)
 /**
@@ -240,31 +189,25 @@ int llcc_slice_activate(struct llcc_slice_desc *desc);
 int llcc_slice_deactivate(struct llcc_slice_desc *desc);
 
 /**
- * llcc_tcm_activate - Activate llcc tcm
+ * llcc_configure_staling_mode - Configure cache staling mode by setting the
+ *				 staling_mode and corresponding
+ *				 mode-specific params
+ *
+ * @desc: Pointer to llcc slice descriptor
+ * @p: Staling mode-specific params
+ *
+ * Returns: zero on success or negative errno.
  */
-struct llcc_tcm_data *llcc_tcm_activate(void);
-
+int llcc_configure_staling_mode(struct llcc_slice_desc *desc,
+				struct llcc_staling_mode_params *p);
 /**
- * llcc_tcm_get_phys_addr - get the physical address of llcc tcm slice
+ * llcc_notif_staling_inc_counter - Trigger the staling of the sub-cache frame.
+ *
+ * @desc: Pointer to llcc slice descriptor
+ *
+ * Returns: zero on success or negative errno.
  */
-phys_addr_t llcc_tcm_get_phys_addr(struct llcc_tcm_data *tcm_data);
-
-/**
- * llcc_tcm_get_virt_addr - get the virtual address of llcc tcm slice
- */
-void __iomem *llcc_tcm_get_virt_addr(struct llcc_tcm_data *tcm_data);
-
-/**
- * llcc_tcm_get_slice_size - get the llcc tcm slice size
- */
-size_t llcc_tcm_get_slice_size(struct llcc_tcm_data *tcm_data);
-
-/**
- * llcc_tcm_deactivate - Deactivate the llcc tcm
- */
-void llcc_tcm_deactivate(struct llcc_tcm_data *tcm_data);
-
-
+int llcc_notif_staling_inc_counter(struct llcc_slice_desc *desc);
 #else
 static inline struct llcc_slice_desc *llcc_slice_getd(u32 uid)
 {
@@ -285,7 +228,6 @@ static inline size_t llcc_get_slice_size(struct llcc_slice_desc *desc)
 {
 	return 0;
 }
-
 static inline int llcc_slice_activate(struct llcc_slice_desc *desc)
 {
 	return -EINVAL;
@@ -295,32 +237,15 @@ static inline int llcc_slice_deactivate(struct llcc_slice_desc *desc)
 {
 	return -EINVAL;
 }
-
-static inline struct llcc_tcm_data *llcc_tcm_activate(void)
+static inline int llcc_configure_staling_mode(struct llcc_slice_desc *desc,
+				       struct llcc_staling_mode_params *p)
 {
-	return NULL;
+	return -EINVAL;
 }
-
-static inline phys_addr_t llcc_tcm_get_phys_addr(struct llcc_tcm_data *tcm_data)
+static inline int llcc_notif_staling_inc_counter(struct llcc_slice_desc *desc)
 {
-	return 0;
+	return -EINVAL;
 }
-
-static inline void __iomem *llcc_tcm_get_virt_addr(struct llcc_tcm_data *tcm_data)
-{
-	return NULL;
-}
-
-static inline size_t llcc_tcm_get_slice_size(struct llcc_tcm_data *tcm_data)
-{
-	return 0;
-}
-
-static inline void llcc_tcm_deactivate(struct llcc_tcm_data *tcm_data)
-{
-
-}
-
 #endif
 
 #endif

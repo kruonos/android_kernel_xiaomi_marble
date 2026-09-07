@@ -121,8 +121,7 @@ drm_vprintf(struct drm_printer *p, const char *fmt, va_list *va)
 
 /**
  * struct drm_print_iterator - local struct used with drm_printer_coredump
- * @data: Pointer to the devcoredump output buffer, can be NULL if using
- * drm_printer_coredump to determine size of devcoredump
+ * @data: Pointer to the devcoredump output buffer
  * @start: The offset within the buffer to start writing
  * @remain: The number of bytes to write for this iteration
  */
@@ -166,57 +165,6 @@ struct drm_print_iterator {
  *		dev_coredumpm(dev, THIS_MODULE, data, 0, GFP_KERNEL,
  *			coredump_read, ...)
  *	}
- *
- * The above example has a time complexity of O(N^2), where N is the size of the
- * devcoredump. This is acceptable for small devcoredumps but scales poorly for
- * larger ones.
- *
- * Another use case for drm_coredump_printer is to capture the devcoredump into
- * a saved buffer before the dev_coredump() callback. This involves two passes:
- * one to determine the size of the devcoredump and another to print it to a
- * buffer. Then, in dev_coredump(), copy from the saved buffer into the
- * devcoredump read buffer.
- *
- * For example::
- *
- *	char *devcoredump_saved_buffer;
- *
- *	ssize_t __coredump_print(char *buffer, ssize_t count, ...)
- *	{
- *		struct drm_print_iterator iter;
- *		struct drm_printer p;
- *
- *		iter.data = buffer;
- *		iter.start = 0;
- *		iter.remain = count;
- *
- *		p = drm_coredump_printer(&iter);
- *
- *		drm_printf(p, "foo=%d\n", foo);
- *		...
- *		return count - iter.remain;
- *	}
- *
- *	void coredump_print(...)
- *	{
- *		ssize_t count;
- *
- *		count = __coredump_print(NULL, INT_MAX, ...);
- *		devcoredump_saved_buffer = kvmalloc(count, GFP_KERNEL);
- *		__coredump_print(devcoredump_saved_buffer, count, ...);
- *	}
- *
- *	void coredump_read(char *buffer, loff_t offset, size_t count,
- *			   void *data, size_t datalen)
- *	{
- *		...
- *		memcpy(buffer, devcoredump_saved_buffer + offset, count);
- *		...
- *	}
- *
- * The above example has a time complexity of O(N*2), where N is the size of the
- * devcoredump. This scales better than the previous example for larger
- * devcoredumps.
  *
  * RETURNS:
  * The &drm_printer object
@@ -379,7 +327,7 @@ static inline bool drm_debug_enabled(enum drm_debug_category category)
 /*
  * struct device based logging
  *
- * Prefer drm_device based logging over device or prink based logging.
+ * Prefer drm_device based logging over device or printk based logging.
  */
 
 __printf(3, 4)
@@ -495,25 +443,25 @@ void drm_dev_dbg(const struct device *dev, enum drm_debug_category category,
 
 
 #define drm_dbg_core(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_CORE, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_CORE, fmt, ##__VA_ARGS__)
 #define drm_dbg(drm, fmt, ...)						\
-	drm_dev_dbg((drm)->dev, DRM_UT_DRIVER, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_DRIVER, fmt, ##__VA_ARGS__)
 #define drm_dbg_kms(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_KMS, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_KMS, fmt, ##__VA_ARGS__)
 #define drm_dbg_prime(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_PRIME, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_PRIME, fmt, ##__VA_ARGS__)
 #define drm_dbg_atomic(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_ATOMIC, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_ATOMIC, fmt, ##__VA_ARGS__)
 #define drm_dbg_vbl(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_VBL, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_VBL, fmt, ##__VA_ARGS__)
 #define drm_dbg_state(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_STATE, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_STATE, fmt, ##__VA_ARGS__)
 #define drm_dbg_lease(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_LEASE, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_LEASE, fmt, ##__VA_ARGS__)
 #define drm_dbg_dp(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_DP, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_DP, fmt, ##__VA_ARGS__)
 #define drm_dbg_drmres(drm, fmt, ...)					\
-	drm_dev_dbg((drm)->dev, DRM_UT_DRMRES, fmt, ##__VA_ARGS__)
+	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_DRMRES, fmt, ##__VA_ARGS__)
 
 
 /*
@@ -576,15 +524,19 @@ void __drm_err(const char *format, ...);
 #define DRM_DEBUG_DP(fmt, ...)						\
 	__drm_dbg(DRM_UT_DP, fmt, ## __VA_ARGS__)
 
-
-#define DRM_DEBUG_KMS_RATELIMITED(fmt, ...)				\
-({									\
-	static DEFINE_RATELIMIT_STATE(_rs,				\
-				      DEFAULT_RATELIMIT_INTERVAL,       \
-				      DEFAULT_RATELIMIT_BURST);         \
-	if (__ratelimit(&_rs))						\
-		drm_dev_dbg(NULL, DRM_UT_KMS, fmt, ##__VA_ARGS__);	\
+#define __DRM_DEFINE_DBG_RATELIMITED(category, drm, fmt, ...)					\
+({												\
+	static DEFINE_RATELIMIT_STATE(rs_, DEFAULT_RATELIMIT_INTERVAL, DEFAULT_RATELIMIT_BURST);\
+	const struct drm_device *drm_ = (drm);							\
+												\
+	if (drm_debug_enabled(DRM_UT_ ## category) && __ratelimit(&rs_))			\
+		drm_dev_printk(drm_ ? drm_->dev : NULL, KERN_DEBUG, fmt, ## __VA_ARGS__);	\
 })
+
+#define drm_dbg_kms_ratelimited(drm, fmt, ...) \
+	__DRM_DEFINE_DBG_RATELIMITED(KMS, drm, fmt, ## __VA_ARGS__)
+
+#define DRM_DEBUG_KMS_RATELIMITED(fmt, ...) drm_dbg_kms_ratelimited(NULL, fmt, ## __VA_ARGS__)
 
 /*
  * struct drm_device based WARNs

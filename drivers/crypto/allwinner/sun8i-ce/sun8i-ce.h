@@ -16,7 +16,8 @@
 #include <crypto/internal/hash.h>
 #include <crypto/md5.h>
 #include <crypto/rng.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 
 /* CE Registers */
 #define CE_TDQ	0x00
@@ -295,8 +296,8 @@ struct sun8i_ce_hash_tfm_ctx {
  * @flow:	the flow to use for this request
  */
 struct sun8i_ce_hash_reqctx {
+	struct ahash_request fallback_req;
 	int flow;
-	struct ahash_request fallback_req; // keep at the end
 };
 
 /*

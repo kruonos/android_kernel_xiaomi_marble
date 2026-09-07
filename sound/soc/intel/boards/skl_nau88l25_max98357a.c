@@ -643,7 +643,6 @@ static struct snd_soc_card skylake_audio_card = {
 	.dapm_routes = skylake_map,
 	.num_dapm_routes = ARRAY_SIZE(skylake_map),
 	.fully_routed = true,
-	.disable_route_checks = true,
 	.late_probe = skylake_card_late_probe,
 };
 
@@ -674,6 +673,7 @@ static const struct platform_device_id skl_board_ids[] = {
 	{ .name = "kbl_n88l25_m98357a" },
 	{ }
 };
+MODULE_DEVICE_TABLE(platform, skl_board_ids);
 
 static struct platform_driver skylake_audio = {
 	.probe = skylake_audio_probe,
@@ -690,5 +690,3 @@ module_platform_driver(skylake_audio)
 MODULE_DESCRIPTION("Audio Machine driver-NAU88L25 & MAX98357A in I2S mode");
 MODULE_AUTHOR("Rohit Ainapure <rohit.m.ainapure@intel.com");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:skl_n88l25_m98357a");
-MODULE_ALIAS("platform:kbl_n88l25_m98357a");

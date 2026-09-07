@@ -8,6 +8,11 @@ gre='\e[0;32m'
 cd -- "${0%/*}" || exit 1
 
 KDIR=$(pwd -P)
+if ! grep -qx 'VERSION = 5' "$KDIR/Makefile" ||
+   ! grep -qx 'PATCHLEVEL = 10' "$KDIR/Makefile"; then
+	echo 'legacy 5.10 build disabled: use the isolated 5.15 compile workflow' >&2
+	exit 1
+fi
 DEFCONFIG=marble_defconfig
 IMAGE=${KDIR}/out/arch/arm64/boot/Image
 OUTPUT_DIR=${KDIR}/release

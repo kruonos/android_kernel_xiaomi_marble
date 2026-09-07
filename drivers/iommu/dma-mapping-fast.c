@@ -275,12 +275,8 @@ static void fast_smmu_unmap_page(struct device *dev, dma_addr_t iova,
 	}
 
 	spin_lock_irqsave(&mapping->lock, flags);
-
-	if (unlikely(!av8l_fast_unmap_public(mapping->pgtbl_ops, iova, len)))
-		goto fail;
-
+	av8l_fast_unmap_public(mapping->pgtbl_ops, iova, len);
 	__fast_smmu_free_iova(mapping, iova, len);
-fail:
 	spin_unlock_irqrestore(&mapping->lock, flags);
 }
 
@@ -411,8 +407,7 @@ static void fast_smmu_unmap_sg(struct device *dev,
 	len = ALIGN(sg_dma_address(sg) + sg_dma_len(sg) - (start - offset),
 		    FAST_PAGE_SIZE);
 
-	if (unlikely(!av8l_fast_unmap_public(mapping->pgtbl_ops, start, len)))
-		return;
+	av8l_fast_unmap_public(mapping->pgtbl_ops, start, len);
 
 	spin_lock_irqsave(&mapping->lock, flags);
 	__fast_smmu_free_iova(mapping, start, len);
@@ -582,8 +577,7 @@ static void *fast_smmu_alloc(struct device *dev, size_t size,
 		return NULL;
 	}
 
-	if (!(attrs & DMA_ATTR_SKIP_ZEROING))
-		gfp |= __GFP_ZERO;
+	gfp |= __GFP_ZERO;
 
 	*handle = DMA_MAPPING_ERROR;
 	size = ALIGN(size, SZ_4K);
@@ -679,10 +673,7 @@ static void fast_smmu_free(struct device *dev, size_t size,
 	size = ALIGN(size, FAST_PAGE_SIZE);
 
 	spin_lock_irqsave(&mapping->lock, flags);
-
-	if (unlikely(!av8l_fast_unmap_public(mapping->pgtbl_ops, dma_handle, size)))
-		goto fail;
-
+	av8l_fast_unmap_public(mapping->pgtbl_ops, dma_handle, size);
 	__fast_smmu_free_iova(mapping, dma_handle, size);
 	spin_unlock_irqrestore(&mapping->lock, flags);
 
@@ -703,11 +694,6 @@ static void fast_smmu_free(struct device *dev, size_t size,
 
 	if (page)
 		qcom_dma_free_contiguous(dev, page, size);
-
-	return;
-
-fail:
-	spin_unlock_irqrestore(&mapping->lock, flags);
 }
 
 static int fast_smmu_mmap_attrs(struct device *dev, struct vm_area_struct *vma,
@@ -1078,19 +1064,18 @@ int fast_smmu_init_mapping(struct device *dev, struct iommu_domain *domain,
 EXPORT_SYMBOL(fast_smmu_init_mapping);
 
 static void __fast_smmu_setup_dma_ops(void *data, struct device *dev,
-					u64 dma_base, u64 size)
+					u64 dma_base, u64 dma_limit)
 {
 	struct dma_fast_smmu_mapping *fast;
 	struct iommu_domain *domain;
-	int is_fast;
 	int ret;
 
 	domain = iommu_get_domain_for_dev(dev);
 	if (!domain)
 		return;
 
-	ret = iommu_domain_get_attr(domain, DOMAIN_ATTR_FAST, &is_fast);
-	if (ret || !is_fast)
+	ret = qcom_iommu_get_mappings_configuration(domain);
+	if (ret < 0 || !(ret & QCOM_IOMMU_MAPPING_CONF_FAST))
 		return;
 
 	fast = dev_get_mapping(dev);
@@ -1107,9 +1092,9 @@ static void __fast_smmu_setup_dma_ops(void *data, struct device *dev,
  * Called by drivers who create their own iommu domains via
  * iommu_domain_alloc().
  */
-void fast_smmu_setup_dma_ops(struct device *dev, u64 dma_base, u64 size)
+void fast_smmu_setup_dma_ops(struct device *dev, u64 dma_base, u64 dma_limit)
 {
-	__fast_smmu_setup_dma_ops(NULL, dev, dma_base, size);
+	__fast_smmu_setup_dma_ops(NULL, dev, dma_base, dma_limit);
 }
 EXPORT_SYMBOL(fast_smmu_setup_dma_ops);
 
@@ -1118,3 +1103,4 @@ int __init dma_mapping_fast_init(void)
 	return register_trace_android_rvh_iommu_setup_dma_ops(
 			__fast_smmu_setup_dma_ops, NULL);
 }
+

@@ -24,10 +24,11 @@
 #define PTP_PPS_EVENT PPS_CAPTUREASSERT
 #define PTP_PPS_MODE (PTP_PPS_DEFAULTS | PPS_CANWAIT | PPS_TSFMT_TSPEC)
 
+struct class *ptp_class;
+
 /* private globals */
 
 static dev_t ptp_devt;
-static struct class *ptp_class;
 
 static DEFINE_IDA(ptp_clocks_map);
 
@@ -64,27 +65,6 @@ static void enqueue_external_timestamp(struct timestamp_event_queue *queue,
 	spin_unlock_irqrestore(&queue->lock, flags);
 }
 
-long scaled_ppm_to_ppb(long ppm)
-{
-	/*
-	 * The 'freq' field in the 'struct timex' is in parts per
-	 * million, but with a 16 bit binary fractional field.
-	 *
-	 * We want to calculate
-	 *
-	 *    ppb = scaled_ppm * 1000 / 2^16
-	 *
-	 * which simplifies to
-	 *
-	 *    ppb = scaled_ppm * 125 / 2^13
-	 */
-	s64 ppb = 1 + ppm;
-	ppb *= 125;
-	ppb >>= 13;
-	return (long) ppb;
-}
-EXPORT_SYMBOL(scaled_ppm_to_ppb);
-
 /* posix clock implementation */
 
 static int ptp_clock_getres(struct posix_clock *pc, struct timespec64 *tp)
@@ -97,6 +77,11 @@ static int ptp_clock_getres(struct posix_clock *pc, struct timespec64 *tp)
 static int ptp_clock_settime(struct posix_clock *pc, const struct timespec64 *tp)
 {
 	struct ptp_clock *ptp = container_of(pc, struct ptp_clock, clock);
+
+	if (ptp_vclock_in_use(ptp)) {
+		pr_err("ptp: virtual clock in use\n");
+		return -EBUSY;
+	}
 
 	return  ptp->info->settime64(ptp->info, tp);
 }
@@ -118,6 +103,11 @@ static int ptp_clock_adjtime(struct posix_clock *pc, struct __kernel_timex *tx)
 	struct ptp_clock *ptp = container_of(pc, struct ptp_clock, clock);
 	struct ptp_clock_info *ops;
 	int err = -EOPNOTSUPP;
+
+	if (ptp_vclock_in_use(ptp)) {
+		pr_err("ptp: virtual clock in use\n");
+		return -EBUSY;
+	}
 
 	ops = ptp->info;
 
@@ -146,8 +136,7 @@ static int ptp_clock_adjtime(struct posix_clock *pc, struct __kernel_timex *tx)
 			err = ops->adjfine(ops, tx->freq);
 		else
 			err = ops->adjfreq(ops, ppb);
-		if (!err)
-			ptp->dialed_frequency = tx->freq;
+		ptp->dialed_frequency = tx->freq;
 	} else if (tx->modes & ADJ_OFFSET) {
 		if (ops->adjphase) {
 			s32 offset = tx->offset;
@@ -182,15 +171,12 @@ static void ptp_clock_release(struct device *dev)
 	struct ptp_clock *ptp = container_of(dev, struct ptp_clock, dev);
 
 	ptp_cleanup_pin_groups(ptp);
+	kfree(ptp->vclock_index);
 	mutex_destroy(&ptp->tsevq_mux);
 	mutex_destroy(&ptp->pincfg_mux);
+	mutex_destroy(&ptp->n_vclocks_mux);
 	ida_simple_remove(&ptp_clocks_map, ptp->index);
 	kfree(ptp);
-}
-
-static int ptp_enable(struct ptp_clock_info *ptp, struct ptp_clock_request *request, int on)
-{
-	return -EOPNOTSUPP;
 }
 
 static void ptp_aux_kworker(struct kthread_work *work)
@@ -213,6 +199,7 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 {
 	struct ptp_clock *ptp;
 	int err = 0, index, major = MAJOR(ptp_devt);
+	size_t size;
 
 	if (info->n_alarm > PTP_MAX_ALARMS)
 		return ERR_PTR(-EINVAL);
@@ -236,10 +223,8 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 	spin_lock_init(&ptp->tsevq.lock);
 	mutex_init(&ptp->tsevq_mux);
 	mutex_init(&ptp->pincfg_mux);
+	mutex_init(&ptp->n_vclocks_mux);
 	init_waitqueue_head(&ptp->tsev_wq);
-
-	if (!ptp->info->enable)
-		ptp->info->enable = ptp_enable;
 
 	if (ptp->info->do_aux_work) {
 		kthread_init_delayed_work(&ptp->aux_work, ptp_aux_kworker);
@@ -248,6 +233,22 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 			err = PTR_ERR(ptp->kworker);
 			pr_err("failed to create ptp aux_worker %d\n", err);
 			goto kworker_err;
+		}
+	}
+
+	/* PTP virtual clock is being registered under physical clock */
+	if (parent && parent->class && parent->class->name &&
+	    strcmp(parent->class->name, "ptp") == 0)
+		ptp->is_virtual_clock = true;
+
+	if (!ptp->is_virtual_clock) {
+		ptp->max_vclocks = PTP_DEFAULT_MAX_VCLOCKS;
+
+		size = sizeof(int) * ptp->max_vclocks;
+		ptp->vclock_index = kzalloc(size, GFP_KERNEL);
+		if (!ptp->vclock_index) {
+			err = -ENOMEM;
+			goto no_mem_for_vclocks;
 		}
 	}
 
@@ -268,6 +269,7 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 			pr_err("failed to register pps source\n");
 			goto no_pps;
 		}
+		ptp->pps_source->lookup_cookie = ptp;
 	}
 
 	/* Initialize a new device of our class in our clock structure. */
@@ -283,11 +285,11 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 	/* Create a posix clock and link it to the device. */
 	err = posix_clock_register(&ptp->clock, &ptp->dev);
 	if (err) {
-		if (ptp->pps_source)
-			pps_unregister_source(ptp->pps_source);
+	        if (ptp->pps_source)
+	                pps_unregister_source(ptp->pps_source);
 
 		if (ptp->kworker)
-			kthread_destroy_worker(ptp->kworker);
+	                kthread_destroy_worker(ptp->kworker);
 
 		put_device(&ptp->dev);
 
@@ -300,11 +302,14 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 no_pps:
 	ptp_cleanup_pin_groups(ptp);
 no_pin_groups:
+	kfree(ptp->vclock_index);
+no_mem_for_vclocks:
 	if (ptp->kworker)
 		kthread_destroy_worker(ptp->kworker);
 kworker_err:
 	mutex_destroy(&ptp->tsevq_mux);
 	mutex_destroy(&ptp->pincfg_mux);
+	mutex_destroy(&ptp->n_vclocks_mux);
 	ida_simple_remove(&ptp_clocks_map, index);
 no_slot:
 	kfree(ptp);
@@ -313,8 +318,20 @@ no_memory:
 }
 EXPORT_SYMBOL(ptp_clock_register);
 
+static int unregister_vclock(struct device *dev, void *data)
+{
+	struct ptp_clock *ptp = dev_get_drvdata(dev);
+
+	ptp_vclock_unregister(info_to_vclock(ptp->info));
+	return 0;
+}
+
 int ptp_clock_unregister(struct ptp_clock *ptp)
 {
+	if (ptp_vclock_in_use(ptp)) {
+		device_for_each_child(&ptp->dev, NULL, unregister_vclock);
+	}
+
 	ptp->defunct = 1;
 	wake_up_interruptible(&ptp->tsev_wq);
 

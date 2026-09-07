@@ -9,7 +9,6 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/devfreq.h>
-#include <linux/kstrtox.h>
 #include <linux/pm.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
@@ -32,21 +31,18 @@ static int devfreq_userspace_func(struct devfreq *df, unsigned long *freq)
 	return 0;
 }
 
-static ssize_t store_freq(struct device *dev, struct device_attribute *attr,
-			  const char *buf, size_t count)
+static ssize_t set_freq_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct userspace_data *data;
 	unsigned long wanted;
 	int err = 0;
 
-	err = kstrtoul(buf, 0, &wanted);
-	if (err)
-		return err;
-
 	mutex_lock(&devfreq->lock);
 	data = devfreq->data;
 
+	sscanf(buf, "%lu", &wanted);
 	data->user_frequency = wanted;
 	data->valid = true;
 	err = update_devfreq(devfreq);
@@ -56,8 +52,8 @@ static ssize_t store_freq(struct device *dev, struct device_attribute *attr,
 	return err;
 }
 
-static ssize_t show_freq(struct device *dev, struct device_attribute *attr,
-			 char *buf)
+static ssize_t set_freq_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct userspace_data *data;
@@ -74,7 +70,7 @@ static ssize_t show_freq(struct device *dev, struct device_attribute *attr,
 	return err;
 }
 
-static DEVICE_ATTR(set_freq, 0644, show_freq, store_freq);
+static DEVICE_ATTR_RW(set_freq);
 static struct attribute *dev_entries[] = {
 	&dev_attr_set_freq.attr,
 	NULL,

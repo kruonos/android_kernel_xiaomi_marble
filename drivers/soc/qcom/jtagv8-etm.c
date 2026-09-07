@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
- *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -239,6 +238,7 @@ struct etm_ctx {
 
 static struct etm_ctx *etm[NR_CPUS];
 static int cnt;
+static bool hibernation_freeze;
 
 static struct clk *clock[NR_CPUS];
 

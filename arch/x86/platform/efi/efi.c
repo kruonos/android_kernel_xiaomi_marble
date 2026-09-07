@@ -234,11 +234,9 @@ int __init efi_memblock_x86_reserve_range(void)
 	data.desc_size		= e->efi_memdesc_size;
 	data.desc_version	= e->efi_memdesc_version;
 
-	if (!efi_enabled(EFI_PARAVIRT)) {
-		rv = efi_memmap_init_early(&data);
-		if (rv)
-			return rv;
-	}
+	rv = efi_memmap_init_early(&data);
+	if (rv)
+		return rv;
 
 	if (add_efi_memmap || do_efi_soft_reserve())
 		do_add_efi_memmap();
@@ -470,7 +468,7 @@ void __init efi_init(void)
 	 */
 
 	if (!efi_runtime_supported())
-		pr_info("No EFI runtime due to 32/64-bit mismatch with kernel\n");
+		pr_err("No EFI runtime due to 32/64-bit mismatch with kernel\n");
 
 	if (!efi_runtime_supported() || efi_runtime_disabled()) {
 		efi_memmap_unmap();
@@ -831,7 +829,7 @@ static void __init __efi_enter_virtual_mode(void)
 	}
 
 	efi_check_for_embedded_firmwares();
-	efi_unmap_boot_services();
+	efi_free_boot_services();
 
 	if (!efi_is_mixed())
 		efi_native_runtime_setup();

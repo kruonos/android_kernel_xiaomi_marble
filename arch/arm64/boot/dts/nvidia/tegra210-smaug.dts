@@ -1687,8 +1687,6 @@
 				status = "okay";
 				vbus-supply = <&usbc_vbus>;
 				mode = "otg";
-				usb-role-switch;
-				role-switch-default-mode = "host";
 			};
 
 			usb3-0 {
@@ -1719,7 +1717,7 @@
 	aconnect@702c0000 {
 		status = "okay";
 
-		dma@702e2000 {
+		dma-controller@702e2000 {
 			status = "okay";
 		};
 

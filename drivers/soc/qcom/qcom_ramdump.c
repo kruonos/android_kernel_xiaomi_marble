@@ -17,6 +17,8 @@
 #include <linux/devcoredump.h>
 #include <linux/soc/qcom/mdt_loader.h>
 
+#define RAMDUMP_TIMEOUT 120000
+
 #define SIZEOF_ELF_STRUCT(__xhdr) \
 static inline size_t sizeof_elf_##__xhdr(unsigned char class) \
 { \

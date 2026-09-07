@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _SOC_QCOM_LLCC_EVENTS_H_
@@ -285,7 +286,6 @@ enum pmgr_events {
 };
 
 enum filter_type {
-	UNKNOWN_FILTER,
 	SCID,
 	MID,
 	PROFILING_TAG,
@@ -295,7 +295,8 @@ enum filter_type {
 	MEMTAGOPS,
 	MULTISCID,
 	DIRTYINFO,
-	ADDR_MASK
+	ADDR_MASK,
+	UNKNOWN,
 };
 
 #endif /* _SOC_QCOM_LLCC_EVENTS_H_ */

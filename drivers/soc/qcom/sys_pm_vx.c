@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  *
  */
 
@@ -105,45 +105,11 @@ static const char * const drv_names_waipio[] = {
 	""
 };
 
-static const char * const drv_names_diwali[] = {
-	"TZ", "L3", "HLOS", "HYP", "SECPROC", "AUDIO", "SENSOR", "AOP",
-	"DEBUG", "GPU", "DISPLAY", "COMPUTE_DSP", "TME_HW", "TME_SW",
-	"WPSS", "MDM SW", "MDM HW", "WLAN RF", "DDR AUX", "ARC CPRF",
-	""
-};
-
-static const char * const drv_names_cape[] = {
-	"TZ", "HYP", "HLOS", "L3", "SECPROC", "AUDIO", "SENSOR", "AOP",
-	"DEBUG", "GPU", "DISPLAY", "COMPUTE_DSP", "TME_SW", "TME_HW",
-	"MDM SW", "MDM HW", "WLAN RF", "WLAN BB", "DDR AUX", "ARC CPRF",
-	""
-};
-
-static const char * const drv_names_parrot[] = {
-	"TZ", "L3", "HLOS", "HYP", "AUDIO", "AOP", "DEBUG", "GPU",
-	"DISPLAY", "COMPUTE_DSP", "TME_HW", "TME_SW", "WPSS",
-	"MDM SW", "MDM HW", "WLAN RF", "WLAN BB", "DDR AUX", "ARC CPRF",
-	""
-};
-
-static const char * const drv_names_neo[] = {
-	"TZ", "HYP", "HLOS", "L3", "SECPROC", "AUDIO", "SENSOR", "AOP", "DEBUG",
-	"GPU", "DISPLAY", "COMPUTE_DSP", "TME_HW", "TME_SW", "WPSS",
-	"MDM SW", "MDM HW", "WLAN RF", "WLAN BB", "DDR AUX", "ARC CPRF",
-	""
-};
-
-static const char * const drv_names_anorak[] = {
-	"TZ", "L3", "HLOS", "HYP", "SECPROC", "AUDIO", "SENSOR", "AOP", "DEBUG",
-	"GPU", "DISPLAY", "COMPUTE_DSP", "TME_HW", "TME_SW", "DISPLAY_1",
-	"MDM SW", "MDM HW", "WLAN RF", "WLAN BB", "DDR AUX", "ARC CPRF",
-	""
-};
-
-static const char * const drv_names_ravelin[] = {
-	"TZ", "L3", "HLOS", "HYP", "AUDIO", "AOP", "DEBUG", "RESERVED",
-	"DISPLAY", "RESERVED", "TME_HW", "TME_SW", "WPSS", "MDM SW",
-	"MDM HW", "WLAN RF", "WLAN BB", "DDR AUX", "ARC CPRF",
+static const char * const drv_names_kalama[] = {
+	"TZ", "HYP", "HLOS", "L3", "SECPROC", "AUDIO", "AOP", "DEBUG",
+	"GPU", "DISPLAY", "COMPUTE_DSP", "TME_SW", "TME_HW", "MDM SW",
+	"MDM HW", "WLAN RF", "WLAN BB", "CAM_IFE0", "CAM_IFE1", "CAM_IFE2",
+	"DDR AUX", "ARC CPRF",
 	""
 };
 
@@ -424,18 +390,8 @@ static const struct of_device_id drv_match_table[] = {
 	  .data = drv_names_lahaina },
 	{ .compatible = "qcom,sys-pm-waipio",
 	  .data = drv_names_waipio },
-	{ .compatible = "qcom,sys-pm-diwali",
-	  .data = drv_names_diwali },
-	{ .compatible = "qcom,sys-pm-cape",
-	  .data = drv_names_cape },
-	{ .compatible = "qcom,sys-pm-parrot",
-	  .data = drv_names_parrot },
-	{ .compatible = "qcom,sys-pm-neo",
-	  .data = drv_names_neo },
-	{ .compatible = "qcom,sys-pm-anorak",
-	  .data = drv_names_anorak },
-	{ .compatible = "qcom,sys-pm-ravelin",
-	  .data = drv_names_ravelin },
+	{ .compatible = "qcom,sys-pm-kalama",
+	  .data = drv_names_kalama },
 	{ }
 };
 

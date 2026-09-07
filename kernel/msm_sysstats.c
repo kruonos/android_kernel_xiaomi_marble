@@ -18,7 +18,6 @@
 #include <linux/fdtable.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-resv.h>
-#include <linux/msm_kgsl.h>
 
 struct tgid_iter {
 	unsigned int tgid;
@@ -27,12 +26,34 @@ struct tgid_iter {
 
 static struct genl_family family;
 
+static u64 (*sysstats_kgsl_get_stats)(pid_t pid);
+
 static DEFINE_PER_CPU(__u32, sysstats_seqnum);
 #define SYSSTATS_CMD_ATTR_MAX 3
 static const struct nla_policy sysstats_cmd_get_policy[SYSSTATS_CMD_ATTR_MAX + 1] = {
 	[SYSSTATS_TASK_CMD_ATTR_PID]  = { .type = NLA_U32 },
 	[SYSSTATS_TASK_CMD_ATTR_FOREACH]  = { .type = NLA_U32 },
 	[SYSSTATS_TASK_CMD_ATTR_PIDS_OF_NAME] = { .type = NLA_NUL_STRING}};
+/*
+ * The below dummy function is a means to get rid of calling
+ * callbacks with out any external sync.
+ */
+static u64 sysstats_kgsl_stats(pid_t pid)
+{
+	return 0;
+}
+
+void sysstats_register_kgsl_stats_cb(u64 (*cb)(pid_t pid))
+{
+	sysstats_kgsl_get_stats = cb;
+}
+EXPORT_SYMBOL(sysstats_register_kgsl_stats_cb);
+
+void sysstats_unregister_kgsl_stats_cb(void)
+{
+	sysstats_kgsl_get_stats = sysstats_kgsl_stats;
+}
+EXPORT_SYMBOL(sysstats_unregister_kgsl_stats_cb);
 
 static int sysstats_pre_doit(const struct genl_ops *ops, struct sk_buff *skb,
 			      struct genl_info *info)
@@ -197,7 +218,7 @@ static unsigned long get_system_unreclaimble_info(void)
 	rcu_read_unlock();
 
 	/* Account the kgsl information. */
-	size += (kgsl_get_stats(-1) >> PAGE_SHIFT);
+	size += sysstats_kgsl_get_stats(-1) >> PAGE_SHIFT;
 
 	return size;
 }
@@ -270,11 +291,12 @@ static int sysstats_task_cmd_attr_pid(struct genl_info *info)
 		stats->file_rss = K(get_mm_counter(p->mm, MM_FILEPAGES));
 		stats->shmem_rss = K(get_mm_counter(p->mm, MM_SHMEMPAGES));
 		stats->swap_rss = K(get_mm_counter(p->mm, MM_SWAPENTS));
-		stats->unreclaimable = K(get_task_unreclaimable_info(p)) +
-					(kgsl_get_stats(stats->pid) >> 10);
+		stats->unreclaimable = K(get_task_unreclaimable_info(p));
 #undef K
 		task_unlock(p);
 	}
+
+	stats->unreclaimable += sysstats_kgsl_get_stats(stats->pid) >> 10;
 
 	task_cputime(tsk, &utime, &stime);
 	stats->utime = div_u64(utime, NSEC_PER_USEC);
@@ -295,7 +317,7 @@ static int sysstats_task_cmd_attr_pid(struct genl_info *info)
 			task_active_pid_ns(current)) : 0;
 	rcu_read_unlock();
 
-	strlcpy(stats->name, tsk->comm, sizeof(stats->name));
+	strscpy(stats->name, tsk->comm, sizeof(stats->name));
 
 #ifdef CONFIG_CPUSETS
 	css = task_get_css(tsk, cpuset_cgrp_id);
@@ -492,27 +514,21 @@ static void sysstats_fill_zoneinfo(struct sysstats_mem *stats)
 	pgdat = NODE_DATA(0);
 	node_zones = pgdat->node_zones;
 
-	/* Ensure that dma_nr_xxx are zero before filling. */
-	stats->dma_nr_active_anon = stats->dma_nr_inactive_anon = 0;
-	stats->dma_nr_active_file = stats->dma_nr_inactive_file = 0;
-	stats->dma_nr_free = 0;
-
 	for (zone = node_zones; zone - node_zones < MAX_NR_ZONES; ++zone) {
 		if (!populated_zone(zone))
 			continue;
 
 		zspages += zone_page_state(zone, NR_ZSPAGES);
-		if (!strcmp(zone->name, "DMA") ||
-				!strcmp(zone->name, "DMA32")) {
-			stats->dma_nr_free +=
+		if (!strcmp(zone->name, "DMA")) {
+			stats->dma_nr_free =
 				K(zone_page_state(zone, NR_FREE_PAGES));
-			stats->dma_nr_active_anon +=
+			stats->dma_nr_active_anon =
 				K(zone_page_state(zone, NR_ZONE_ACTIVE_ANON));
-			stats->dma_nr_inactive_anon +=
+			stats->dma_nr_inactive_anon =
 				K(zone_page_state(zone, NR_ZONE_INACTIVE_ANON));
-			stats->dma_nr_active_file +=
+			stats->dma_nr_active_file =
 				K(zone_page_state(zone, NR_ZONE_ACTIVE_FILE));
-			stats->dma_nr_inactive_file +=
+			stats->dma_nr_inactive_file =
 				K(zone_page_state(zone, NR_ZONE_INACTIVE_FILE));
 		} else if (!strcmp(zone->name, "Normal")) {
 			stats->normal_nr_free =
@@ -580,7 +596,7 @@ static void sysstats_build(struct sysstats_mem *stats)
 	stats->free_cma = K(global_zone_page_state(NR_FREE_CMA_PAGES));
 	stats->file_mapped = K(global_node_page_state(NR_FILE_MAPPED));
 	stats->kernelstack = global_node_page_state(NR_KERNEL_STACK_KB);
-	stats->pagetable = K(global_zone_page_state(NR_PAGETABLE));
+	stats->pagetable = K(global_node_page_state(NR_PAGETABLE));
 	stats->shmem = K(i.sharedram);
 	sysstats_fill_zoneinfo(stats);
 }
@@ -656,6 +672,7 @@ static int __init sysstats_init(void)
 	if (rc)
 		return rc;
 
+	sysstats_register_kgsl_stats_cb(sysstats_kgsl_stats);
 	pr_info("registered sysstats version %d\n", SYSSTATS_GENL_VERSION);
 	return 0;
 }
@@ -667,4 +684,5 @@ static void __exit sysstats_exit(void)
 
 module_init(sysstats_init);
 module_exit(sysstats_exit);
+MODULE_IMPORT_NS(MINIDUMP);
 MODULE_LICENSE("GPL v2");

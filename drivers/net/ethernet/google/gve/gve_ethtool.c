@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /* Google virtual Ethernet (gve) driver
  *
- * Copyright (C) 2015-2019 Google, Inc.
+ * Copyright (C) 2015-2021 Google, Inc.
  */
 
+#include <linux/ethtool.h>
 #include <linux/rtnetlink.h>
 #include "gve.h"
 #include "gve_adminq.h"
@@ -13,9 +14,9 @@ static void gve_get_drvinfo(struct net_device *netdev,
 {
 	struct gve_priv *priv = netdev_priv(netdev);
 
-	strlcpy(info->driver, "gve", sizeof(info->driver));
-	strlcpy(info->version, gve_version_str, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(priv->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, "gve", sizeof(info->driver));
+	strscpy(info->version, gve_version_str, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(priv->pdev), sizeof(info->bus_info));
 }
 
 static void gve_set_msglevel(struct net_device *netdev, u32 value)
@@ -50,6 +51,7 @@ static const char gve_gstrings_rx_stats[][ETH_GSTRING_LEN] = {
 static const char gve_gstrings_tx_stats[][ETH_GSTRING_LEN] = {
 	"tx_posted_desc[%u]", "tx_completed_desc[%u]", "tx_bytes[%u]",
 	"tx_wake[%u]", "tx_stop[%u]", "tx_event_counter[%u]",
+	"tx_dma_mapping_error[%u]",
 };
 
 static const char gve_gstrings_adminq_stats[][ETH_GSTRING_LEN] = {
@@ -140,8 +142,7 @@ gve_get_ethtool_stats(struct net_device *netdev,
 		tmp_rx_desc_err_dropped_pkt, tmp_tx_pkts, tmp_tx_bytes;
 	u64 rx_buf_alloc_fail, rx_desc_err_dropped_pkt, rx_pkts,
 		rx_skb_alloc_fail, rx_bytes, tx_pkts, tx_bytes;
-	int rx_base_stats_idx, max_rx_stats_idx, max_tx_stats_idx;
-	int stats_idx, stats_region_len, nic_stats_len;
+	int stats_idx, base_stats_idx, max_stats_idx;
 	struct stats *report_stats;
 	int *rx_qid_to_stats_idx;
 	int *tx_qid_to_stats_idx;
@@ -210,7 +211,8 @@ gve_get_ethtool_stats(struct net_device *netdev,
 	data[i++] = rx_bytes;
 	data[i++] = tx_bytes;
 	/* total rx dropped packets */
-	data[i++] = rx_skb_alloc_fail + rx_desc_err_dropped_pkt;
+	data[i++] = rx_skb_alloc_fail + rx_buf_alloc_fail +
+		    rx_desc_err_dropped_pkt;
 	/* Skip tx_dropped */
 	i++;
 
@@ -226,33 +228,14 @@ gve_get_ethtool_stats(struct net_device *netdev,
 	data[i++] = priv->stats_report_trigger_cnt;
 	i = GVE_MAIN_STATS_LEN;
 
-	rx_base_stats_idx = 0;
-	max_rx_stats_idx = 0;
-	max_tx_stats_idx = 0;
-	stats_region_len = priv->stats_report_len -
-				sizeof(struct gve_stats_report);
-	nic_stats_len = (NIC_RX_STATS_REPORT_NUM * priv->rx_cfg.num_queues +
-		NIC_TX_STATS_REPORT_NUM * priv->tx_cfg.num_queues) *
-		sizeof(struct stats);
-	if (unlikely((stats_region_len -
-				nic_stats_len) % sizeof(struct stats))) {
-		net_err_ratelimited("Starting index of NIC stats should be multiple of stats size");
-	} else {
-		/* For rx cross-reporting stats,
-		 * start from nic rx stats in report
-		 */
-		rx_base_stats_idx = (stats_region_len - nic_stats_len) /
-							sizeof(struct stats);
-		max_rx_stats_idx = NIC_RX_STATS_REPORT_NUM *
-			priv->rx_cfg.num_queues +
-			rx_base_stats_idx;
-		max_tx_stats_idx = NIC_TX_STATS_REPORT_NUM *
-			priv->tx_cfg.num_queues +
-			max_rx_stats_idx;
-	}
+	/* For rx cross-reporting stats, start from nic rx stats in report */
+	base_stats_idx = GVE_TX_STATS_REPORT_NUM * priv->tx_cfg.num_queues +
+		GVE_RX_STATS_REPORT_NUM * priv->rx_cfg.num_queues;
+	max_stats_idx = NIC_RX_STATS_REPORT_NUM * priv->rx_cfg.num_queues +
+		base_stats_idx;
 	/* Preprocess the stats report for rx, map queue id to start index */
 	skip_nic_stats = false;
-	for (stats_idx = rx_base_stats_idx; stats_idx < max_rx_stats_idx;
+	for (stats_idx = base_stats_idx; stats_idx < max_stats_idx;
 		stats_idx += NIC_RX_STATS_REPORT_NUM) {
 		u32 stat_name = be32_to_cpu(report_stats[stats_idx].stat_name);
 		u32 queue_id = be32_to_cpu(report_stats[stats_idx].queue_id);
@@ -284,6 +267,7 @@ gve_get_ethtool_stats(struct net_device *netdev,
 			data[i++] = tmp_rx_bytes;
 			/* rx dropped packets */
 			data[i++] = tmp_rx_skb_alloc_fail +
+				tmp_rx_buf_alloc_fail +
 				tmp_rx_desc_err_dropped_pkt;
 			data[i++] = rx->rx_copybreak_pkt;
 			data[i++] = rx->rx_copied_pkt;
@@ -304,9 +288,13 @@ gve_get_ethtool_stats(struct net_device *netdev,
 		i += priv->rx_cfg.num_queues * NUM_GVE_RX_CNTS;
 	}
 
+	/* For tx cross-reporting stats, start from nic tx stats in report */
+	base_stats_idx = max_stats_idx;
+	max_stats_idx = NIC_TX_STATS_REPORT_NUM * priv->tx_cfg.num_queues +
+		max_stats_idx;
+	/* Preprocess the stats report for tx, map queue id to start index */
 	skip_nic_stats = false;
-	/* NIC TX stats start right after NIC RX stats */
-	for (stats_idx = max_rx_stats_idx; stats_idx < max_tx_stats_idx;
+	for (stats_idx = base_stats_idx; stats_idx < max_stats_idx;
 		stats_idx += NIC_TX_STATS_REPORT_NUM) {
 		u32 stat_name = be32_to_cpu(report_stats[stats_idx].stat_name);
 		u32 queue_id = be32_to_cpu(report_stats[stats_idx].queue_id);
@@ -323,8 +311,16 @@ gve_get_ethtool_stats(struct net_device *netdev,
 		for (ring = 0; ring < priv->tx_cfg.num_queues; ring++) {
 			struct gve_tx_ring *tx = &priv->tx[ring];
 
-			data[i++] = tx->req;
-			data[i++] = tx->done;
+			if (gve_is_gqi(priv)) {
+				data[i++] = tx->req;
+				data[i++] = tx->done;
+			} else {
+				/* DQO doesn't currently support
+				 * posted/completed descriptor counts;
+				 */
+				data[i++] = 0;
+				data[i++] = 0;
+			}
 			do {
 				start =
 				  u64_stats_fetch_begin_irq(&priv->tx[ring].statss);
@@ -336,6 +332,7 @@ gve_get_ethtool_stats(struct net_device *netdev,
 			data[i++] = tx->stop_queue;
 			data[i++] = be32_to_cpu(gve_tx_load_event_counter(priv,
 									  tx));
+			data[i++] = tx->dma_mapping_error;
 			/* stats from NIC */
 			if (skip_nic_stats) {
 				/* skip NIC tx stats */
@@ -399,7 +396,7 @@ static int gve_set_channels(struct net_device *netdev,
 
 	gve_get_channels(netdev, &old_settings);
 
-	/* Changing combined is not allowed allowed */
+	/* Changing combined is not allowed */
 	if (cmd->combined_count != old_settings.combined_count)
 		return -EINVAL;
 
@@ -464,11 +461,16 @@ static int gve_set_tunable(struct net_device *netdev,
 
 	switch (etuna->id) {
 	case ETHTOOL_RX_COPYBREAK:
+	{
+		u32 max_copybreak = gve_is_gqi(priv) ?
+			(PAGE_SIZE / 2) : priv->data_buffer_size_dqo;
+
 		len = *(u32 *)value;
-		if (len > PAGE_SIZE / 2)
+		if (len > max_copybreak)
 			return -EINVAL;
 		priv->rx_copybreak = len;
 		return 0;
+	}
 	default:
 		return -EOPNOTSUPP;
 	}

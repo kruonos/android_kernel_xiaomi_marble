@@ -18,8 +18,6 @@ static DECLARE_HASHTABLE(synx_camera_id_tbl, 8);
 spinlock_t camera_tbl_lock;
 spinlock_t global_tbl_lock;
 
-extern void synx_external_callback(s32 sync_obj, int status, void *data);
-
 int synx_util_init_coredata(struct synx_coredata *synx_obj,
 	struct synx_create_params *params,
 	struct dma_fence_ops *ops)
@@ -39,7 +37,7 @@ int synx_util_init_coredata(struct synx_coredata *synx_obj,
 	mutex_init(&synx_obj->obj_lock);
 	INIT_LIST_HEAD(&synx_obj->reg_cbs_list);
 	if (params->name)
-		strlcpy(synx_obj->name, params->name, sizeof(synx_obj->name));
+		strscpy(synx_obj->name, params->name, sizeof(synx_obj->name));
 
 	if (!synx_util_is_external_object(synx_obj)) {
 		/*

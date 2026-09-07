@@ -5,6 +5,8 @@
  * Copyright (C) 2013 ARM Limited
  *
  * Author: Will Deacon <will.deacon@arm.com>
+ *
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _ARM_SMMU_H
@@ -160,8 +162,8 @@ enum arm_smmu_cbar_type {
 #define ARM_SMMU_SCTLR_MEM_ATTR		GENMASK(19, 16)
 #define ARM_SMMU_SCTLR_MEM_ATTR_OISH_WB_CACHE	0xf
 #define ARM_SMMU_SCTLR_S1_ASIDPNE	BIT(12)
-#define ARM_SMMU_SCTLR_HUPCF		BIT(8)
 #define ARM_SMMU_SCTLR_CFCFG		BIT(7)
+#define ARM_SMMU_SCTLR_HUPCF		BIT(8)
 #define ARM_SMMU_SCTLR_CFIE		BIT(6)
 #define ARM_SMMU_SCTLR_CFRE		BIT(5)
 #define ARM_SMMU_SCTLR_E		BIT(4)
@@ -251,15 +253,15 @@ enum arm_smmu_cbar_type {
 #define ARM_SMMU_FSYNR1_PID		GENMASK(12, 8)
 #define ARM_SMMU_FSYNR1_MID		GENMASK(7, 0)
 
+#define ARM_SMMU_CB_FSYNR1		0x6c
+
 #define ARM_SMMU_CB_S1_TLBIVA		0x600
 #define ARM_SMMU_CB_S1_TLBIASID		0x610
-#define ARM_SMMU_CB_S1_TLBIALL		0x618
 #define ARM_SMMU_CB_S1_TLBIVAL		0x620
 #define ARM_SMMU_CB_S2_TLBIIPAS2	0x630
 #define ARM_SMMU_CB_S2_TLBIIPAS2L	0x638
 #define ARM_SMMU_CB_TLBSYNC		0x7f0
 #define ARM_SMMU_CB_TLBSTATUS		0x7f4
-#define TLBSTATUS_SACTIVE		BIT(0)
 #define ARM_SMMU_CB_ATS1PR		0x800
 
 /* Implementation Defined Register Space 5 registers*/
@@ -280,15 +282,8 @@ enum arm_smmu_cbar_type {
 #define TCU_SYNC_IN_PRGSS		BIT(20)
 #define TCU_INV_IN_PRGSS		BIT(16)
 
-/* Relative to SMMU_BASE */
-#define APPS_SMMU_SAFE_SEC_CFG		0x2648
-#define SAFE_REQ			BIT(2)
-#define SAFE_ACK			BIT(4)
-
 #define ARM_SMMU_CB_ATSR		0x8f0
 #define ARM_SMMU_ATSR_ACTIVE		BIT(0)
-
-#define ARM_SMMU_MICRO_IDLE_DELAY_US	5
 
 
 /* Maximum number of context banks per SMMU */
@@ -348,25 +343,14 @@ struct arm_smmu_s2cr {
 	enum arm_smmu_s2cr_type		type;
 	enum arm_smmu_s2cr_privcfg	privcfg;
 	u8				cbndx;
-	bool				cb_handoff;
 	bool				pinned;
-};
-
-/*
- * Add smr state for debug purpose, it indicate the SMR
- * table entry from kernel side.
- */
-enum arm_smmu_smr_state {
-	SMR_INVALID,
-	SMR_PROGRAMMED,
-	SMR_ALLOCATED,
 };
 
 struct arm_smmu_smr {
 	u16				mask;
 	u16				id;
 	bool				valid;
-	enum arm_smmu_smr_state		state;
+	bool				pinned;
 };
 
 struct arm_smmu_device {
@@ -396,6 +380,8 @@ struct arm_smmu_device {
 #define ARM_SMMU_OPT_NO_ASID_RETENTION	(1 << 3)
 #define ARM_SMMU_OPT_DISABLE_ATOS	(1 << 4)
 #define ARM_SMMU_OPT_CONTEXT_FAULT_RETRY	(1 << 5)
+#define ARM_SMMU_OPT_MULTI_MATCH_HANDOFF_SMR	(1 << 6)
+#define ARM_SMMU_OPT_STATIC_CB		(1 << 7)
 	u32				options;
 	enum arm_smmu_arch_version	version;
 	enum arm_smmu_implementation	model;
@@ -413,7 +399,7 @@ struct arm_smmu_device {
 	struct arm_smmu_smr		*smrs;
 	struct arm_smmu_s2cr		*s2crs;
 	struct mutex			stream_map_mutex;
-	struct mutex			iommu_group_mutex;
+
 	unsigned long			va_size;
 	unsigned long			ipa_size;
 	unsigned long			pa_size;
@@ -424,8 +410,6 @@ struct arm_smmu_device {
 	unsigned int			*irqs;
 	struct clk_bulk_data		*clks;
 	int				num_clks;
-
-	struct list_head		list;
 
 	spinlock_t			global_sync_lock;
 
@@ -442,9 +426,6 @@ struct arm_smmu_device {
 	phys_addr_t                     phys_addr;
 
 	unsigned long			sync_timed_out;
-
-	/* power ref count for the atomic clients. */
-	unsigned int			atomic_pwr_refcount;
 };
 
 enum arm_smmu_context_fmt {
@@ -476,6 +457,7 @@ struct arm_smmu_cfg {
 
 	enum arm_smmu_cbar_type		cbar;
 	enum arm_smmu_context_fmt	fmt;
+	bool				flush_walk_prefer_tlbiasid;
 };
 #define ARM_SMMU_INVALID_IRPTNDX	0xff
 
@@ -494,41 +476,49 @@ enum arm_smmu_domain_stage {
 	ARM_SMMU_DOMAIN_BYPASS,
 };
 
+struct arm_smmu_fault_model {
+	char non_fatal : 1;
+	char no_cfre : 1;
+	char no_stall : 1;
+	char hupcf : 1;
+};
+
+struct arm_smmu_mapping_cfg {
+	char s1_bypass : 1;
+	char atomic : 1;
+	char fast : 1;
+};
+
 struct arm_smmu_domain {
 	struct arm_smmu_device		*smmu;
 	struct device			*dev;
 	struct io_pgtable_ops		*pgtbl_ops;
+	unsigned long			pgtbl_quirks;
+	bool				force_coherent_walk;
 	const struct iommu_flush_ops	*flush_ops;
 	struct arm_smmu_cfg		cfg;
 	enum arm_smmu_domain_stage	stage;
-	bool				non_strict;
 	struct mutex			init_mutex; /* Protects smmu pointer */
 	spinlock_t			cb_lock; /* Serialises ATS1* ops */
 	spinlock_t			sync_lock; /* Serialises TLB syncs */
-	DECLARE_BITMAP(attributes, DOMAIN_ATTR_EXTENDED_MAX);
+	struct arm_smmu_fault_model	fault_model;
+	struct arm_smmu_mapping_cfg	mapping_cfg;
+	bool				delayed_s1_trans_enable;
 	u32				secure_vmid;
-	struct list_head		pte_info_list;
-	struct list_head		unassign_list;
-	/* Protects pte_info_list, unassign_list, and secure_pool_list. */
-	struct mutex			assign_lock;
-	struct list_head		secure_pool_list;
 
 	/*
 	 * Track PMDs which require tlb invalidate prior to being
 	 * freed, or before their iovas can be reused by iommu_map().
 	 */
 	spinlock_t			iotlb_gather_lock;
-	struct list_head		iotlb_gather_freelist;
+	struct page			*freelist;
 	bool				deferred_flush;
 
 	struct iommu_debug_attachment	*logger;
 	struct iommu_domain		domain;
 	struct qcom_io_pgtable_info	pgtbl_info;
 	enum io_pgtable_fmt		pgtbl_fmt;
-	/*
-	 * test_bit(DOMAIN_ATTR_ATOMIC, aattributes) indicates that
-	 * runtime power management should be disabled.
-	 */
+	/* mapping_cfg.atomic indicates that runtime power management should be disabled. */
 	bool				rpm_always_on;
 
 #ifdef CONFIG_ARM_SMMU_CONTEXT_FAULT_RETRY
@@ -630,6 +620,8 @@ struct arm_smmu_impl {
 				  struct arm_smmu_device *smmu,
 				  struct device *dev, int start);
 	void (*write_s2cr)(struct arm_smmu_device *smmu, int idx);
+	void (*write_sctlr)(struct arm_smmu_device *smmu, int idx, u32 reg);
+	void (*probe_finalize)(struct arm_smmu_device *smmu, struct device *dev);
 };
 
 #define INVALID_SMENDX			-1
@@ -650,9 +642,6 @@ static inline int __arm_smmu_alloc_bitmap(unsigned long *map, int start, int end
 
 	return idx;
 }
-
-int __arm_smmu_alloc_cb(unsigned long *map, int start, int end,
-			struct device *dev, struct arm_smmu_domain *smmu_domain);
 
 static inline void __iomem *arm_smmu_page(struct arm_smmu_device *smmu, int n)
 {
@@ -739,7 +728,6 @@ struct arm_smmu_power_resources *arm_smmu_init_power_resources(
 extern struct platform_driver qsmmuv500_tbu_driver;
 
 /* Misc. constants */
-#define TBUID_SHIFT                     10
 #define ARM_MMU500_ACR_CACHE_LOCK	(1 << 26)
 
 #endif /* _ARM_SMMU_H */

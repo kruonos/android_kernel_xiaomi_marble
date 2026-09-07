@@ -7,6 +7,10 @@
 #include "rk3368.dtsi"
 
 / {
+	aliases {
+		mmc0 = &emmc;
+	};
+
 	chosen {
 		stdout-path = "serial0:115200n8";
 	};
@@ -56,6 +60,7 @@
 			fan: fan@18 {
 				compatible = "ti,amc6821";
 				reg = <0x18>;
+				#cooling-cells = <2>;
 			};
 
 			rtc_twi: rtc@6f {

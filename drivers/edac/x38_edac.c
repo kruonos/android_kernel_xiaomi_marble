@@ -238,7 +238,6 @@ static void x38_check(struct mem_ctl_info *mci)
 {
 	struct x38_error_info info;
 
-	edac_dbg(1, "MC%d\n", mci->mc_idx);
 	x38_get_and_clear_error_info(mci, &info);
 	x38_process_error_info(mci, &info);
 }
@@ -342,12 +341,9 @@ static int x38_probe1(struct pci_dev *pdev, int dev_idx)
 	layers[1].type = EDAC_MC_LAYER_CHANNEL;
 	layers[1].size = x38_channel_num;
 	layers[1].is_virt_csrow = false;
-
-
-	rc = -ENOMEM;
 	mci = edac_mc_alloc(0, ARRAY_SIZE(layers), layers, 0);
 	if (!mci)
-		goto unmap;
+		return -ENOMEM;
 
 	edac_dbg(3, "MC: init mci\n");
 
@@ -407,9 +403,9 @@ static int x38_probe1(struct pci_dev *pdev, int dev_idx)
 	return 0;
 
 fail:
-	edac_mc_free(mci);
-unmap:
 	iounmap(window);
+	if (mci)
+		edac_mc_free(mci);
 
 	return rc;
 }

@@ -785,17 +785,11 @@ max3421_check_unlink(struct usb_hcd *hcd)
 				retval = 1;
 				dev_dbg(&spi->dev, "%s: URB %p unlinked=%d",
 					__func__, urb, urb->unlinked);
-				if (urb == max3421_hcd->curr_urb) {
-					max3421_hcd->urb_done = 1;
-					max3421_hcd->hien &= ~(BIT(MAX3421_HI_HXFRDN_BIT) |
-							       BIT(MAX3421_HI_RCVDAV_BIT));
-				} else {
-					usb_hcd_unlink_urb_from_ep(hcd, urb);
-					spin_unlock_irqrestore(&max3421_hcd->lock,
-							       flags);
-					usb_hcd_giveback_urb(hcd, urb, 0);
-					spin_lock_irqsave(&max3421_hcd->lock, flags);
-				}
+				usb_hcd_unlink_urb_from_ep(hcd, urb);
+				spin_unlock_irqrestore(&max3421_hcd->lock,
+						       flags);
+				usb_hcd_giveback_urb(hcd, urb, 0);
+				spin_lock_irqsave(&max3421_hcd->lock, flags);
 			}
 		}
 	}
@@ -1145,8 +1139,7 @@ max3421_irq_handler(int irq, void *dev_id)
 	struct spi_device *spi = to_spi_device(hcd->self.controller);
 	struct max3421_hcd *max3421_hcd = hcd_to_max3421(hcd);
 
-	if (max3421_hcd->spi_thread &&
-	    max3421_hcd->spi_thread->state != TASK_RUNNING)
+	if (max3421_hcd->spi_thread)
 		wake_up_process(max3421_hcd->spi_thread);
 	if (!test_and_set_bit(ENABLE_IRQ, &max3421_hcd->todo))
 		disable_irq_nosync(spi->irq);
@@ -1443,7 +1436,7 @@ max3421_spi_thread(void *dev_id)
 			 * use spi_wr_buf().
 			 */
 			for (i = 0; i < ARRAY_SIZE(max3421_hcd->iopins); ++i) {
-				u8 val = spi_rd8(hcd, MAX3421_REG_IOPINS1);
+				u8 val = spi_rd8(hcd, MAX3421_REG_IOPINS1 + i);
 
 				val = ((val & 0xf0) |
 				       (max3421_hcd->iopins[i] & 0x0f));
@@ -1523,6 +1516,7 @@ max3421_urb_enqueue(struct usb_hcd *hcd, struct urb *urb, gfp_t mem_flags)
 				__func__, urb->interval);
 			return -EINVAL;
 		}
+		break;
 	default:
 		break;
 	}
@@ -1925,7 +1919,7 @@ error:
 	if (hcd) {
 		kfree(max3421_hcd->tx);
 		kfree(max3421_hcd->rx);
-		if (!IS_ERR_OR_NULL(max3421_hcd->spi_thread))
+		if (max3421_hcd->spi_thread)
 			kthread_stop(max3421_hcd->spi_thread);
 		usb_put_hcd(hcd);
 	}
@@ -1956,12 +1950,6 @@ max3421_remove(struct spi_device *spi)
 	return 0;
 }
 
-static const struct spi_device_id max3421_spi_ids[] = {
-	{ "max3421" },
-	{ },
-};
-MODULE_DEVICE_TABLE(spi, max3421_spi_ids);
-
 static const struct of_device_id max3421_of_match_table[] = {
 	{ .compatible = "maxim,max3421", },
 	{},
@@ -1971,7 +1959,6 @@ MODULE_DEVICE_TABLE(of, max3421_of_match_table);
 static struct spi_driver max3421_driver = {
 	.probe		= max3421_probe,
 	.remove		= max3421_remove,
-	.id_table	= max3421_spi_ids,
 	.driver		= {
 		.name	= "max3421-hcd",
 		.of_match_table = of_match_ptr(max3421_of_match_table),

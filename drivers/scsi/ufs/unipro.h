@@ -64,7 +64,6 @@
 #define CFGRXOVR4				0x00E9
 #define RXSQCTRL				0x00B5
 #define CFGRXOVR6				0x00BF
-#define RX_HS_ADAPT_INITIAL_CAPABILITY		0x009F
 #define RX_HS_G1_SYNC_LENGTH_CAP		0x008B
 #define RX_HS_G1_PREP_LENGTH_CAP		0x008C
 #define RX_HS_G2_SYNC_LENGTH_CAP		0x0094
@@ -232,6 +231,7 @@ enum ufs_hs_gear_tag {
 	UFS_HS_G2,		/* HS Gear 2 */
 	UFS_HS_G3,		/* HS Gear 3 */
 	UFS_HS_G4,		/* HS Gear 4 */
+	UFS_HS_G5,		/* HS Gear 5 */
 };
 
 enum ufs_unipro_ver {

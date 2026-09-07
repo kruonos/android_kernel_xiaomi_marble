@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, 2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
@@ -14,6 +14,10 @@
 
 #define MAX_NAME_LENGTH			20
 
+#define CH0				0
+#define CH1				1
+#define MAX_CHANNEL			2
+
 #define TCS_TYPE_NR			5
 #define MAX_CMDS_PER_TCS		16
 #define MAX_TCS_PER_TYPE		3
@@ -22,6 +26,7 @@
 
 /* CTRLR specific flags */
 #define SOLVER_PRESENT			1
+#define HW_CHANNEL_PRESENT		2
 
 struct rsc_drv;
 
@@ -95,15 +100,30 @@ struct rpmh_ctrlr {
 };
 
 /**
+ * struct drv_channel: our representation of the drv channels
+ *
+ * @tcs:                TCS groups.
+ * @drv:                DRV containing the channel
+ * @initialized:        Whether channel is initialized
+ */
+struct drv_channel {
+	struct tcs_group tcs[TCS_TYPE_NR];
+	struct rsc_drv *drv;
+	bool initialized;
+};
+
+/**
  * struct rsc_drv_top: our representation of the top RSC device
  *
  * @name:               Controller RSC device name.
+ * @drv_count:          No. of DRV controllers in the RSC device
  * @drv:                Controller for each DRV
  * @dev:                RSC top device
  * @list:               RSC device added in rpmh_rsc_dev_list.
  */
 struct rsc_drv_top {
 	char name[MAX_NAME_LENGTH];
+	int drv_count;
 	struct rsc_drv *drv;
 	struct device *dev;
 	struct list_head list;
@@ -114,16 +134,20 @@ struct rsc_drv_top {
  * Resource State Coordinator controller (RSC)
  *
  * @name:               Controller identifier.
+ * @base:               Base address of the RSC controller.
  * @tcs_base:           Start address of the TCS registers in this controller.
+ * @reg:                Register offsets for RSC controller.
  * @id:                 Instance id in the controller (Direct Resource Voter).
  * @num_tcs:            Number of TCSes in this DRV.
+ * @num_channels:       Number of channels in this DRV.
  * @irq:                IRQ at gic.
  * @in_solver_mode:     Controller is busy in solver mode
+ * @initialized:        Whether DRV is initialized
  * @rsc_pm:             CPU PM notifier for controller.
  *                      Used when solver mode is not present.
  * @cpus_in_pm:         Number of CPUs not in idle power collapse.
  *                      Used when solver mode is not present.
- * @tcs:                TCS groups.
+ * @ch:                 DRV channels.
  * @tcs_in_use:         S/W state of the TCS; only set for ACTIVE_ONLY
  *                      transfers, but might show a sleep/wake TCS in use if
  *                      it was borrowed for an active_only transfer.  You
@@ -135,45 +159,56 @@ struct rsc_drv_top {
  * @tcs_wait:           Wait queue used to wait for @tcs_in_use to free up a
  *                      slot
  * @client:             Handle to the DRV's client.
- * @ipc_log_ctx:        IPC logger handle
  * @genpd_nb:           PM Domain notifier
  * @dev:                RSC device
+ * @ipc_log_ctx:        IPC logger handle
+ * @pdev:               platform device
  */
 struct rsc_drv {
-	const char *name;
+	char name[MAX_NAME_LENGTH];
+	void __iomem *base;
 	void __iomem *tcs_base;
+	u32 *regs;
 	int id;
 	int num_tcs;
+	int num_channels;
 	int irq;
 	bool in_solver_mode;
+	bool initialized;
 	struct notifier_block rsc_pm;
 	atomic_t cpus_in_pm;
-	struct tcs_group tcs[TCS_TYPE_NR];
+	struct drv_channel ch[MAX_CHANNEL];
 	DECLARE_BITMAP(tcs_in_use, MAX_TCS_NR);
 	spinlock_t lock;
 	wait_queue_head_t tcs_wait;
 	struct rpmh_ctrlr client;
-	void *ipc_log_ctx;
 	struct notifier_block genpd_nb;
 	struct device *dev;
+	void *ipc_log_ctx;
+	struct platform_device *pdev;
 };
 
 extern bool rpmh_standalone;
 
-int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg);
+int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg, int ch);
 int rpmh_rsc_write_ctrl_data(struct rsc_drv *drv,
-			     const struct tcs_request *msg);
-void rpmh_rsc_invalidate(struct rsc_drv *drv);
+			     const struct tcs_request *msg,
+			     int ch);
+void rpmh_rsc_invalidate(struct rsc_drv *drv, int ch);
 void rpmh_rsc_debug(struct rsc_drv *drv, struct completion *compl);
 int rpmh_rsc_mode_solver_set(struct rsc_drv *drv, bool enable);
+int rpmh_rsc_get_channel(struct rsc_drv *drv);
+int rpmh_rsc_switch_channel(struct rsc_drv *drv, int ch);
+int rpmh_rsc_drv_enable(struct rsc_drv *drv, bool enable);
+const struct device *rpmh_rsc_get_device(const char *name, u32 drv_id);
 
 void rpmh_tx_done(const struct tcs_request *msg);
-int rpmh_flush(struct rpmh_ctrlr *ctrlr);
-int _rpmh_flush(struct rpmh_ctrlr *ctrlr);
+int rpmh_flush(struct rpmh_ctrlr *ctrlr, int ch);
+int _rpmh_flush(struct rpmh_ctrlr *ctrlr, int ch);
 
-int rpmh_rsc_init_fast_path(struct rsc_drv *drv, const struct tcs_request *msg);
+int rpmh_rsc_init_fast_path(struct rsc_drv *drv, const struct tcs_request *msg, int ch);
 int rpmh_rsc_update_fast_path(struct rsc_drv *drv,
 			      const struct tcs_request *msg,
-			      u32 update_mask);
+			      u32 update_mask, int ch);
 
 #endif /* __RPM_INTERNAL_H__ */

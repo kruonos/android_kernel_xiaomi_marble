@@ -991,7 +991,7 @@ struct qman_portal {
 	/* linked-list of CSCN handlers. */
 	struct list_head cgr_cbs;
 	/* list lock */
-	raw_spinlock_t cgr_lock;
+	spinlock_t cgr_lock;
 	struct work_struct congestion_work;
 	struct work_struct mr_work;
 	char irqname[MAX_IRQNAME];
@@ -1159,7 +1159,7 @@ static u32 fq_to_tag(struct qman_fq *fq)
 
 static u32 __poll_portal_slow(struct qman_portal *p, u32 is);
 static inline unsigned int __poll_portal_fast(struct qman_portal *p,
-					unsigned int poll_limit);
+					unsigned int poll_limit, bool sched_napi);
 static void qm_congestion_task(struct work_struct *work);
 static void qm_mr_process_task(struct work_struct *work);
 
@@ -1174,7 +1174,7 @@ static irqreturn_t portal_isr(int irq, void *ptr)
 
 	/* DQRR-handling if it's interrupt-driven */
 	if (is & QM_PIRQ_DQRI) {
-		__poll_portal_fast(p, QMAN_POLL_LIMIT);
+		__poll_portal_fast(p, QMAN_POLL_LIMIT, true);
 		clear = QM_DQAVAIL_MASK | QM_PIRQ_DQRI;
 	}
 	/* Handling of anything else that's interrupt-driven */
@@ -1281,7 +1281,7 @@ static int qman_create_portal(struct qman_portal *portal,
 		/* if the given mask is NULL, assume all CGRs can be seen */
 		qman_cgrs_fill(&portal->cgrs[0]);
 	INIT_LIST_HEAD(&portal->cgr_cbs);
-	raw_spin_lock_init(&portal->cgr_lock);
+	spin_lock_init(&portal->cgr_lock);
 	INIT_WORK(&portal->congestion_work, qm_congestion_task);
 	INIT_WORK(&portal->mr_work, qm_mr_process_task);
 	portal->bits = 0;
@@ -1456,14 +1456,11 @@ static void qm_congestion_task(struct work_struct *work)
 	union qm_mc_result *mcr;
 	struct qman_cgr *cgr;
 
-	/*
-	 * FIXME: QM_MCR_TIMEOUT is 10ms, which is too long for a raw spinlock!
-	 */
-	raw_spin_lock_irq(&p->cgr_lock);
+	spin_lock(&p->cgr_lock);
 	qm_mc_start(&p->p);
 	qm_mc_commit(&p->p, QM_MCC_VERB_QUERYCONGESTION);
 	if (!qm_mc_result_timeout(&p->p, &mcr)) {
-		raw_spin_unlock_irq(&p->cgr_lock);
+		spin_unlock(&p->cgr_lock);
 		dev_crit(p->config->dev, "QUERYCONGESTION timeout\n");
 		qman_p_irqsource_add(p, QM_PIRQ_CSCI);
 		return;
@@ -1479,7 +1476,7 @@ static void qm_congestion_task(struct work_struct *work)
 	list_for_each_entry(cgr, &p->cgr_cbs, node)
 		if (cgr->cb && qman_cgrs_get(&c, cgr->cgrid))
 			cgr->cb(p, cgr, qman_cgrs_get(&rr, cgr->cgrid));
-	raw_spin_unlock_irq(&p->cgr_lock);
+	spin_unlock(&p->cgr_lock);
 	qman_p_irqsource_add(p, QM_PIRQ_CSCI);
 }
 
@@ -1605,7 +1602,7 @@ static noinline void clear_vdqcr(struct qman_portal *p, struct qman_fq *fq)
  * user callbacks to call into any QMan API.
  */
 static inline unsigned int __poll_portal_fast(struct qman_portal *p,
-					unsigned int poll_limit)
+					unsigned int poll_limit, bool sched_napi)
 {
 	const struct qm_dqrr_entry *dq;
 	struct qman_fq *fq;
@@ -1639,7 +1636,7 @@ static inline unsigned int __poll_portal_fast(struct qman_portal *p,
 			 * and we don't want multiple if()s in the critical
 			 * path (SDQCR).
 			 */
-			res = fq->cb.dqrr(p, fq, dq);
+			res = fq->cb.dqrr(p, fq, dq, sched_napi);
 			if (res == qman_cb_dqrr_stop)
 				break;
 			/* Check for VDQCR completion */
@@ -1649,7 +1646,7 @@ static inline unsigned int __poll_portal_fast(struct qman_portal *p,
 			/* SDQCR: context_b points to the FQ */
 			fq = tag_to_fq(be32_to_cpu(dq->context_b));
 			/* Now let the callback do its stuff */
-			res = fq->cb.dqrr(p, fq, dq);
+			res = fq->cb.dqrr(p, fq, dq, sched_napi);
 			/*
 			 * The callback can request that we exit without
 			 * consuming this entry nor advancing;
@@ -1756,7 +1753,7 @@ EXPORT_SYMBOL(qman_start_using_portal);
 
 int qman_p_poll_dqrr(struct qman_portal *p, unsigned int limit)
 {
-	return __poll_portal_fast(p, limit);
+	return __poll_portal_fast(p, limit, false);
 }
 EXPORT_SYMBOL(qman_p_poll_dqrr);
 
@@ -1827,8 +1824,6 @@ EXPORT_SYMBOL(qman_create_fq);
 
 void qman_destroy_fq(struct qman_fq *fq)
 {
-	int leaked;
-
 	/*
 	 * We don't need to lock the FQ as it is a pre-condition that the FQ be
 	 * quiesced. Instead, run some checks.
@@ -1836,29 +1831,11 @@ void qman_destroy_fq(struct qman_fq *fq)
 	switch (fq->state) {
 	case qman_fq_state_parked:
 	case qman_fq_state_oos:
-		/*
-		 * There's a race condition here on releasing the fqid,
-		 * setting the fq_table to NULL, and freeing the fqid.
-		 * To prevent it, this order should be respected:
-		 */
-		if (fq_isset(fq, QMAN_FQ_FLAG_DYNAMIC_FQID)) {
-			leaked = qman_shutdown_fq(fq->fqid);
-			if (leaked)
-				pr_debug("FQID %d leaked\n", fq->fqid);
-		}
+		if (fq_isset(fq, QMAN_FQ_FLAG_DYNAMIC_FQID))
+			qman_release_fqid(fq->fqid);
 
 		DPAA_ASSERT(fq_table[fq->idx]);
 		fq_table[fq->idx] = NULL;
-
-		if (fq_isset(fq, QMAN_FQ_FLAG_DYNAMIC_FQID) && !leaked) {
-			/*
-			 * fq_table[fq->idx] should be set to null before
-			 * freeing fq->fqid otherwise it could by allocated by
-			 * qman_alloc_fqid() while still being !NULL
-			 */
-			smp_wmb();
-			gen_pool_free(qm_fqalloc, fq->fqid | DPAA_GENALLOC_OFF, 1);
-		}
 		return;
 	default:
 		break;
@@ -2463,7 +2440,7 @@ int qman_create_cgr(struct qman_cgr *cgr, u32 flags,
 	preempt_enable();
 
 	cgr->chan = p->config->channel;
-	raw_spin_lock_irq(&p->cgr_lock);
+	spin_lock(&p->cgr_lock);
 
 	if (opts) {
 		struct qm_mcc_initcgr local_opts = *opts;
@@ -2500,27 +2477,11 @@ int qman_create_cgr(struct qman_cgr *cgr, u32 flags,
 	    qman_cgrs_get(&p->cgrs[1], cgr->cgrid))
 		cgr->cb(p, cgr, 1);
 out:
-	raw_spin_unlock_irq(&p->cgr_lock);
+	spin_unlock(&p->cgr_lock);
 	put_affine_portal();
 	return ret;
 }
 EXPORT_SYMBOL(qman_create_cgr);
-
-static struct qman_portal *qman_cgr_get_affine_portal(struct qman_cgr *cgr)
-{
-	struct qman_portal *p = get_affine_portal();
-
-	if (cgr->chan != p->config->channel) {
-		/* attempt to delete from other portal than creator */
-		dev_err(p->config->dev, "CGR not owned by current portal");
-		dev_dbg(p->config->dev, " create 0x%x, delete 0x%x\n",
-			cgr->chan, p->config->channel);
-		put_affine_portal();
-		return NULL;
-	}
-
-	return p;
-}
 
 int qman_delete_cgr(struct qman_cgr *cgr)
 {
@@ -2529,13 +2490,19 @@ int qman_delete_cgr(struct qman_cgr *cgr)
 	struct qm_mcc_initcgr local_opts;
 	int ret = 0;
 	struct qman_cgr *i;
-	struct qman_portal *p = qman_cgr_get_affine_portal(cgr);
+	struct qman_portal *p = get_affine_portal();
 
-	if (!p)
-		return -EINVAL;
+	if (cgr->chan != p->config->channel) {
+		/* attempt to delete from other portal than creator */
+		dev_err(p->config->dev, "CGR not owned by current portal");
+		dev_dbg(p->config->dev, " create 0x%x, delete 0x%x\n",
+			cgr->chan, p->config->channel);
 
+		ret = -EINVAL;
+		goto put_portal;
+	}
 	memset(&local_opts, 0, sizeof(struct qm_mcc_initcgr));
-	raw_spin_lock_irqsave(&p->cgr_lock, irqflags);
+	spin_lock_irqsave(&p->cgr_lock, irqflags);
 	list_del(&cgr->node);
 	/*
 	 * If there are no other CGR objects for this CGRID in the list,
@@ -2560,7 +2527,8 @@ int qman_delete_cgr(struct qman_cgr *cgr)
 		/* add back to the list */
 		list_add(&cgr->node, &p->cgr_cbs);
 release_lock:
-	raw_spin_unlock_irqrestore(&p->cgr_lock, irqflags);
+	spin_unlock_irqrestore(&p->cgr_lock, irqflags);
+put_portal:
 	put_affine_portal();
 	return ret;
 }
@@ -2590,54 +2558,6 @@ void qman_delete_cgr_safe(struct qman_cgr *cgr)
 	preempt_enable();
 }
 EXPORT_SYMBOL(qman_delete_cgr_safe);
-
-static int qman_update_cgr(struct qman_cgr *cgr, struct qm_mcc_initcgr *opts)
-{
-	int ret;
-	unsigned long irqflags;
-	struct qman_portal *p = qman_cgr_get_affine_portal(cgr);
-
-	if (!p)
-		return -EINVAL;
-
-	raw_spin_lock_irqsave(&p->cgr_lock, irqflags);
-	ret = qm_modify_cgr(cgr, 0, opts);
-	raw_spin_unlock_irqrestore(&p->cgr_lock, irqflags);
-	put_affine_portal();
-	return ret;
-}
-
-struct update_cgr_params {
-	struct qman_cgr *cgr;
-	struct qm_mcc_initcgr *opts;
-	int ret;
-};
-
-static void qman_update_cgr_smp_call(void *p)
-{
-	struct update_cgr_params *params = p;
-
-	params->ret = qman_update_cgr(params->cgr, params->opts);
-}
-
-int qman_update_cgr_safe(struct qman_cgr *cgr, struct qm_mcc_initcgr *opts)
-{
-	struct update_cgr_params params = {
-		.cgr = cgr,
-		.opts = opts,
-	};
-
-	preempt_disable();
-	if (qman_cgr_cpus[cgr->cgrid] != smp_processor_id())
-		smp_call_function_single(qman_cgr_cpus[cgr->cgrid],
-					 qman_update_cgr_smp_call, &params,
-					 true);
-	else
-		params.ret = qman_update_cgr(cgr, opts);
-	preempt_enable();
-	return params.ret;
-}
-EXPORT_SYMBOL(qman_update_cgr_safe);
 
 /* Cleanup FQs */
 
@@ -2702,7 +2622,7 @@ int qman_shutdown_fq(u32 fqid)
 	union qm_mc_command *mcc;
 	union qm_mc_result *mcr;
 	int orl_empty, drain = 0, ret = 0;
-	u32 channel, wq, res;
+	u32 channel, res;
 	u8 state;
 
 	p = get_affine_portal();
@@ -2735,7 +2655,7 @@ int qman_shutdown_fq(u32 fqid)
 	DPAA_ASSERT((mcr->verb & QM_MCR_VERB_MASK) == QM_MCR_VERB_QUERYFQ);
 	/* Need to store these since the MCR gets reused */
 	channel = qm_fqd_get_chan(&mcr->queryfq.fqd);
-	wq = qm_fqd_get_wq(&mcr->queryfq.fqd);
+	qm_fqd_get_wq(&mcr->queryfq.fqd);
 
 	if (channel < qm_channel_pool1) {
 		channel_portal = get_portal_for_channel(channel);
@@ -2777,7 +2697,6 @@ int qman_shutdown_fq(u32 fqid)
 			 * to dequeue from the channel the FQ is scheduled on
 			 */
 			int found_fqrn = 0;
-			u16 dequeue_wq = 0;
 
 			/* Flag that we need to drain FQ */
 			drain = 1;
@@ -2785,11 +2704,8 @@ int qman_shutdown_fq(u32 fqid)
 			if (channel >= qm_channel_pool1 &&
 			    channel < qm_channel_pool1 + 15) {
 				/* Pool channel, enable the bit in the portal */
-				dequeue_wq = (channel -
-					      qm_channel_pool1 + 1)<<4 | wq;
 			} else if (channel < qm_channel_pool1) {
 				/* Dedicated channel */
-				dequeue_wq = wq;
 			} else {
 				dev_err(dev, "Can't recover FQ 0x%x, ch: 0x%x",
 					fqid, channel);

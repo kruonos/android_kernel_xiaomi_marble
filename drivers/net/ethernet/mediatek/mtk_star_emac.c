@@ -30,7 +30,6 @@
 #define MTK_STAR_WAIT_TIMEOUT			300
 #define MTK_STAR_MAX_FRAME_SIZE			1514
 #define MTK_STAR_SKB_ALIGNMENT			16
-#define MTK_STAR_NAPI_WEIGHT			64
 #define MTK_STAR_HASHTABLE_MC_LIMIT		256
 #define MTK_STAR_HASHTABLE_SIZE_MAX		512
 
@@ -523,7 +522,7 @@ static void mtk_star_dma_resume_tx(struct mtk_star_priv *priv)
 static void mtk_star_set_mac_addr(struct net_device *ndev)
 {
 	struct mtk_star_priv *priv = netdev_priv(ndev);
-	u8 *mac_addr = ndev->dev_addr;
+	const u8 *mac_addr = ndev->dev_addr;
 	unsigned int high, low;
 
 	high = mac_addr[0] << 8 | mac_addr[1] << 0;
@@ -1162,7 +1161,7 @@ static const struct net_device_ops mtk_star_netdev_ops = {
 	.ndo_start_xmit		= mtk_star_netdev_start_xmit,
 	.ndo_get_stats64	= mtk_star_netdev_get_stats64,
 	.ndo_set_rx_mode	= mtk_star_set_rx_mode,
-	.ndo_do_ioctl		= mtk_star_netdev_ioctl,
+	.ndo_eth_ioctl		= mtk_star_netdev_ioctl,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -1409,8 +1408,6 @@ static __maybe_unused int mtk_star_suspend(struct device *dev)
 	if (netif_running(ndev))
 		mtk_star_disable(ndev);
 
-	netif_device_detach(ndev);
-
 	clk_bulk_disable_unprepare(MTK_STAR_NCLKS, priv->clks);
 
 	return 0;
@@ -1434,8 +1431,6 @@ static __maybe_unused int mtk_star_resume(struct device *dev)
 		if (ret)
 			clk_bulk_disable_unprepare(MTK_STAR_NCLKS, priv->clks);
 	}
-
-	netif_device_attach(ndev);
 
 	return ret;
 }
@@ -1555,7 +1550,7 @@ static int mtk_star_probe(struct platform_device *pdev)
 	ndev->netdev_ops = &mtk_star_netdev_ops;
 	ndev->ethtool_ops = &mtk_star_ethtool_ops;
 
-	netif_napi_add(ndev, &priv->napi, mtk_star_poll, MTK_STAR_NAPI_WEIGHT);
+	netif_napi_add(ndev, &priv->napi, mtk_star_poll, NAPI_POLL_WEIGHT);
 
 	return devm_register_netdev(dev, ndev);
 }

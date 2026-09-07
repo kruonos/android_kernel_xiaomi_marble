@@ -12,7 +12,7 @@
 #include <linux/posix_acl_xattr.h>
 
 int fuse_setxattr(struct inode *inode, const char *name, const void *value,
-		  size_t size, int flags)
+		  size_t size, int flags, unsigned int extra_flags)
 {
 	struct fuse_mount *fm = get_fuse_mount(inode);
 	FUSE_ARGS(args);
@@ -25,10 +25,13 @@ int fuse_setxattr(struct inode *inode, const char *name, const void *value,
 	memset(&inarg, 0, sizeof(inarg));
 	inarg.size = size;
 	inarg.flags = flags;
+	inarg.setxattr_flags = extra_flags;
+
 	args.opcode = FUSE_SETXATTR;
 	args.nodeid = get_node_id(inode);
 	args.in_numargs = 3;
-	args.in_args[0].size = sizeof(inarg);
+	args.in_args[0].size = fm->fc->setxattr_ext ?
+		sizeof(inarg) : FUSE_COMPAT_SETXATTR_IN_SIZE;
 	args.in_args[0].value = &inarg;
 	args.in_args[1].size = strlen(name) + 1;
 	args.in_args[1].value = name;
@@ -79,7 +82,7 @@ ssize_t fuse_getxattr(struct inode *inode, const char *name, void *value,
 	}
 	ret = fuse_simple_request(fm, &args);
 	if (!ret && !size)
-		ret = min_t(size_t, outarg.size, XATTR_SIZE_MAX);
+		ret = min_t(ssize_t, outarg.size, XATTR_SIZE_MAX);
 	if (ret == -ENOSYS) {
 		fm->fc->no_getxattr = 1;
 		ret = -EOPNOTSUPP;
@@ -113,6 +116,17 @@ ssize_t fuse_listxattr(struct dentry *entry, char *list, size_t size)
 	struct fuse_getxattr_out outarg;
 	ssize_t ret;
 
+#ifdef CONFIG_FUSE_BPF
+	struct fuse_err_ret fer;
+
+	fer = fuse_bpf_backing(inode, struct fuse_getxattr_io,
+			       fuse_listxattr_initialize,
+			       fuse_listxattr_backing, fuse_listxattr_finalize,
+			       entry, list, size);
+	if (fer.ret)
+		return PTR_ERR(fer.result);
+#endif
+
 	if (fuse_is_bad(inode))
 		return -EIO;
 
@@ -141,7 +155,7 @@ ssize_t fuse_listxattr(struct dentry *entry, char *list, size_t size)
 	}
 	ret = fuse_simple_request(fm, &args);
 	if (!ret && !size)
-		ret = min_t(size_t, outarg.size, XATTR_LIST_MAX);
+		ret = min_t(ssize_t, outarg.size, XATTR_LIST_MAX);
 	if (ret > 0 && size)
 		ret = fuse_verify_xattr_list(list, ret);
 	if (ret == -ENOSYS) {
@@ -179,8 +193,19 @@ int fuse_removexattr(struct inode *inode, const char *name)
 
 static int fuse_xattr_get(const struct xattr_handler *handler,
 			 struct dentry *dentry, struct inode *inode,
-			 const char *name, void *value, size_t size, int flags)
+			 const char *name, void *value, size_t size)
 {
+#ifdef CONFIG_FUSE_BPF
+	struct fuse_err_ret fer;
+
+	fer = fuse_bpf_backing(inode, struct fuse_getxattr_io,
+			       fuse_getxattr_initialize, fuse_getxattr_backing,
+			       fuse_getxattr_finalize,
+			       dentry, name, value, size);
+	if (fer.ret)
+		return PTR_ERR(fer.result);
+#endif
+
 	if (fuse_is_bad(inode))
 		return -EIO;
 
@@ -188,17 +213,36 @@ static int fuse_xattr_get(const struct xattr_handler *handler,
 }
 
 static int fuse_xattr_set(const struct xattr_handler *handler,
+			  struct user_namespace *mnt_userns,
 			  struct dentry *dentry, struct inode *inode,
 			  const char *name, const void *value, size_t size,
 			  int flags)
 {
+#ifdef CONFIG_FUSE_BPF
+	struct fuse_err_ret fer;
+
+	if (value)
+		fer = fuse_bpf_backing(inode, struct fuse_setxattr_in,
+			       fuse_setxattr_initialize, fuse_setxattr_backing,
+			       fuse_setxattr_finalize, dentry, name, value,
+			       size, flags);
+	else
+		fer = fuse_bpf_backing(inode, struct fuse_dummy_io,
+				       fuse_removexattr_initialize,
+				       fuse_removexattr_backing,
+				       fuse_removexattr_finalize,
+				       dentry, name);
+	if (fer.ret)
+		return PTR_ERR(fer.result);
+#endif
+
 	if (fuse_is_bad(inode))
 		return -EIO;
 
 	if (!value)
 		return fuse_removexattr(inode, name);
 
-	return fuse_setxattr(inode, name, value, size, flags);
+	return fuse_setxattr(inode, name, value, size, flags, 0);
 }
 
 static bool no_xattr_list(struct dentry *dentry)
@@ -208,12 +252,13 @@ static bool no_xattr_list(struct dentry *dentry)
 
 static int no_xattr_get(const struct xattr_handler *handler,
 			struct dentry *dentry, struct inode *inode,
-			const char *name, void *value, size_t size, int flags)
+			const char *name, void *value, size_t size)
 {
 	return -EOPNOTSUPP;
 }
 
 static int no_xattr_set(const struct xattr_handler *handler,
+			struct user_namespace *mnt_userns,
 			struct dentry *dentry, struct inode *nodee,
 			const char *name, const void *value,
 			size_t size, int flags)

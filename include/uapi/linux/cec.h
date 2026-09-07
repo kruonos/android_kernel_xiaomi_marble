@@ -132,8 +132,6 @@ static inline void cec_msg_init(struct cec_msg *msg,
  * Set the msg destination to the orig initiator and the msg initiator to the
  * orig destination. Note that msg and orig may be the same pointer, in which
  * case the change is done in place.
- *
- * It also zeroes the reply, timeout and flags fields.
  */
 static inline void cec_msg_set_reply_to(struct cec_msg *msg,
 					struct cec_msg *orig)
@@ -141,9 +139,7 @@ static inline void cec_msg_set_reply_to(struct cec_msg *msg,
 	/* The destination becomes the initiator and vice versa */
 	msg->msg[0] = (cec_msg_destination(orig) << 4) |
 		      cec_msg_initiator(orig);
-	msg->reply = 0;
-	msg->timeout = 0;
-	msg->flags = 0;
+	msg->reply = msg->timeout = 0;
 }
 
 /* cec_msg flags field */
@@ -646,7 +642,7 @@ struct cec_event {
 #define CEC_OP_REC_SEQ_WEDNESDAY			0x08
 #define CEC_OP_REC_SEQ_THURSDAY				0x10
 #define CEC_OP_REC_SEQ_FRIDAY				0x20
-#define CEC_OP_REC_SEQ_SATERDAY				0x40
+#define CEC_OP_REC_SEQ_SATURDAY				0x40
 #define CEC_OP_REC_SEQ_ONCE_ONLY			0x00
 
 #define CEC_MSG_CLEAR_DIGITAL_TIMER			0x99

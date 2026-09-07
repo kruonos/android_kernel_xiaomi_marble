@@ -8,6 +8,7 @@
 #include "dm-bio-prison-v2.h"
 #include "dm-bio-record.h"
 #include "dm-cache-metadata.h"
+#include "dm-io-tracker.h"
 
 #include <linux/dm-io.h>
 #include <linux/dm-kcopyd.h>
@@ -36,77 +37,6 @@ DECLARE_DM_KCOPYD_THROTTLE_WITH_MODULE_PARM(cache_copy_throttle,
  * migration: movement of a block between the origin and cache device,
  *	      either direction
  */
-
-/*----------------------------------------------------------------*/
-
-struct io_tracker {
-	spinlock_t lock;
-
-	/*
-	 * Sectors of in-flight IO.
-	 */
-	sector_t in_flight;
-
-	/*
-	 * The time, in jiffies, when this device became idle (if it is
-	 * indeed idle).
-	 */
-	unsigned long idle_time;
-	unsigned long last_update_time;
-};
-
-static void iot_init(struct io_tracker *iot)
-{
-	spin_lock_init(&iot->lock);
-	iot->in_flight = 0ul;
-	iot->idle_time = 0ul;
-	iot->last_update_time = jiffies;
-}
-
-static bool __iot_idle_for(struct io_tracker *iot, unsigned long jifs)
-{
-	if (iot->in_flight)
-		return false;
-
-	return time_after(jiffies, iot->idle_time + jifs);
-}
-
-static bool iot_idle_for(struct io_tracker *iot, unsigned long jifs)
-{
-	bool r;
-
-	spin_lock_irq(&iot->lock);
-	r = __iot_idle_for(iot, jifs);
-	spin_unlock_irq(&iot->lock);
-
-	return r;
-}
-
-static void iot_io_begin(struct io_tracker *iot, sector_t len)
-{
-	spin_lock_irq(&iot->lock);
-	iot->in_flight += len;
-	spin_unlock_irq(&iot->lock);
-}
-
-static void __iot_io_end(struct io_tracker *iot, sector_t len)
-{
-	if (!len)
-		return;
-
-	iot->in_flight -= len;
-	if (!iot->in_flight)
-		iot->idle_time = jiffies;
-}
-
-static void iot_io_end(struct io_tracker *iot, sector_t len)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&iot->lock, flags);
-	__iot_io_end(iot, len);
-	spin_unlock_irqrestore(&iot->lock, flags);
-}
 
 /*----------------------------------------------------------------*/
 
@@ -470,7 +400,7 @@ struct cache {
 	struct batcher committer;
 	struct work_struct commit_ws;
 
-	struct io_tracker tracker;
+	struct dm_io_tracker tracker;
 
 	mempool_t migration_pool;
 
@@ -866,7 +796,7 @@ static void accounted_begin(struct cache *cache, struct bio *bio)
 	if (accountable_bio(cache, bio)) {
 		pb = get_per_bio_data(bio);
 		pb->len = bio_sectors(bio);
-		iot_io_begin(&cache->tracker, pb->len);
+		dm_iot_io_begin(&cache->tracker, pb->len);
 	}
 }
 
@@ -874,7 +804,7 @@ static void accounted_complete(struct cache *cache, struct bio *bio)
 {
 	struct per_bio_data *pb = get_per_bio_data(bio);
 
-	iot_io_end(&cache->tracker, pb->len);
+	dm_iot_io_end(&cache->tracker, pb->len);
 }
 
 static void accounted_request(struct cache *cache, struct bio *bio)
@@ -1642,7 +1572,7 @@ enum busy {
 
 static enum busy spare_migration_bandwidth(struct cache *cache)
 {
-	bool idle = iot_idle_for(&cache->tracker, HZ);
+	bool idle = dm_iot_idle_for(&cache->tracker, HZ);
 	sector_t current_volume = (atomic_read(&cache->nr_io_migrations) + 1) *
 		cache->sectors_per_block;
 
@@ -1960,13 +1890,16 @@ static void check_migrations(struct work_struct *ws)
  * This function gets called on the error paths of the constructor, so we
  * have to cope with a partially initialised struct.
  */
-static void __destroy(struct cache *cache)
+static void destroy(struct cache *cache)
 {
+	unsigned i;
+
 	mempool_exit(&cache->migration_pool);
 
 	if (cache->prison)
 		dm_bio_prison_destroy_v2(cache->prison);
 
+	cancel_delayed_work_sync(&cache->waker);
 	if (cache->wq)
 		destroy_workqueue(cache->wq);
 
@@ -1994,22 +1927,13 @@ static void __destroy(struct cache *cache)
 	if (cache->policy)
 		dm_cache_policy_destroy(cache->policy);
 
-	bioset_exit(&cache->bs);
-
-	kfree(cache);
-}
-
-static void destroy(struct cache *cache)
-{
-	unsigned int i;
-
-	cancel_delayed_work_sync(&cache->waker);
-
 	for (i = 0; i < cache->nr_ctr_args ; i++)
 		kfree(cache->ctr_args[i]);
 	kfree(cache->ctr_args);
 
-	__destroy(cache);
+	bioset_exit(&cache->bs);
+
+	kfree(cache);
 }
 
 static void cache_dtr(struct dm_target *ti)
@@ -2064,6 +1988,7 @@ struct cache_args {
 	sector_t cache_sectors;
 
 	struct dm_dev *origin_dev;
+	sector_t origin_sectors;
 
 	uint32_t block_size;
 
@@ -2145,7 +2070,6 @@ static int parse_cache_dev(struct cache_args *ca, struct dm_arg_set *as,
 static int parse_origin_dev(struct cache_args *ca, struct dm_arg_set *as,
 			    char **error)
 {
-	sector_t origin_sectors;
 	int r;
 
 	if (!at_least_one_arg(as, error))
@@ -2158,8 +2082,8 @@ static int parse_origin_dev(struct cache_args *ca, struct dm_arg_set *as,
 		return r;
 	}
 
-	origin_sectors = get_dev_size(ca->origin_dev);
-	if (ca->ti->len > origin_sectors) {
+	ca->origin_sectors = get_dev_size(ca->origin_dev);
+	if (ca->ti->len > ca->origin_sectors) {
 		*error = "Device size larger than cached device";
 		return -EINVAL;
 	}
@@ -2468,7 +2392,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 
 	ca->metadata_dev = ca->origin_dev = ca->cache_dev = NULL;
 
-	origin_blocks = cache->origin_sectors = ti->len;
+	origin_blocks = cache->origin_sectors = ca->origin_sectors;
 	origin_blocks = block_div(origin_blocks, ca->block_size);
 	cache->origin_blocks = to_oblock(origin_blocks);
 
@@ -2614,7 +2538,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 
 	batcher_init(&cache->committer, commit_op, cache,
 		     issue_op, cache, cache->wq);
-	iot_init(&cache->tracker);
+	dm_iot_init(&cache->tracker);
 
 	init_rwsem(&cache->background_work_lock);
 	prevent_background_work(cache);
@@ -2622,7 +2546,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	*result = cache;
 	return 0;
 bad:
-	__destroy(cache);
+	destroy(cache);
 	return r;
 }
 
@@ -2673,7 +2597,7 @@ static int cache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 
 	r = copy_ctr_args(cache, argc - 3, (const char **)argv + 3);
 	if (r) {
-		__destroy(cache);
+		destroy(cache);
 		goto out;
 	}
 
@@ -2851,7 +2775,6 @@ static void cache_postsuspend(struct dm_target *ti)
 static int load_mapping(void *context, dm_oblock_t oblock, dm_cblock_t cblock,
 			bool dirty, uint32_t hint, bool hint_valid)
 {
-	int r;
 	struct cache *cache = context;
 
 	if (dirty) {
@@ -2860,11 +2783,7 @@ static int load_mapping(void *context, dm_oblock_t oblock, dm_cblock_t cblock,
 	} else
 		clear_bit(from_cblock(cblock), cache->dirty_bitset);
 
-	r = policy_load_mapping(cache->policy, oblock, cblock, dirty, hint, hint_valid);
-	if (r)
-		return r;
-
-	return 0;
+	return policy_load_mapping(cache->policy, oblock, cblock, dirty, hint, hint_valid);
 }
 
 /*
@@ -2958,43 +2877,22 @@ static dm_cblock_t get_cache_dev_size(struct cache *cache)
 	return to_cblock(size);
 }
 
-static bool can_resume(struct cache *cache)
-{
-	/*
-	 * Disallow retrying the resume operation for devices that failed the
-	 * first resume attempt, as the failure leaves the policy object partially
-	 * initialized. Retrying could trigger BUG_ON when loading cache mappings
-	 * into the incomplete policy object.
-	 */
-	if (cache->sized && !cache->loaded_mappings) {
-		if (get_cache_mode(cache) != CM_WRITE)
-			DMERR("%s: unable to resume a failed-loaded cache, please check metadata.",
-			      cache_device_name(cache));
-		else
-			DMERR("%s: unable to resume cache due to missing proper cache table reload",
-			      cache_device_name(cache));
-		return false;
-	}
-
-	return true;
-}
-
 static bool can_resize(struct cache *cache, dm_cblock_t new_size)
 {
 	if (from_cblock(new_size) > from_cblock(cache->cache_size)) {
-		DMERR("%s: unable to extend cache due to missing cache table reload",
-		      cache_device_name(cache));
-		return false;
+		if (cache->sized) {
+			DMERR("%s: unable to extend cache due to missing cache table reload",
+			      cache_device_name(cache));
+			return false;
+		}
 	}
 
 	/*
 	 * We can't drop a dirty block when shrinking the cache.
 	 */
-	if (cache->loaded_mappings) {
-		new_size = to_cblock(find_next_bit(cache->dirty_bitset,
-						   from_cblock(cache->cache_size),
-						   from_cblock(new_size)));
-		if (new_size != cache->cache_size) {
+	while (from_cblock(new_size) < from_cblock(cache->cache_size)) {
+		new_size = to_cblock(from_cblock(new_size) + 1);
+		if (is_dirty(cache, new_size)) {
 			DMERR("%s: unable to shrink cache; cache block %llu is dirty",
 			      cache_device_name(cache),
 			      (unsigned long long) from_cblock(new_size));
@@ -3027,21 +2925,23 @@ static int cache_preresume(struct dm_target *ti)
 	struct cache *cache = ti->private;
 	dm_cblock_t csize = get_cache_dev_size(cache);
 
-	if (!can_resume(cache))
-		return -EINVAL;
-
 	/*
 	 * Check to see if the cache has resized.
 	 */
-	if (!cache->sized || csize != cache->cache_size) {
+	if (!cache->sized) {
+		r = resize_cache_dev(cache, csize);
+		if (r)
+			return r;
+
+		cache->sized = true;
+
+	} else if (csize != cache->cache_size) {
 		if (!can_resize(cache, csize))
 			return -EINVAL;
 
 		r = resize_cache_dev(cache, csize);
 		if (r)
 			return r;
-
-		cache->sized = true;
 	}
 
 	if (!cache->loaded_mappings) {
@@ -3227,6 +3127,30 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 			DMEMIT(" %s", cache->ctr_args[i]);
 		if (cache->nr_ctr_args)
 			DMEMIT(" %s", cache->ctr_args[cache->nr_ctr_args - 1]);
+		break;
+
+	case STATUSTYPE_IMA:
+		DMEMIT_TARGET_NAME_VERSION(ti->type);
+		if (get_cache_mode(cache) == CM_FAIL)
+			DMEMIT(",metadata_mode=fail");
+		else if (get_cache_mode(cache) == CM_READ_ONLY)
+			DMEMIT(",metadata_mode=ro");
+		else
+			DMEMIT(",metadata_mode=rw");
+
+		format_dev_t(buf, cache->metadata_dev->bdev->bd_dev);
+		DMEMIT(",cache_metadata_device=%s", buf);
+		format_dev_t(buf, cache->cache_dev->bdev->bd_dev);
+		DMEMIT(",cache_device=%s", buf);
+		format_dev_t(buf, cache->origin_dev->bdev->bd_dev);
+		DMEMIT(",cache_origin_device=%s", buf);
+		DMEMIT(",writethrough=%c", writethrough_mode(cache) ? 'y' : 'n');
+		DMEMIT(",writeback=%c", writeback_mode(cache) ? 'y' : 'n');
+		DMEMIT(",passthrough=%c", passthrough_mode(cache) ? 'y' : 'n');
+		DMEMIT(",metadata2=%c", cache->features.metadata_version == 2 ? 'y' : 'n');
+		DMEMIT(",no_discard_passdown=%c", cache->features.discard_passdown ? 'n' : 'y');
+		DMEMIT(";");
+		break;
 	}
 
 	return;
@@ -3422,7 +3346,7 @@ static bool origin_dev_supports_discard(struct block_device *origin_bdev)
 {
 	struct request_queue *q = bdev_get_queue(origin_bdev);
 
-	return q && blk_queue_discard(q);
+	return blk_queue_discard(q);
 }
 
 /*

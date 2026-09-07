@@ -6,6 +6,8 @@
  * Author: Felipe Balbi <balbi@ti.com>
  */
 
+#define pr_fmt(fmt)	"UDC core: " fmt
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/device.h>
@@ -101,10 +103,12 @@ int usb_ep_enable(struct usb_ep *ep)
 		goto out;
 
 	/* UDC drivers can't handle endpoints with maxpacket size 0 */
-	if (!ep->desc || usb_endpoint_maxp(ep->desc) == 0) {
-		WARN_ONCE(1, "%s: ep%d (%s) has %s\n", __func__, ep->address, ep->name,
-			  (!ep->desc) ? "NULL descriptor" : "maxpacket 0");
-
+	if (usb_endpoint_maxp(ep->desc) == 0) {
+		/*
+		 * We should log an error message here, but we can't call
+		 * dev_err() because there's no way to find the gadget
+		 * given only ep.
+		 */
 		ret = -EINVAL;
 		goto out;
 	}
@@ -273,9 +277,7 @@ int usb_ep_queue(struct usb_ep *ep,
 {
 	int ret = 0;
 
-	if (!ep->enabled && ep->address) {
-		pr_debug("USB gadget: queue request to disabled ep 0x%x (%s)\n",
-				 ep->address, ep->name);
+	if (WARN_ON_ONCE(!ep->enabled && ep->address)) {
 		ret = -ESHUTDOWN;
 		goto out;
 	}
@@ -661,8 +663,7 @@ EXPORT_SYMBOL_GPL(usb_gadget_vbus_disconnect);
  *
  * Enables the D+ (or potentially D-) pullup.  The host will start
  * enumerating this gadget when the pullup is active and a VBUS session
- * is active (the link is powered).  This pullup is always enabled unless
- * usb_gadget_disconnect() has been used to disable it.
+ * is active (the link is powered).
  *
  * Returns zero on success, else negative errno.
  */
@@ -730,11 +731,10 @@ int usb_gadget_disconnect(struct usb_gadget *gadget)
 	}
 
 	ret = gadget->ops->pullup(gadget, 0);
-	if (!ret)
+	if (!ret) {
 		gadget->connected = 0;
-
-	if (gadget->udc->driver)
 		gadget->udc->driver->disconnect(gadget);
+	}
 
 out:
 	trace_usb_gadget_disconnect(gadget, ret);
@@ -812,19 +812,6 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(usb_gadget_activate);
-
-#ifdef CONFIG_USB_FUNC_WAKEUP_SUPPORTED
-int usb_gadget_func_wakeup(struct usb_gadget *gadget, int interface_id)
-{
-	if (gadget->speed < USB_SPEED_SUPER)
-		return -EOPNOTSUPP;
-
-	if (!gadget->ops->func_wakeup)
-		return -EOPNOTSUPP;
-
-	return gadget->ops->func_wakeup(gadget, interface_id);
-}
-#endif
 
 /* ------------------------------------------------------------------------- */
 
@@ -912,8 +899,6 @@ EXPORT_SYMBOL_GPL(usb_gadget_unmap_request);
  * usb_gadget_giveback_request - give the request back to the gadget layer
  * @ep: the endpoint to be used with with the request
  * @req: the request being given back
- *
- * Context: in_interrupt()
  *
  * This is called by device controller drivers in order to return the
  * completed request back to the gadget layer.
@@ -1555,7 +1540,7 @@ err1:
 
 int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
 {
-	struct usb_udc		*udc = NULL;
+	struct usb_udc		*udc = NULL, *iter;
 	int			ret = -ENODEV;
 
 	if (!driver || !driver->bind || !driver->setup)
@@ -1563,10 +1548,12 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
 
 	mutex_lock(&udc_lock);
 	if (driver->udc_name) {
-		list_for_each_entry(udc, &udc_list, list) {
-			ret = strcmp(driver->udc_name, dev_name(&udc->dev));
-			if (!ret)
-				break;
+		list_for_each_entry(iter, &udc_list, list) {
+			ret = strcmp(driver->udc_name, dev_name(&iter->dev));
+			if (ret)
+				continue;
+			udc = iter;
+			break;
 		}
 		if (ret)
 			ret = -ENODEV;
@@ -1575,23 +1562,25 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
 		else
 			goto found;
 	} else {
-		list_for_each_entry(udc, &udc_list, list) {
+		list_for_each_entry(iter, &udc_list, list) {
 			/* For now we take the first one */
-			if (!udc->driver)
-				goto found;
+			if (iter->driver)
+				continue;
+			udc = iter;
+			goto found;
 		}
 	}
 
 	if (!driver->match_existing_only) {
 		list_add_tail(&driver->pending, &gadget_driver_pending_list);
-		pr_info("udc-core: couldn't find an available UDC - added [%s] to list of pending drivers\n",
+		pr_info("couldn't find an available UDC - added [%s] to list of pending drivers\n",
 			driver->function);
 		ret = 0;
 	}
 
 	mutex_unlock(&udc_lock);
 	if (ret)
-		pr_warn("udc-core: couldn't find an available UDC or it's busy\n");
+		pr_warn("couldn't find an available UDC or it's busy: %d\n", ret);
 	return ret;
 found:
 	ret = udc_bind_to_driver(udc, driver);

@@ -115,19 +115,14 @@ bl_submit_bio(struct bio *bio)
 	return NULL;
 }
 
-static struct bio *
-bl_alloc_init_bio(int npg, struct block_device *bdev, sector_t disk_sector,
+static struct bio *bl_alloc_init_bio(unsigned int npg,
+		struct block_device *bdev, sector_t disk_sector,
 		bio_end_io_t end_io, struct parallel_io *par)
 {
 	struct bio *bio;
 
-	npg = min(npg, BIO_MAX_PAGES);
+	npg = bio_max_segs(npg);
 	bio = bio_alloc(GFP_NOIO, npg);
-	if (!bio && (current->flags & PF_MEMALLOC)) {
-		while (!bio && (npg /= 2))
-			bio = bio_alloc(GFP_NOIO, npg);
-	}
-
 	if (bio) {
 		bio->bi_iter.bi_sector = disk_sector;
 		bio_set_dev(bio, bdev);
@@ -171,8 +166,8 @@ do_add_page_to_bio(struct bio *bio, int npg, int rw, sector_t isect,
 
 	/* limit length to what the device mapping allows */
 	end = disk_addr + *len;
-	if (end >= map->disk_offset + map->len)
-		*len = map->disk_offset + map->len - disk_addr;
+	if (end >= map->start + map->len)
+		*len = map->start + map->len - disk_addr;
 
 retry:
 	if (!bio) {
@@ -699,7 +694,7 @@ bl_alloc_lseg(struct pnfs_layout_hdr *lo, struct nfs4_layoutget_res *lgr,
 
 	xdr_init_decode_pages(&xdr, &buf,
 			lgr->layoutp->pages, lgr->layoutp->len);
-	xdr_set_scratch_buffer(&xdr, page_address(scratch), PAGE_SIZE);
+	xdr_set_scratch_page(&xdr, scratch);
 
 	status = -EIO;
 	p = xdr_inline_decode(&xdr, 4);

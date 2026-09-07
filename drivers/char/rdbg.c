@@ -61,19 +61,19 @@ struct smq_block_map {
 struct smq_node {
 	uint16_t index_block;
 	uint16_t num_blocks;
-} __attribute__ ((__packed__));
+} __packed;
 
 struct smq_hdr {
 	uint8_t producer_version;
 	uint8_t consumer_version;
-} __attribute__ ((__packed__));
+} __packed;
 
 struct smq_out_state {
 	uint32_t init;
 	uint32_t index_check_queue_for_reset;
 	uint32_t index_sent_write;
 	uint32_t index_free_read;
-} __attribute__ ((__packed__));
+} __packed;
 
 struct smq_out {
 	struct smq_out_state s;
@@ -85,7 +85,7 @@ struct smq_in_state {
 	uint32_t index_check_queue_for_reset_ack;
 	uint32_t index_sent_read;
 	uint32_t index_free_write;
-} __attribute__ ((__packed__));
+} __packed;
 
 struct smq_in {
 	struct smq_in_state s;

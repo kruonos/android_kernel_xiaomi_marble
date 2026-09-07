@@ -18,7 +18,6 @@
 #include <linux/mmu_context.h>
 #include <linux/bsearch.h>
 #include <linux/sync_core.h>
-#include <linux/moduleloader.h>
 #include <asm/text-patching.h>
 #include <asm/alternative.h>
 #include <asm/sections.h>
@@ -29,8 +28,8 @@
 #include <asm/insn.h>
 #include <asm/io.h>
 #include <asm/fixmap.h>
+#include <asm/paravirt.h>
 #include <asm/asm-prototypes.h>
-#include <asm/set_memory.h>
 
 int __read_mostly alternatives_patched;
 
@@ -77,186 +76,30 @@ do {									\
 	}								\
 } while (0)
 
-/*
- * Each GENERIC_NOPX is of X bytes, and defined as an array of bytes
- * that correspond to that nop. Getting from one nop to the next, we
- * add to the array the offset that is equal to the sum of all sizes of
- * nops preceding the one we are after.
- *
- * Note: The GENERIC_NOP5_ATOMIC is at the end, as it breaks the
- * nice symmetry of sizes of the previous nops.
- */
-#if defined(GENERIC_NOP1) && !defined(CONFIG_X86_64)
-static const unsigned char intelnops[] =
+static const unsigned char x86nops[] =
 {
-	GENERIC_NOP1,
-	GENERIC_NOP2,
-	GENERIC_NOP3,
-	GENERIC_NOP4,
-	GENERIC_NOP5,
-	GENERIC_NOP6,
-	GENERIC_NOP7,
-	GENERIC_NOP8,
-	GENERIC_NOP5_ATOMIC
+	BYTES_NOP1,
+	BYTES_NOP2,
+	BYTES_NOP3,
+	BYTES_NOP4,
+	BYTES_NOP5,
+	BYTES_NOP6,
+	BYTES_NOP7,
+	BYTES_NOP8,
 };
-static const unsigned char * const intel_nops[ASM_NOP_MAX+2] =
+
+const unsigned char * const x86_nops[ASM_NOP_MAX+1] =
 {
 	NULL,
-	intelnops,
-	intelnops + 1,
-	intelnops + 1 + 2,
-	intelnops + 1 + 2 + 3,
-	intelnops + 1 + 2 + 3 + 4,
-	intelnops + 1 + 2 + 3 + 4 + 5,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
+	x86nops,
+	x86nops + 1,
+	x86nops + 1 + 2,
+	x86nops + 1 + 2 + 3,
+	x86nops + 1 + 2 + 3 + 4,
+	x86nops + 1 + 2 + 3 + 4 + 5,
+	x86nops + 1 + 2 + 3 + 4 + 5 + 6,
+	x86nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
 };
-#endif
-
-#ifdef K8_NOP1
-static const unsigned char k8nops[] =
-{
-	K8_NOP1,
-	K8_NOP2,
-	K8_NOP3,
-	K8_NOP4,
-	K8_NOP5,
-	K8_NOP6,
-	K8_NOP7,
-	K8_NOP8,
-	K8_NOP5_ATOMIC
-};
-static const unsigned char * const k8_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	k8nops,
-	k8nops + 1,
-	k8nops + 1 + 2,
-	k8nops + 1 + 2 + 3,
-	k8nops + 1 + 2 + 3 + 4,
-	k8nops + 1 + 2 + 3 + 4 + 5,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-#if defined(K7_NOP1) && !defined(CONFIG_X86_64)
-static const unsigned char k7nops[] =
-{
-	K7_NOP1,
-	K7_NOP2,
-	K7_NOP3,
-	K7_NOP4,
-	K7_NOP5,
-	K7_NOP6,
-	K7_NOP7,
-	K7_NOP8,
-	K7_NOP5_ATOMIC
-};
-static const unsigned char * const k7_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	k7nops,
-	k7nops + 1,
-	k7nops + 1 + 2,
-	k7nops + 1 + 2 + 3,
-	k7nops + 1 + 2 + 3 + 4,
-	k7nops + 1 + 2 + 3 + 4 + 5,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-#ifdef P6_NOP1
-static const unsigned char p6nops[] =
-{
-	P6_NOP1,
-	P6_NOP2,
-	P6_NOP3,
-	P6_NOP4,
-	P6_NOP5,
-	P6_NOP6,
-	P6_NOP7,
-	P6_NOP8,
-	P6_NOP5_ATOMIC
-};
-static const unsigned char * const p6_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	p6nops,
-	p6nops + 1,
-	p6nops + 1 + 2,
-	p6nops + 1 + 2 + 3,
-	p6nops + 1 + 2 + 3 + 4,
-	p6nops + 1 + 2 + 3 + 4 + 5,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-/* Initialize these to a safe default */
-#ifdef CONFIG_X86_64
-const unsigned char * const *ideal_nops = p6_nops;
-#else
-const unsigned char * const *ideal_nops = intel_nops;
-#endif
-
-void __init arch_init_ideal_nops(void)
-{
-	switch (boot_cpu_data.x86_vendor) {
-	case X86_VENDOR_INTEL:
-		/*
-		 * Due to a decoder implementation quirk, some
-		 * specific Intel CPUs actually perform better with
-		 * the "k8_nops" than with the SDM-recommended NOPs.
-		 */
-		if (boot_cpu_data.x86 == 6 &&
-		    boot_cpu_data.x86_model >= 0x0f &&
-		    boot_cpu_data.x86_model != 0x1c &&
-		    boot_cpu_data.x86_model != 0x26 &&
-		    boot_cpu_data.x86_model != 0x27 &&
-		    boot_cpu_data.x86_model < 0x30) {
-			ideal_nops = k8_nops;
-		} else if (boot_cpu_has(X86_FEATURE_NOPL)) {
-			   ideal_nops = p6_nops;
-		} else {
-#ifdef CONFIG_X86_64
-			ideal_nops = k8_nops;
-#else
-			ideal_nops = intel_nops;
-#endif
-		}
-		break;
-
-	case X86_VENDOR_HYGON:
-		ideal_nops = p6_nops;
-		return;
-
-	case X86_VENDOR_AMD:
-		if (boot_cpu_data.x86 > 0xf) {
-			ideal_nops = p6_nops;
-			return;
-		}
-
-		fallthrough;
-
-	default:
-#ifdef CONFIG_X86_64
-		ideal_nops = k8_nops;
-#else
-		if (boot_cpu_has(X86_FEATURE_K8))
-			ideal_nops = k8_nops;
-		else if (boot_cpu_has(X86_FEATURE_K7))
-			ideal_nops = k7_nops;
-		else
-			ideal_nops = intel_nops;
-#endif
-	}
-}
 
 /* Use this to add nops to a buffer, then text_poke the whole buffer. */
 static void __init_or_module add_nops(void *insns, unsigned int len)
@@ -265,7 +108,7 @@ static void __init_or_module add_nops(void *insns, unsigned int len)
 		unsigned int noplen = len;
 		if (noplen > ASM_NOP_MAX)
 			noplen = ASM_NOP_MAX;
-		memcpy(insns, ideal_nops[noplen], noplen);
+		memcpy(insns, x86_nops[noplen], noplen);
 		insns += noplen;
 		len -= noplen;
 	}
@@ -472,8 +315,8 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 			instr, instr, a->instrlen,
 			replacement, a->replacementlen);
 
-		DUMP_BYTES(instr, a->instrlen, "%px: old_insn: ", instr);
-		DUMP_BYTES(replacement, a->replacementlen, "%px: rpl_insn: ", replacement);
+		DUMP_BYTES(instr, a->instrlen, "%px:   old_insn: ", instr);
+		DUMP_BYTES(replacement, a->replacementlen, "%px:   rpl_insn: ", replacement);
 
 		memcpy(insn_buff, replacement, a->replacementlen);
 		insn_buff_sz = a->replacementlen;
@@ -506,12 +349,6 @@ next:
 	}
 
 	kasan_enable_current();
-}
-
-static inline bool is_jcc32(struct insn *insn)
-{
-	/* Jcc.d32 second opcode byte is in the range: 0x80-0x8f */
-	return insn->opcode.bytes[0] == 0x0f && (insn->opcode.bytes[1] & 0xf0) == 0x80;
 }
 
 #if defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION)
@@ -551,225 +388,6 @@ static int emit_indirect(int op, int reg, u8 *bytes)
 
 	return i;
 }
-
-#ifdef CONFIG_MITIGATION_ITS
-
-#ifdef CONFIG_MODULES
-static struct module *its_mod;
-static void *its_page;
-static unsigned int its_offset;
-
-/* Initialize a thunk with the "jmp *reg; int3" instructions. */
-static void *its_init_thunk(void *thunk, int reg)
-{
-	u8 *bytes = thunk;
-	int i = 0;
-
-	if (reg >= 8) {
-		bytes[i++] = 0x41; /* REX.B prefix */
-		reg -= 8;
-	}
-	bytes[i++] = 0xff;
-	bytes[i++] = 0xe0 + reg; /* jmp *reg */
-	bytes[i++] = 0xcc;
-
-	return thunk;
-}
-
-void its_init_mod(struct module *mod)
-{
-	if (!cpu_feature_enabled(X86_FEATURE_INDIRECT_THUNK_ITS))
-		return;
-
-	mutex_lock(&text_mutex);
-	its_mod = mod;
-	its_page = NULL;
-}
-
-void its_fini_mod(struct module *mod)
-{
-	int i;
-
-	if (!cpu_feature_enabled(X86_FEATURE_INDIRECT_THUNK_ITS))
-		return;
-
-	WARN_ON_ONCE(its_mod != mod);
-
-	its_mod = NULL;
-	its_page = NULL;
-	mutex_unlock(&text_mutex);
-
-	for (i = 0; i < mod->its_num_pages; i++) {
-		void *page = mod->its_page_array[i];
-		set_memory_ro((unsigned long)page, 1);
-		set_memory_x((unsigned long)page, 1);
-	}
-}
-
-void its_free_mod(struct module *mod)
-{
-	int i;
-
-	if (!cpu_feature_enabled(X86_FEATURE_INDIRECT_THUNK_ITS))
-		return;
-
-	for (i = 0; i < mod->its_num_pages; i++) {
-		void *page = mod->its_page_array[i];
-		module_memfree(page);
-	}
-	kfree(mod->its_page_array);
-}
-
-static void *its_alloc(void)
-{
-	void *page = module_alloc(PAGE_SIZE);
-
-	if (!page)
-		return NULL;
-
-	if (its_mod) {
-		void *tmp = krealloc(its_mod->its_page_array,
-				     (its_mod->its_num_pages+1) * sizeof(void *),
-				     GFP_KERNEL);
-		if (!tmp) {
-			module_memfree(page);
-			return NULL;
-		}
-
-		its_mod->its_page_array = tmp;
-		its_mod->its_page_array[its_mod->its_num_pages++] = page;
-	}
-
-	return page;
-}
-
-static void *its_allocate_thunk(int reg)
-{
-	int size = 3 + (reg / 8);
-	void *thunk;
-
-	if (!its_page || (its_offset + size - 1) >= PAGE_SIZE) {
-		its_page = its_alloc();
-		if (!its_page) {
-			pr_err("ITS page allocation failed\n");
-			return NULL;
-		}
-		memset(its_page, INT3_INSN_OPCODE, PAGE_SIZE);
-		its_offset = 32;
-	}
-
-	/*
-	 * If the indirect branch instruction will be in the lower half
-	 * of a cacheline, then update the offset to reach the upper half.
-	 */
-	if ((its_offset + size - 1) % 64 < 32)
-		its_offset = ((its_offset - 1) | 0x3F) + 33;
-
-	thunk = its_page + its_offset;
-	its_offset += size;
-
-	set_memory_rw((unsigned long)its_page, 1);
-	thunk = its_init_thunk(thunk, reg);
-	set_memory_ro((unsigned long)its_page, 1);
-	set_memory_x((unsigned long)its_page, 1);
-
-	return thunk;
-}
-#else /* CONFIG_MODULES */
-
-static void *its_allocate_thunk(int reg)
-{
-	return NULL;
-}
-
-#endif /* CONFIG_MODULES */
-
-static int __emit_trampoline(void *addr, struct insn *insn, u8 *bytes,
-			     void *call_dest, void *jmp_dest)
-{
-	u8 op = insn->opcode.bytes[0];
-	int i = 0;
-
-	/*
-	 * Clang does 'weird' Jcc __x86_indirect_thunk_r11 conditional
-	 * tail-calls. Deal with them.
-	 */
-	if (is_jcc32(insn)) {
-		bytes[i++] = op;
-		op = insn->opcode.bytes[1];
-		goto clang_jcc;
-	}
-
-	if (insn->length == 6)
-		bytes[i++] = 0x2e; /* CS-prefix */
-
-	switch (op) {
-	case CALL_INSN_OPCODE:
-		__text_gen_insn(bytes+i, op, addr+i,
-				call_dest,
-				CALL_INSN_SIZE);
-		i += CALL_INSN_SIZE;
-		break;
-
-	case JMP32_INSN_OPCODE:
-clang_jcc:
-		__text_gen_insn(bytes+i, op, addr+i,
-				jmp_dest,
-				JMP32_INSN_SIZE);
-		i += JMP32_INSN_SIZE;
-		break;
-
-	default:
-		WARN(1, "%pS %px %*ph\n", addr, addr, 6, addr);
-		return -1;
-	}
-
-	WARN_ON_ONCE(i != insn->length);
-
-	return i;
-}
-
-static int emit_its_trampoline(void *addr, struct insn *insn, int reg, u8 *bytes)
-{
-	u8 *thunk = __x86_indirect_its_thunk_array[reg];
-	u8 *tmp = its_allocate_thunk(reg);
-
-	if (tmp)
-		thunk = tmp;
-
-	return __emit_trampoline(addr, insn, bytes, thunk, thunk);
-}
-
-/* Check if an indirect branch is at ITS-unsafe address */
-static bool cpu_wants_indirect_its_thunk_at(unsigned long addr, int reg)
-{
-	if (!cpu_feature_enabled(X86_FEATURE_INDIRECT_THUNK_ITS))
-		return false;
-
-	/* Indirect branch opcode is 2 or 3 bytes depending on reg */
-	addr += 1 + reg / 8;
-
-	/* Lower-half of the cacheline? */
-	return !(addr & 0x20);
-}
-
-u8 *its_static_thunk(int reg)
-{
-	u8 *thunk = __x86_indirect_its_thunk_array[reg];
-
-	return thunk;
-}
-
-#else /* CONFIG_MITIGATION_ITS */
-
-u8 *its_static_thunk(int reg)
-{
-	WARN_ONCE(1, "ITS not compiled in");
-
-	return NULL;
-}
-
-#endif /* CONFIG_MITIGATION_ITS */
 
 /*
  * Rewrite the compiler generated retpoline thunk calls.
@@ -842,22 +460,13 @@ static int patch_retpoline(void *addr, struct insn *insn, u8 *bytes)
 		bytes[i++] = 0xe8; /* LFENCE */
 	}
 
-#ifdef CONFIG_MITIGATION_ITS
-	/*
-	 * Check if the address of last byte of emitted-indirect is in
-	 * lower-half of the cacheline. Such branches need ITS mitigation.
-	 */
-	if (cpu_wants_indirect_its_thunk_at((unsigned long)addr + i, reg))
-		return emit_its_trampoline(addr, insn, reg, bytes);
-#endif
-
 	ret = emit_indirect(op, reg, bytes + i);
 	if (ret < 0)
 		return ret;
 	i += ret;
 
 	for (; i < insn->length;)
-		bytes[i++] = 0x90;
+		bytes[i++] = BYTES_NOP1;
 
 	return i;
 }
@@ -912,22 +521,6 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
 }
 
 #ifdef CONFIG_RETHUNK
-
-bool cpu_wants_rethunk(void)
-{
-	return cpu_feature_enabled(X86_FEATURE_RETHUNK);
-}
-
-bool cpu_wants_rethunk_at(void *addr)
-{
-	if (!cpu_feature_enabled(X86_FEATURE_RETHUNK))
-		return false;
-	if (x86_return_thunk != its_return_thunk)
-		return true;
-
-	return !((unsigned long)addr & 0x20);
-}
-
 /*
  * Rewrite the compiler generated return thunk tail-calls.
  *
@@ -943,17 +536,14 @@ static int patch_return(void *addr, struct insn *insn, u8 *bytes)
 {
 	int i = 0;
 
-	/* Patch the custom return thunks... */
-	if (cpu_wants_rethunk_at(addr)) {
-		i = JMP32_INSN_SIZE;
-		__text_gen_insn(bytes, JMP32_INSN_OPCODE, addr, x86_return_thunk, i);
-	} else {
-		/* ... or patch them out if not needed. */
-		bytes[i++] = RET_INSN_OPCODE;
-	}
+	if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
+		return -1;
+
+	bytes[i++] = RET_INSN_OPCODE;
 
 	for (; i < insn->length;)
 		bytes[i++] = INT3_INSN_OPCODE;
+
 	return i;
 }
 
@@ -1171,7 +761,7 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
 		BUG_ON(p->len > MAX_PATCH_LEN);
 		/* prep the buffer with the original instructions */
 		memcpy(insn_buff, p->instr, p->len);
-		used = pv_ops.init.patch(p->type, insn_buff, (unsigned long)p->instr, p->len);
+		used = paravirt_patch(p->type, insn_buff, (unsigned long)p->instr, p->len);
 
 		BUG_ON(used > p->len);
 
@@ -1194,10 +784,23 @@ extern struct paravirt_patch_site __start_parainstructions[],
  *
  * See entry_{32,64}.S for more details.
  */
-static void __init __no_sanitize_address notrace int3_magic(unsigned int *ptr)
-{
-	*ptr = 1;
-}
+
+/*
+ * We define the int3_magic() function in assembly to control the calling
+ * convention such that we can 'call' it from assembly.
+ */
+
+extern void int3_magic(unsigned int *ptr); /* defined in asm */
+
+asm (
+"	.pushsection	.init.text, \"ax\", @progbits\n"
+"	.type		int3_magic, @function\n"
+"int3_magic:\n"
+"	movl	$1, (%" _ASM_ARG1 ")\n"
+	ASM_RET
+"	.size		int3_magic, .-int3_magic\n"
+"	.popsection\n"
+);
 
 extern __initdata unsigned long int3_selftest_ip; /* defined in asm below */
 
@@ -1277,12 +880,39 @@ void __init alternative_instructions(void)
 	 */
 
 	/*
+	 * Paravirt patching and alternative patching can be combined to
+	 * replace a function call with a short direct code sequence (e.g.
+	 * by setting a constant return value instead of doing that in an
+	 * external function).
+	 * In order to make this work the following sequence is required:
+	 * 1. set (artificial) features depending on used paravirt
+	 *    functions which can later influence alternative patching
+	 * 2. apply paravirt patching (generally replacing an indirect
+	 *    function call with a direct one)
+	 * 3. apply alternative patching (e.g. replacing a direct function
+	 *    call with a custom code sequence)
+	 * Doing paravirt patching after alternative patching would clobber
+	 * the optimization of the custom code with a function call again.
+	 */
+	paravirt_set_cap();
+
+	/*
+	 * First patch paravirt functions, such that we overwrite the indirect
+	 * call with the direct call.
+	 */
+	apply_paravirt(__parainstructions, __parainstructions_end);
+
+	/*
 	 * Rewrite the retpolines, must be done before alternatives since
 	 * those can rewrite the retpoline thunks.
 	 */
 	apply_retpolines(__retpoline_sites, __retpoline_sites_end);
 	apply_returns(__return_sites, __return_sites_end);
 
+	/*
+	 * Then patch alternatives, such that those paravirt calls that are in
+	 * alternatives can be overwritten by their immediate fragments.
+	 */
 	apply_alternatives(__alt_instructions, __alt_instructions_end);
 
 #ifdef CONFIG_SMP
@@ -1300,8 +930,6 @@ void __init alternative_instructions(void)
 				(unsigned long)__smp_locks_end);
 	}
 #endif
-
-	apply_paravirt(__parainstructions, __parainstructions_end);
 
 	restart_nmi();
 	alternatives_patched = 1;
@@ -1373,7 +1001,7 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
 	 * with a stale address space WITHOUT being in lazy mode after
 	 * restoring the previous mm.
 	 */
-	if (this_cpu_read(cpu_tlbstate.is_lazy))
+	if (this_cpu_read(cpu_tlbstate_shared.is_lazy))
 		leave_mm(smp_processor_id());
 
 	temp_state.mm = this_cpu_read(cpu_tlbstate.loaded_mm);
@@ -1568,11 +1196,6 @@ void text_poke_sync(void)
 	on_each_cpu(do_sync_core, NULL, 1);
 }
 
-/*
- * NOTE: crazy scheme to allow patching Jcc.d32 but not increase the size of
- * this thing. When len == 6 everything is prefixed with 0x0f and we map
- * opcode to Jcc.d8, using len to distinguish.
- */
 struct text_poke_loc {
 	/* addr := _stext + rel_addr */
 	s32 rel_addr;
@@ -1694,10 +1317,6 @@ noinstr int poke_int3_handler(struct pt_regs *regs)
 		int3_emulate_jmp(regs, (long)ip + tp->disp);
 		break;
 
-	case 0x70 ... 0x7f: /* Jcc */
-		int3_emulate_jcc(regs, tp->opcode & 0xf, (long)ip, tp->disp);
-		break;
-
 	default:
 		BUG();
 	}
@@ -1771,26 +1390,16 @@ static void text_poke_bp_batch(struct text_poke_loc *tp, unsigned int nr_entries
 	 * Second step: update all but the first byte of the patched range.
 	 */
 	for (do_sync = 0, i = 0; i < nr_entries; i++) {
-		u8 old[POKE_MAX_OPCODE_SIZE+1] = { tp[i].old, };
-		u8 _new[POKE_MAX_OPCODE_SIZE+1];
-		const u8 *new = tp[i].text;
+		u8 old[POKE_MAX_OPCODE_SIZE] = { tp[i].old, };
 		int len = tp[i].len;
 
 		if (len - INT3_INSN_SIZE > 0) {
 			memcpy(old + INT3_INSN_SIZE,
 			       text_poke_addr(&tp[i]) + INT3_INSN_SIZE,
 			       len - INT3_INSN_SIZE);
-
-			if (len == 6) {
-				_new[0] = 0x0f;
-				memcpy(_new + 1, new, 5);
-				new = _new;
-			}
-
 			text_poke(text_poke_addr(&tp[i]) + INT3_INSN_SIZE,
-				  new + INT3_INSN_SIZE,
+				  (const char *)tp[i].text + INT3_INSN_SIZE,
 				  len - INT3_INSN_SIZE);
-
 			do_sync++;
 		}
 
@@ -1818,7 +1427,8 @@ static void text_poke_bp_batch(struct text_poke_loc *tp, unsigned int nr_entries
 		 * The old instruction is recorded so that the event can be
 		 * processed forwards or backwards.
 		 */
-		perf_event_text_poke(text_poke_addr(&tp[i]), old, len, new, len);
+		perf_event_text_poke(text_poke_addr(&tp[i]), old, len,
+				     tp[i].text, len);
 	}
 
 	if (do_sync) {
@@ -1835,15 +1445,10 @@ static void text_poke_bp_batch(struct text_poke_loc *tp, unsigned int nr_entries
 	 * replacing opcode.
 	 */
 	for (do_sync = 0, i = 0; i < nr_entries; i++) {
-		u8 byte = tp[i].text[0];
-
-		if (tp[i].len == 6)
-			byte = 0x0f;
-
-		if (byte == INT3_INSN_OPCODE)
+		if (tp[i].text[0] == INT3_INSN_OPCODE)
 			continue;
 
-		text_poke(text_poke_addr(&tp[i]), &byte, INT3_INSN_SIZE);
+		text_poke(text_poke_addr(&tp[i]), tp[i].text, INT3_INSN_SIZE);
 		do_sync++;
 	}
 
@@ -1861,11 +1466,9 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 			       const void *opcode, size_t len, const void *emulate)
 {
 	struct insn insn;
-	int ret, i = 0;
+	int ret, i;
 
-	if (len == 6)
-		i = 1;
-	memcpy((void *)tp->text, opcode+i, len-i);
+	memcpy((void *)tp->text, opcode, len);
 	if (!emulate)
 		emulate = opcode;
 
@@ -1875,13 +1478,6 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 	tp->rel_addr = addr - (void *)_stext;
 	tp->len = len;
 	tp->opcode = insn.opcode.bytes[0];
-
-	if (is_jcc32(&insn)) {
-		/*
-		 * Map Jcc.d32 onto Jcc.d8 and use len to distinguish.
-		 */
-		tp->opcode = insn.opcode.bytes[1] - 0x10;
-	}
 
 	switch (tp->opcode) {
 	case RET_INSN_OPCODE:
@@ -1899,6 +1495,7 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 		BUG_ON(len != insn.length);
 	};
 
+
 	switch (tp->opcode) {
 	case INT3_INSN_OPCODE:
 	case RET_INSN_OPCODE:
@@ -1907,20 +1504,19 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 	case CALL_INSN_OPCODE:
 	case JMP32_INSN_OPCODE:
 	case JMP8_INSN_OPCODE:
-	case 0x70 ... 0x7f: /* Jcc */
 		tp->disp = insn.immediate.value;
 		break;
 
 	default: /* assume NOP */
 		switch (len) {
 		case 2: /* NOP2 -- emulate as JMP8+0 */
-			BUG_ON(memcmp(emulate, ideal_nops[len], len));
+			BUG_ON(memcmp(emulate, x86_nops[len], len));
 			tp->opcode = JMP8_INSN_OPCODE;
 			tp->disp = 0;
 			break;
 
 		case 5: /* NOP5 -- emulate as JMP32+0 */
-			BUG_ON(memcmp(emulate, ideal_nops[NOP_ATOMIC5], len));
+			BUG_ON(memcmp(emulate, x86_nops[len], len));
 			tp->opcode = JMP32_INSN_OPCODE;
 			tp->disp = 0;
 			break;
@@ -1986,7 +1582,7 @@ void __ref text_poke_queue(void *addr, const void *opcode, size_t len, const voi
  * @addr:	address to patch
  * @opcode:	opcode of new instruction
  * @len:	length to copy
- * @handler:	address to jump to when the temporary breakpoint is hit
+ * @emulate:	instruction to be emulated
  *
  * Update a single instruction with the vector in the stack, avoiding
  * dynamically allocated memory. This function should be used when it is

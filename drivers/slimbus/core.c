@@ -82,7 +82,7 @@ static int slim_device_probe(struct device *dev)
 	return ret;
 }
 
-static int slim_device_remove(struct device *dev)
+static void slim_device_remove(struct device *dev)
 {
 	struct slim_device *sbdev = to_slim_device(dev);
 	struct slim_driver *sbdrv;
@@ -92,8 +92,6 @@ static int slim_device_remove(struct device *dev)
 		if (sbdrv->remove)
 			sbdrv->remove(sbdev);
 	}
-
-	return 0;
 }
 
 static int slim_device_uevent(struct device *dev, struct kobj_uevent_env *env)
@@ -309,6 +307,23 @@ int slim_unregister_controller(struct slim_controller *ctrl)
 }
 EXPORT_SYMBOL_GPL(slim_unregister_controller);
 
+/*
+ * slim_vote_for_suspend : initiate immediate suspend.
+ * @sb: client handle requesting the address.
+ *
+ * return zero in case of suspended success.
+ */
+int slim_vote_for_suspend(struct slim_device *sbdev)
+{
+	struct slim_controller *ctrl = sbdev->ctrl;
+
+	if (!ctrl)
+		return -EINVAL;
+
+	return ctrl->suspend_slimbus(ctrl);
+}
+EXPORT_SYMBOL(slim_vote_for_suspend);
+
 /**
  * slim_report_absent() - Controller calls this function when a device
  *	reports absent, OR when the device cannot be communicated with
@@ -382,8 +397,6 @@ struct slim_device *slim_get_device(struct slim_controller *ctrl,
 		sbdev = slim_alloc_device(ctrl, e_addr, NULL);
 		if (!sbdev)
 			return ERR_PTR(-ENOMEM);
-
-		get_device(&sbdev->dev);
 	}
 
 	return sbdev;
@@ -448,8 +461,8 @@ static int slim_device_alloc_laddr(struct slim_device *sbdev,
 		if (ret < 0)
 			goto err;
 	} else if (report_present) {
-		ret = ida_alloc_max(&ctrl->laddr_ida,
-				    SLIM_LA_MANAGER - 1, GFP_KERNEL);
+		ret = ida_simple_get(&ctrl->laddr_ida,
+				     0, SLIM_LA_MANAGER - 1, GFP_KERNEL);
 		if (ret < 0)
 			goto err;
 
@@ -516,24 +529,21 @@ int slim_device_report_present(struct slim_controller *ctrl,
 	if (ctrl->sched.clk_state != SLIM_CLK_ACTIVE) {
 		dev_err(ctrl->dev, "slim ctrl not active,state:%d, ret:%d\n",
 				    ctrl->sched.clk_state, ret);
-		goto out_put_rpm;
+		goto slimbus_not_active;
 	}
 
 	sbdev = slim_get_device(ctrl, e_addr);
-	if (IS_ERR(sbdev)) {
-		ret = -ENODEV;
-		goto out_put_rpm;
-	}
+	if (IS_ERR(sbdev))
+		return -ENODEV;
 
 	if (sbdev->is_laddr_valid) {
 		*laddr = sbdev->laddr;
-		ret = 0;
-	} else {
-		ret = slim_device_alloc_laddr(sbdev, true);
+		return 0;
 	}
 
-	put_device(&sbdev->dev);
-out_put_rpm:
+	ret = slim_device_alloc_laddr(sbdev, true);
+
+slimbus_not_active:
 	pm_runtime_mark_last_busy(ctrl->dev);
 	pm_runtime_put_autosuspend(ctrl->dev);
 	return ret;

@@ -2595,7 +2595,6 @@ int policydb_read(struct policydb *p, void *fp)
 		if (rc)
 			goto bad;
 
-		rc = -EINVAL;
 		rtk->role = le32_to_cpu(buf[0]);
 		rtk->type = le32_to_cpu(buf[1]);
 		rtd->new_role = le32_to_cpu(buf[2]);
@@ -3641,10 +3640,6 @@ int policydb_write(struct policydb *p, void *fp)
 	if (p->mls_enabled)
 		config |= POLICYDB_CONFIG_MLS;
 
-	if (p->android_netlink_route)
-		config |= POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE;
-	if (p->android_netlink_getneigh)
-		config |= POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH;
 	if (p->reject_unknown)
 		config |= REJECT_UNKNOWN;
 	if (p->allow_unknown)

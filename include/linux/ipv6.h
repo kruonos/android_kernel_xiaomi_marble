@@ -4,6 +4,7 @@
 
 #include <uapi/linux/ipv6.h>
 #include <linux/android_kabi.h>
+#include <linux/build_bug.h>
 
 #define ipv6_optlen(p)  (((p)->hdrlen+1) << 3)
 #define ipv6_authlen(p) (((p)->hdrlen+2) << 2)
@@ -32,6 +33,7 @@ struct ipv6_devconf {
 	__s32		max_desync_factor;
 	__s32		max_addresses;
 	__s32		accept_ra_defrtr;
+	__u32		ra_defrtr_metric;
 	__s32		accept_ra_min_hop_limit;
 	__s32		accept_ra_pinfo;
 	__s32		ignore_routes_with_linkdown;
@@ -77,15 +79,30 @@ struct ipv6_devconf {
 	__s32		disable_policy;
 	__s32           ndisc_tclass;
 	__s32		rpl_seg_enabled;
+	__u32		ioam6_id;
+	__u32		ioam6_id_wide;
+	__u8		ioam6_enabled;
+	/* 1 byte padding, unused */
+	/* ANDROID HACK: 2 byte padding used for __u16 accept_ra_min_lft */
 
 	struct ctl_table_header *sysctl_header;
 
-	ANDROID_KABI_USE(1, struct { __s32 accept_ra_min_lft; u32 padding; });
-
+	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
-	ANDROID_KABI_BACKPORT_USE(4, struct { __u8 ra_honor_pio_pflag; __u8 padding4[7]; });
+	ANDROID_KABI_RESERVE(4);
 };
+
+/* Assert that there is actually padding where accept_ra_min_lft is placed */
+static_assert(offsetof(struct ipv6_devconf, sysctl_header) -
+	      offsetof(struct ipv6_devconf, ioam6_enabled) >=
+	      sizeof(((struct ipv6_devconf *)0)->ioam6_enabled) + 1 + sizeof(__u16));
+
+/* The ACCEPT_RA_MIN_LFT macro relies on ioam6_enabled being a u8 */
+static_assert(sizeof(((struct ipv6_devconf *)0)->ioam6_enabled) == 1);
+
+#define ACCEPT_RA_MIN_LFT(cfg) \
+	(*((__u16 *)(&(cfg).ioam6_enabled + 2)))
 
 struct ipv6_params {
 	__s32 disable_ipv6;
@@ -136,6 +153,7 @@ struct inet6_skb_parm {
 	__u16			dsthao;
 #endif
 	__u16			frag_max_size;
+	__u16			srhoff;
 
 #define IP6SKB_XFRM_TRANSFORMED	1
 #define IP6SKB_FORWARDED	2
@@ -145,6 +163,7 @@ struct inet6_skb_parm {
 #define IP6SKB_HOPBYHOP        32
 #define IP6SKB_L3SLAVE         64
 #define IP6SKB_JUMBOGRAM      128
+#define IP6SKB_SEG6	      256
 };
 
 #if defined(CONFIG_NET_L3_MASTER_DEV)
@@ -286,7 +305,6 @@ struct ipv6_pinfo {
 	__be32			rcv_flowinfo;
 
 	__u32			dst_cookie;
-	__u32			rx_dst_cookie;
 
 	struct ipv6_mc_socklist	__rcu *ipv6_mc_list;
 	struct ipv6_ac_socklist	*ipv6_ac_list;

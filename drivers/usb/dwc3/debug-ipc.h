@@ -70,9 +70,11 @@
 #define USB3_PRI_USB30_MODE_SEL	0x210
 #define USB3_PRI_USB30_QDSS_CONFIG	0x214
 
+#define usb3_stringify(nm)	__stringify(USB3_)__stringify(nm)
+
 #define dump_qscratch_regs(nm)				\
 {							\
-	.name	= __stringify(nm),			\
+	.name	= usb3_stringify(nm),			\
 	.offset	= USB3_##nm,				\
 }
 

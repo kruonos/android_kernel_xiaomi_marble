@@ -49,7 +49,7 @@ static void rawsock_report_error(struct sock *sk, int err)
 
 	sk->sk_shutdown = SHUTDOWN_MASK;
 	sk->sk_err = -err;
-	sk->sk_error_report(sk);
+	sk_error_report(sk);
 
 	rawsock_write_queue_purge(sk);
 }
@@ -65,17 +65,6 @@ static int rawsock_release(struct socket *sock)
 
 	if (sock->type == SOCK_RAW)
 		nfc_sock_unlink(&raw_sk_list, sk);
-
-	if (sk->sk_state == TCP_ESTABLISHED) {
-		/* Prevent rawsock_tx_work from starting new transmits and
-		 * wait for any in-progress work to finish.  This must happen
-		 * before the socket is orphaned to avoid a race where
-		 * rawsock_tx_work runs after the NCI device has been freed.
-		 */
-		sk->sk_shutdown |= SEND_SHUTDOWN;
-		cancel_work_sync(&nfc_rawsock(sk)->tx_work);
-		rawsock_write_queue_purge(sk);
-	}
 
 	sock_orphan(sk);
 	sock_put(sk);
@@ -151,7 +140,7 @@ static void rawsock_data_exchange_complete(void *context, struct sk_buff *skb,
 {
 	struct sock *sk = (struct sock *) context;
 
-	BUG_ON(in_irq());
+	BUG_ON(in_hardirq());
 
 	pr_debug("sk=%p err=%d\n", sk, err);
 

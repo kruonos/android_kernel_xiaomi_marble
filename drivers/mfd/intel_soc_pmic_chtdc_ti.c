@@ -32,23 +32,23 @@ enum {
 	CHTDC_TI_CCEOCAL = 7,	/* battery */
 };
 
-static struct resource power_button_resources[] = {
+static const struct resource power_button_resources[] = {
 	DEFINE_RES_IRQ(CHTDC_TI_PWRBTN),
 };
 
-static struct resource thermal_resources[] = {
+static const struct resource thermal_resources[] = {
 	DEFINE_RES_IRQ(CHTDC_TI_DIETMPWARN),
 };
 
-static struct resource adc_resources[] = {
+static const struct resource adc_resources[] = {
 	DEFINE_RES_IRQ(CHTDC_TI_ADCCMPL),
 };
 
-static struct resource pwrsrc_resources[] = {
+static const struct resource pwrsrc_resources[] = {
 	DEFINE_RES_IRQ(CHTDC_TI_VBUSDET),
 };
 
-static struct resource battery_resources[] = {
+static const struct resource battery_resources[] = {
 	DEFINE_RES_IRQ(CHTDC_TI_VBATLOW),
 	DEFINE_RES_IRQ(CHTDC_TI_CCEOCAL),
 };
@@ -81,9 +81,8 @@ static struct mfd_cell chtdc_ti_dev[] = {
 static const struct regmap_config chtdc_ti_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.max_register = 0xff,
-	/* The hardware does not support reading multiple registers at once */
-	.use_single_read = true,
+	.max_register = 128,
+	.cache_type = REGCACHE_NONE,
 };
 
 static const struct regmap_irq chtdc_ti_irqs[] = {

@@ -134,16 +134,16 @@ struct unwind_hint {
 	.popsection
 .endm
 
+.macro STACK_FRAME_NON_STANDARD func:req
+	.pushsection .discard.func_stack_frame_non_standard, "aw"
+		.long \func - .
+	.popsection
+.endm
+
 .macro ANNOTATE_NOENDBR
 .Lhere_\@:
 	.pushsection .discard.noendbr
 	.quad	.Lhere_\@
-	.popsection
-.endm
-
-.macro STACK_FRAME_NON_STANDARD func:req
-	.pushsection .discard.func_stack_frame_non_standard, "aw"
-		.long \func - .
 	.popsection
 .endm
 
@@ -162,9 +162,9 @@ struct unwind_hint {
 #define ANNOTATE_INTRA_FUNCTION_CALL
 .macro UNWIND_HINT type:req sp_reg=0 sp_offset=0 end=0
 .endm
-.macro ANNOTATE_NOENDBR
-.endm
 .macro STACK_FRAME_NON_STANDARD func:req
+.endm
+.macro ANNOTATE_NOENDBR
 .endm
 #endif
 

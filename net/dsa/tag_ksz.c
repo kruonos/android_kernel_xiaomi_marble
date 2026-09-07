@@ -25,7 +25,7 @@ static struct sk_buff *ksz_common_rcv(struct sk_buff *skb,
 	if (pskb_trim_rcsum(skb, skb->len - len))
 		return NULL;
 
-	skb->offload_fwd_mark = true;
+	dsa_default_offload_fwd_mark(skb);
 
 	return skb;
 }
@@ -54,6 +54,9 @@ static struct sk_buff *ksz8795_xmit(struct sk_buff *skb, struct net_device *dev)
 	u8 *tag;
 	u8 *addr;
 
+	if (skb->ip_summed == CHECKSUM_PARTIAL && skb_checksum_help(skb))
+		return NULL;
+
 	/* Tag encoding */
 	tag = skb_put(skb, KSZ_INGRESS_TAG_LEN);
 	addr = skb_mac_header(skb);
@@ -65,15 +68,9 @@ static struct sk_buff *ksz8795_xmit(struct sk_buff *skb, struct net_device *dev)
 	return skb;
 }
 
-static struct sk_buff *ksz8795_rcv(struct sk_buff *skb, struct net_device *dev,
-				  struct packet_type *pt)
+static struct sk_buff *ksz8795_rcv(struct sk_buff *skb, struct net_device *dev)
 {
-	u8 *tag;
-
-	if (skb_linearize(skb))
-		return NULL;
-
-	tag = skb_tail_pointer(skb) - KSZ_EGRESS_TAG_LEN;
+	u8 *tag = skb_tail_pointer(skb) - KSZ_EGRESS_TAG_LEN;
 
 	return ksz_common_rcv(skb, dev, tag[0] & 7, KSZ_EGRESS_TAG_LEN);
 }
@@ -83,8 +80,7 @@ static const struct dsa_device_ops ksz8795_netdev_ops = {
 	.proto	= DSA_TAG_PROTO_KSZ8795,
 	.xmit	= ksz8795_xmit,
 	.rcv	= ksz8795_rcv,
-	.overhead = KSZ_INGRESS_TAG_LEN,
-	.tail_tag = true,
+	.needed_tailroom = KSZ_INGRESS_TAG_LEN,
 };
 
 DSA_TAG_DRIVER(ksz8795_netdev_ops);
@@ -108,9 +104,8 @@ MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_KSZ8795);
 
 #define KSZ9477_INGRESS_TAG_LEN		2
 #define KSZ9477_PTP_TAG_LEN		4
-#define KSZ9477_PTP_TAG_INDICATION	BIT(7)
+#define KSZ9477_PTP_TAG_INDICATION	0x80
 
-#define KSZ9477_TAIL_TAG_EG_PORT_M	GENMASK(2, 0)
 #define KSZ9477_TAIL_TAG_OVERRIDE	BIT(9)
 #define KSZ9477_TAIL_TAG_LOOKUP		BIT(10)
 
@@ -121,6 +116,9 @@ static struct sk_buff *ksz9477_xmit(struct sk_buff *skb,
 	__be16 *tag;
 	u8 *addr;
 	u16 val;
+
+	if (skb->ip_summed == CHECKSUM_PARTIAL && skb_checksum_help(skb))
+		return NULL;
 
 	/* Tag encoding */
 	tag = skb_put(skb, KSZ9477_INGRESS_TAG_LEN);
@@ -136,19 +134,12 @@ static struct sk_buff *ksz9477_xmit(struct sk_buff *skb,
 	return skb;
 }
 
-static struct sk_buff *ksz9477_rcv(struct sk_buff *skb, struct net_device *dev,
-				   struct packet_type *pt)
+static struct sk_buff *ksz9477_rcv(struct sk_buff *skb, struct net_device *dev)
 {
-	unsigned int len = KSZ_EGRESS_TAG_LEN;
-	unsigned int port;
-	u8 *tag;
-
-	if (skb_linearize(skb))
-		return NULL;
-
 	/* Tag decoding */
-	tag = skb_tail_pointer(skb) - KSZ_EGRESS_TAG_LEN;
-	port = tag[0] & KSZ9477_TAIL_TAG_EG_PORT_M;
+	u8 *tag = skb_tail_pointer(skb) - KSZ_EGRESS_TAG_LEN;
+	unsigned int port = tag[0] & 7;
+	unsigned int len = KSZ_EGRESS_TAG_LEN;
 
 	/* Extra 4-bytes PTP timestamp */
 	if (tag[0] & KSZ9477_PTP_TAG_INDICATION)
@@ -162,8 +153,7 @@ static const struct dsa_device_ops ksz9477_netdev_ops = {
 	.proto	= DSA_TAG_PROTO_KSZ9477,
 	.xmit	= ksz9477_xmit,
 	.rcv	= ksz9477_rcv,
-	.overhead = KSZ9477_INGRESS_TAG_LEN,
-	.tail_tag = true,
+	.needed_tailroom = KSZ9477_INGRESS_TAG_LEN,
 };
 
 DSA_TAG_DRIVER(ksz9477_netdev_ops);
@@ -178,6 +168,9 @@ static struct sk_buff *ksz9893_xmit(struct sk_buff *skb,
 	struct dsa_port *dp = dsa_slave_to_port(dev);
 	u8 *addr;
 	u8 *tag;
+
+	if (skb->ip_summed == CHECKSUM_PARTIAL && skb_checksum_help(skb))
+		return NULL;
 
 	/* Tag encoding */
 	tag = skb_put(skb, KSZ_INGRESS_TAG_LEN);
@@ -196,8 +189,7 @@ static const struct dsa_device_ops ksz9893_netdev_ops = {
 	.proto	= DSA_TAG_PROTO_KSZ9893,
 	.xmit	= ksz9893_xmit,
 	.rcv	= ksz9477_rcv,
-	.overhead = KSZ_INGRESS_TAG_LEN,
-	.tail_tag = true,
+	.needed_tailroom = KSZ_INGRESS_TAG_LEN,
 };
 
 DSA_TAG_DRIVER(ksz9893_netdev_ops);

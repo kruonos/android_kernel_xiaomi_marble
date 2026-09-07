@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  */
 
@@ -16,8 +16,6 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/completion.h>
-#include <linux/jiffies.h>
-#include <linux/kref.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
@@ -45,10 +43,9 @@
  * @ret: Linux return code, set in case there was an error processing the connection.
  * @type: GH_RM_RPC_TYPE_RPLY or GH_RM_RPC_TYPE_NOTIF.
  * @num_fragments: total number of fragments expected to be received for this connection.
- * @fragments_received: fragments received so far.
+ * @fragments_recieved: fragments received so far.
  * @rm_error: For request/reply sequences with standard replies.
  * @seq: Sequence ID for the main message.
- * @refcount: Keeps timed-out request objects alive while RX owns them.
  */
 struct gh_rm_connection {
 	void *payload;
@@ -64,7 +61,6 @@ struct gh_rm_connection {
 	u32 rm_error;
 	u16 seq;
 	struct completion seq_done;
-	struct kref refcount;
 };
 
 struct gh_rm_notif_validate {
@@ -86,10 +82,12 @@ const static struct {
 static struct task_struct *gh_rm_drv_recv_task;
 static struct gh_msgq_desc *gh_rm_msgq_desc;
 static gh_virtio_mmio_cb_t gh_virtio_mmio_fn;
-static gh_vcpu_affinity_set_cb_t gh_vcpu_affinity_set_fn[GH_VM_MAX];
-static gh_vcpu_affinity_reset_cb_t gh_vcpu_affinity_reset_fn[GH_VM_MAX];
-static gh_vpm_grp_set_cb_t gh_vpm_grp_set_fn[GH_VM_MAX];
-static gh_vpm_grp_reset_cb_t gh_vpm_grp_reset_fn[GH_VM_MAX];
+static gh_wdog_manage_cb_t gh_wdog_manage_fn;
+static gh_vcpu_affinity_set_cb_t gh_vcpu_affinity_set_fn;
+static gh_vcpu_affinity_reset_cb_t gh_vcpu_affinity_reset_fn;
+static gh_vpm_grp_set_cb_t gh_vpm_grp_set_fn;
+static gh_vpm_grp_reset_cb_t gh_vpm_grp_reset_fn;
+static gh_all_res_populated_cb_t gh_all_res_populated_fn;
 
 static DEFINE_MUTEX(gh_rm_call_idr_lock);
 static DEFINE_MUTEX(gh_virtio_mmio_fn_lock);
@@ -146,27 +144,9 @@ static struct gh_rm_connection *gh_rm_alloc_connection(u32 msg_id,
 	if (needed)
 		init_completion(&connection->seq_done);
 
-	kref_init(&connection->refcount);
 	connection->msg_id = msg_id;
 
 	return connection;
-}
-
-static void gh_rm_connection_release(struct kref *refcount)
-{
-	struct gh_rm_connection *connection;
-
-	connection = container_of(refcount, struct gh_rm_connection, refcount);
-	kfree(connection->payload);
-	kfree(connection);
-}
-
-static void gh_rm_connection_put(struct gh_rm_connection *connection)
-{
-	if (IS_ERR_OR_NULL(connection))
-		return;
-
-	kref_put(&connection->refcount, gh_rm_connection_release);
 }
 
 static int
@@ -185,8 +165,8 @@ gh_rm_init_connection_buff(struct gh_rm_connection *connection,
 	if (!payload_size)
 		return 0;
 
-	max_buf_size = payload_size +
-			(hdr->fragments * GH_RM_MAX_MSG_SIZE_BYTES);
+	max_buf_size = (GH_MSGQ_MAX_MSG_SIZE_BYTES - hdr_size) *
+			(hdr->fragments + 1);
 
 	if (payload_size > max_buf_size) {
 		pr_err("%s: Payload size exceeds max buff size\n", __func__);
@@ -359,7 +339,8 @@ static void gh_rm_validate_notif(struct work_struct *work)
 
 	srcu_notifier_call_chain(&gh_rm_notifier, notification, payload);
 err:
-	gh_rm_connection_put(connection);
+	kfree(payload);
+	kfree(connection);
 	kfree(validate_work);
 }
 
@@ -370,12 +351,11 @@ struct gh_rm_connection *gh_rm_process_notif(void *msg, size_t msg_size)
 	struct gh_rm_connection *connection;
 
 	connection = gh_rm_alloc_connection(hdr->msg_id, false);
-	if (IS_ERR(connection))
-		return connection;
-	connection->seq = hdr->seq;
+	if (!connection)
+		return NULL;
 
 	if (gh_rm_init_connection_buff(connection, msg, sizeof(*hdr), msg_size - sizeof(*hdr))) {
-		gh_rm_connection_put(connection);
+		kfree(connection);
 		return NULL;
 	}
 
@@ -391,49 +371,28 @@ struct gh_rm_connection *gh_rm_process_rply(void *recv_buff, size_t recv_buff_si
 	size_t payload_size;
 	int ret = 0;
 
-	if (recv_buff_size < sizeof(*reply_hdr)) {
-		pr_err("%s: Invalid reply message size: %zu\n",
-			__func__, recv_buff_size);
-		return ERR_PTR(-EINVAL);
-	}
-
 	if (mutex_lock_interruptible(&gh_rm_call_idr_lock)) {
 		ret = -ERESTARTSYS;
 		return ERR_PTR(ret);
 	}
 
 	connection = idr_find(&gh_rm_call_idr, hdr->seq);
-	if (!connection) {
-		mutex_unlock(&gh_rm_call_idr_lock);
+	mutex_unlock(&gh_rm_call_idr_lock);
+
+	if (!connection || connection->seq != hdr->seq ||
+	    connection->msg_id != hdr->msg_id) {
 		pr_err("%s: Failed to get the connection info for seq: %d\n",
 			__func__, hdr->seq);
 		ret = -EINVAL;
 		return ERR_PTR(ret);
-	}
-	kref_get(&connection->refcount);
-	mutex_unlock(&gh_rm_call_idr_lock);
-
-	if (connection->seq != hdr->seq || connection->msg_id != hdr->msg_id) {
-		pr_err("%s: Reply mismatch seq:%u/%u msg_id:%x/%x\n",
-			__func__, hdr->seq, connection->seq,
-			hdr->msg_id, connection->msg_id);
-		connection->type = GH_RM_RPC_TYPE_RPLY;
-		connection->ret = -EINVAL;
-		connection->num_fragments = 0;
-		connection->fragments_received = 0;
-		return connection;
 	}
 
 	payload_size = recv_buff_size - sizeof(*reply_hdr);
 
 	ret = gh_rm_init_connection_buff(connection, recv_buff,
 					sizeof(*reply_hdr), payload_size);
-	if (ret < 0) {
-		connection->ret = ret;
-		connection->num_fragments = 0;
-		connection->fragments_received = 0;
-		return connection;
-	}
+	if (ret < 0)
+		return ERR_PTR(ret);
 
 	connection->rm_error = reply_hdr->err_code;
 
@@ -455,13 +414,6 @@ static int gh_rm_process_cont(struct gh_rm_connection *connection,
 	if (connection->msg_id != hdr->msg_id) {
 		pr_err("%s: got message id %x when expecting %x\n",
 			__func__, hdr->msg_id, connection->msg_id);
-		return -EINVAL;
-	}
-
-	if (connection->seq != hdr->seq) {
-		pr_err("%s: got seq %u when expecting %u\n",
-			__func__, hdr->seq, connection->seq);
-		return -EINVAL;
 	}
 
 	/*
@@ -484,14 +436,11 @@ static int gh_rm_process_cont(struct gh_rm_connection *connection,
 	return 0;
 }
 
-static bool gh_rm_complete_connection(struct gh_rm_connection *connection,
-				      bool *put_connection)
+static bool gh_rm_complete_connection(struct gh_rm_connection *connection)
 {
 	struct gh_rm_notif_validate *validate_work;
 
-	*put_connection = false;
-
-	if (IS_ERR_OR_NULL(connection))
+	if (!connection)
 		return false;
 
 	if (connection->fragments_received != connection->num_fragments)
@@ -500,12 +449,12 @@ static bool gh_rm_complete_connection(struct gh_rm_connection *connection,
 	switch (connection->type) {
 	case GH_RM_RPC_TYPE_RPLY:
 		complete(&connection->seq_done);
-		*put_connection = true;
 		break;
 	case GH_RM_RPC_TYPE_NOTIF:
 		validate_work = kzalloc(sizeof(*validate_work), GFP_KERNEL);
 		if (validate_work == NULL) {
-			*put_connection = true;
+			kfree(connection->payload);
+			kfree(connection);
 			break;
 		}
 
@@ -516,7 +465,6 @@ static bool gh_rm_complete_connection(struct gh_rm_connection *connection,
 		break;
 	default:
 		pr_err("Invalid message type (%d) received\n", connection->type);
-		*put_connection = true;
 		break;
 	}
 
@@ -525,19 +473,16 @@ static bool gh_rm_complete_connection(struct gh_rm_connection *connection,
 
 static void gh_rm_abort_connection(struct gh_rm_connection *connection)
 {
-	if (IS_ERR_OR_NULL(connection))
-		return;
-
 	switch (connection->type) {
 	case GH_RM_RPC_TYPE_RPLY:
 		connection->ret = -EIO;
 		complete(&connection->seq_done);
-		gh_rm_connection_put(connection);
 		break;
 	case GH_RM_RPC_TYPE_NOTIF:
 		fallthrough;
 	default:
-		gh_rm_connection_put(connection);
+		kfree(connection->payload);
+		kfree(connection);
 	}
 }
 
@@ -547,7 +492,6 @@ static int gh_rm_recv_task_fn(void *data)
 	struct gh_rm_rpc_hdr *hdr = NULL;
 	size_t recv_buff_size;
 	void *recv_buff;
-	bool put_connection;
 	int ret;
 
 	recv_buff = kzalloc(GH_MSGQ_MAX_MSG_SIZE_BYTES, GFP_KERNEL);
@@ -591,32 +535,17 @@ static int gh_rm_recv_task_fn(void *data)
 				pr_warn("Received a continuation message without receiving initial message\n");
 				break;
 			}
-			ret = gh_rm_process_cont(connection, recv_buff, recv_buff_size);
-			if (ret < 0) {
-				gh_rm_abort_connection(connection);
-				connection = NULL;
-			}
+			gh_rm_process_cont(connection, recv_buff, recv_buff_size);
 			break;
 		default:
 			pr_err("%s: Invalid message type (%d) received\n",
 				__func__, hdr->type);
 		}
-
-		if (IS_ERR(connection)) {
-			pr_err("%s: Dropping RM connection error: %ld\n",
-				__func__, PTR_ERR(connection));
-			connection = NULL;
-			continue;
-		}
-
 		print_hex_dump_debug("gh_rm_recv: ", DUMP_PREFIX_OFFSET,
 				     4, 1, recv_buff, recv_buff_size, false);
 
-		if (gh_rm_complete_connection(connection, &put_connection)) {
-			if (put_connection)
-				gh_rm_connection_put(connection);
+		if (gh_rm_complete_connection(connection))
 			connection = NULL;
-		}
 	}
 
 	kfree(recv_buff);
@@ -636,16 +565,20 @@ static int gh_rm_send_request(u32 message_id,
 	void *msg;
 	int i, ret = 0;
 
-	if (req_buff_size) {
-		num_fragments = (req_buff_size + GH_RM_MAX_MSG_SIZE_BYTES - 1) /
-				GH_RM_MAX_MSG_SIZE_BYTES;
+	/* Drivers need probe defer
+	 * when do RM call before RM driver initialized
+	 */
+	if (gh_rm_msgq_desc == NULL)
+		return -EPROBE_DEFER;
 
-		/* The above calculation also includes the count
-		 * for the 'request' packet. Exclude it as the
-		 * header needs to fill the num. of fragments to follow.
-		 */
-		num_fragments--;
-	}
+	num_fragments = (req_buff_size + GH_RM_MAX_MSG_SIZE_BYTES - 1) /
+			GH_RM_MAX_MSG_SIZE_BYTES;
+
+	/* The above calculation also includes the count
+	 * for the 'request' packet. Exclude it as the
+	 * header needs to fill the num. of fragments to follow.
+	 */
+	num_fragments--;
 
 	if (num_fragments > GH_RM_MAX_NUM_FRAGMENTS) {
 		pr_err("%s: Limit exceeded for the number of fragments: %u\n",
@@ -682,10 +615,8 @@ static int gh_rm_send_request(u32 message_id,
 		hdr->msg_id = message_id;
 
 		/* Copy payload */
-		if (payload_size) {
-			memcpy(msg + sizeof(*hdr), req_buff_curr, payload_size);
-			req_buff_curr += payload_size;
-		}
+		memcpy(msg + sizeof(*hdr), req_buff_curr, payload_size);
+		req_buff_curr += payload_size;
 
 		/* Force the last fragment to be sent immediately to the receiver */
 		tx_flags = (i == num_fragments) ? GH_MSGQ_TX_PUSH : 0;
@@ -723,23 +654,17 @@ free_msg:
  * (if applicable). Also, the caller should kfree the returned pointer
  * when done.
  */
-static void *__gh_rm_call(gh_rm_msgid_t message_id,
+void *gh_rm_call(gh_rm_msgid_t message_id,
 			void *req_buff, size_t req_buff_size,
-			size_t *resp_buff_size, int *rm_error,
-			unsigned int timeout_ms)
+			size_t *resp_buff_size, int *rm_error)
 {
 	struct gh_rm_connection *connection;
 	bool seq_done_needed = true;
 	int req_ret;
-	int seq;
 	void *ret;
 
-	if (!message_id || (!req_buff && req_buff_size) || !resp_buff_size ||
-	    !rm_error)
+	if (!message_id || !req_buff || !resp_buff_size || !rm_error)
 		return ERR_PTR(-EINVAL);
-
-	*resp_buff_size = 0;
-	*rm_error = 0;
 
 	connection = gh_rm_alloc_connection(message_id, seq_done_needed);
 	if (IS_ERR_OR_NULL(connection))
@@ -747,18 +672,13 @@ static void *__gh_rm_call(gh_rm_msgid_t message_id,
 
 	/* Allocate a new seq number for this connection */
 	if (mutex_lock_interruptible(&gh_rm_call_idr_lock)) {
-		ret = ERR_PTR(-ERESTARTSYS);
-		goto out;
+		kfree(connection);
+		return ERR_PTR(-ERESTARTSYS);
 	}
 
-	seq = idr_alloc_cyclic(&gh_rm_call_idr, connection,
-				       0, U16_MAX, GFP_KERNEL);
+	connection->seq = idr_alloc_cyclic(&gh_rm_call_idr, connection,
+					0, U16_MAX, GFP_KERNEL);
 	mutex_unlock(&gh_rm_call_idr_lock);
-	if (seq < 0) {
-		ret = ERR_PTR(seq);
-		goto out;
-	}
-	connection->seq = seq;
 
 	pr_debug("%s TX msg_id: %x\n", __func__, message_id);
 	print_hex_dump_debug("gh_rm_call TX: ", DUMP_PREFIX_OFFSET, 4, 1,
@@ -769,46 +689,28 @@ static void *__gh_rm_call(gh_rm_msgid_t message_id,
 					connection);
 	if (req_ret < 0) {
 		ret = ERR_PTR(req_ret);
-		goto remove_idr;
+		goto out;
 	}
 
-	/* Wait for response. A zero timeout keeps the legacy infinite wait. */
-	if (timeout_ms) {
-		unsigned long timeout = msecs_to_jiffies(timeout_ms);
+	/* Wait for response */
+	wait_for_completion(&connection->seq_done);
 
-		if (!timeout)
-			timeout = 1;
-
-		if (!wait_for_completion_timeout(&connection->seq_done, timeout)) {
-			mutex_lock(&gh_rm_call_idr_lock);
-			idr_remove(&gh_rm_call_idr, connection->seq);
-			mutex_unlock(&gh_rm_call_idr_lock);
-			pr_err("%s: timed out waiting for msg_id:%x seq:%d timeout_ms:%u\n",
-			       __func__, message_id, connection->seq, timeout_ms);
-			ret = ERR_PTR(-ETIMEDOUT);
-			goto out;
-		}
-	} else {
-		wait_for_completion(&connection->seq_done);
-	}
-
-remove_idr:
 	mutex_lock(&gh_rm_call_idr_lock);
 	idr_remove(&gh_rm_call_idr, connection->seq);
 	mutex_unlock(&gh_rm_call_idr_lock);
-	if (req_ret < 0)
-		goto out;
 
 	*rm_error = connection->rm_error;
 	if (connection->rm_error) {
 		pr_err("%s: Reply for seq:%d failed with RM err: %d\n",
 			__func__, connection->seq, connection->rm_error);
 		ret = ERR_PTR(gh_remap_error(connection->rm_error));
+		kfree(connection->payload);
 		goto out;
 	}
 
 	if (connection->ret) {
 		ret = ERR_PTR(connection->ret);
+		kfree(connection->payload);
 		goto out;
 	}
 
@@ -817,38 +719,12 @@ remove_idr:
 			     false);
 
 	ret = connection->payload;
-	connection->payload = NULL;
 	*resp_buff_size = connection->size;
 
 out:
-	gh_rm_connection_put(connection);
+	kfree(connection);
 	return ret;
 }
-
-void *gh_rm_call(gh_rm_msgid_t message_id,
-			void *req_buff, size_t req_buff_size,
-			size_t *resp_buff_size, int *rm_error)
-{
-	return __gh_rm_call(message_id, req_buff, req_buff_size,
-				 resp_buff_size, rm_error, 0);
-}
-
-void *gh_rm_call_raw(u32 message_id, void *req_buff, size_t req_buff_size,
-			     size_t *resp_buff_size, int *rm_error)
-{
-	return gh_rm_call(message_id, req_buff, req_buff_size, resp_buff_size,
-			  rm_error);
-}
-EXPORT_SYMBOL_GPL(gh_rm_call_raw);
-
-void *gh_rm_call_raw_timeout(u32 message_id, void *req_buff,
-				    size_t req_buff_size, size_t *resp_buff_size,
-				    int *rm_error, unsigned int timeout_ms)
-{
-	return __gh_rm_call(message_id, req_buff, req_buff_size,
-				 resp_buff_size, rm_error, timeout_ms);
-}
-EXPORT_SYMBOL_GPL(gh_rm_call_raw_timeout);
 
 /**
  * gh_rm_virq_to_irq: Get a Linux IRQ from a Gunyah-compatible vIRQ
@@ -893,7 +769,7 @@ static int gh_rm_get_irq(struct gh_vm_get_hyp_res_resp_entry *res_entry)
 	/* For resources, such as DBL source, there's no IRQ. The virq_handle
 	 * wouldn't be defined for such cases. Hence ignore such cases
 	 */
-	if (!res_entry->virq_handle && !virq)
+	if ((!res_entry->virq_handle && !virq) || virq == U32_MAX)
 		return 0;
 
 	/* Allocate and bind a new IRQ if RM-VM hasn't already done already */
@@ -1016,7 +892,6 @@ int gh_rm_populate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 	gh_label_t label;
 	u32 n_res, i;
 	u64 base = 0, size = 0;
-	enum gh_vm_names vm_name_index;
 
 	res_entries = gh_rm_vm_get_hyp_res(vmid, &n_res);
 	if (IS_ERR_OR_NULL(res_entries))
@@ -1024,6 +899,26 @@ int gh_rm_populate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 
 	pr_debug("%s: %d Resources are associated with vmid %d\n",
 		 __func__, n_res, vmid);
+
+	/* Need polulate VCPU first to know if VM support proxy scheduling */
+	for (i = 0; i < n_res; i++) {
+		if (res_entries[i].res_type == GH_RM_RES_TYPE_VCPU) {
+			ret = linux_irq = gh_rm_get_irq(&res_entries[i]);
+			if (ret < 0)
+				goto out;
+
+			cap_id = (u64) res_entries[i].cap_id_high << 32 |
+					res_entries[i].cap_id_low;
+			label = res_entries[i].resource_label;
+			if (gh_vcpu_affinity_set_fn)
+				do {
+					ret = (*gh_vcpu_affinity_set_fn)(
+						vmid, label, cap_id, linux_irq);
+				} while (ret == -EAGAIN);
+			if (ret < 0)
+				goto out;
+		}
+	}
 
 	for (i = 0; i < n_res; i++) {
 		pr_debug("%s: idx:%d res_entries.res_type = 0x%x, res_entries.partner_vmid = 0x%x, res_entries.resource_handle = 0x%x, res_entries.resource_label = 0x%x, res_entries.cap_id_low = 0x%x, res_entries.cap_id_high = 0x%x, res_entries.virq_handle = 0x%x, res_entries.virq = 0x%x res_entries.base_high = 0x%x, res_entries.base_low = 0x%x, res_entries.size_high = 0x%x, res_entries.size_low = 0x%x\n",
@@ -1065,17 +960,9 @@ int gh_rm_populate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 					GH_MSGQ_DIRECTION_RX, linux_irq);
 				break;
 			case GH_RM_RES_TYPE_VCPU:
-				ret = gh_rm_get_vm_name(vmid, &vm_name_index);
-				if (ret) {
-					pr_err("Fail to find vmname index for vmid%d\n",
-					       vmid);
-					break;
-				}
-				if (gh_vcpu_affinity_set_fn[vm_name_index])
-					ret = gh_vcpu_affinity_set_fn
-						[vm_name_index](vmid, label,
-								cap_id);
+			/* Already populate VCPU resource */
 				break;
+
 			case GH_RM_RES_TYPE_DB_TX:
 				ret = gh_dbl_populate_cap_info(label, cap_id,
 					GH_MSGQ_DIRECTION_TX, linux_irq);
@@ -1085,15 +972,8 @@ int gh_rm_populate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 					GH_MSGQ_DIRECTION_RX, linux_irq);
 				break;
 			case GH_RM_RES_TYPE_VPMGRP:
-				ret = gh_rm_get_vm_name(vmid, &vm_name_index);
-				if (ret) {
-					pr_err("Fail to find vmname index for vmid%d\n",
-					       vmid);
-					break;
-				}
-				if (gh_vpm_grp_set_fn[vm_name_index])
-					ret = gh_vpm_grp_set_fn[vm_name_index](
-						vmid, cap_id, linux_irq);
+				if (gh_vpm_grp_set_fn)
+					ret = (*gh_vpm_grp_set_fn)(vmid, cap_id, linux_irq);
 				break;
 			case GH_RM_RES_TYPE_VIRTIO_MMIO:
 				mutex_lock(&gh_virtio_mmio_fn_lock);
@@ -1106,6 +986,10 @@ int gh_rm_populate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 						cap_id, linux_irq, base, size);
 				mutex_unlock(&gh_virtio_mmio_fn_lock);
 				break;
+			case GH_RM_RES_TYPE_WATCHDOG:
+				if (gh_wdog_manage_fn)
+					ret = (*gh_wdog_manage_fn)(vmid, cap_id, true);
+				break;
 			default:
 				pr_err("%s: Unknown resource type: %u\n",
 					__func__, res_entries[i].res_type);
@@ -1117,6 +1001,8 @@ int gh_rm_populate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 			goto out;
 	}
 
+	if (gh_all_res_populated_fn)
+		(*gh_all_res_populated_fn)(vmid, true);
 out:
 	kfree(res_entries);
 	return ret;
@@ -1129,7 +1015,6 @@ gh_rm_put_irq(struct gh_vm_get_hyp_res_resp_entry *res_entry, int irq)
 	if (!gh_put_irq(irq))
 		gh_rm_vm_irq_release(res_entry->virq_handle);
 
-	return;
 }
 
 /**
@@ -1146,15 +1031,16 @@ int gh_rm_unpopulate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 	gh_label_t label;
 	u32 n_res, i;
 	int ret = 0, irq = -1;
-	enum gh_vm_names vm_name_index;
+	gh_capid_t cap_id;
 
 	res_entries = gh_rm_vm_get_hyp_res(vmid, &n_res);
 	if (IS_ERR_OR_NULL(res_entries))
 		return PTR_ERR(res_entries);
 
 	for (i = 0; i < n_res; i++) {
-
 		label = res_entries[i].resource_label;
+		cap_id = (u64) res_entries[i].cap_id_high << 32 |
+				res_entries[i].cap_id_low;
 
 		switch (res_entries[i].res_type) {
 		case GH_RM_RES_TYPE_MQ_TX:
@@ -1174,29 +1060,20 @@ int gh_rm_unpopulate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 						GH_RM_RES_TYPE_DB_RX, &irq);
 			break;
 		case GH_RM_RES_TYPE_VCPU:
-			ret = gh_rm_get_vm_name(vmid, &vm_name_index);
-			if (ret) {
-				pr_err("Fail to find vmname index for vmid%d\n",
-				       vmid);
-				break;
-			}
-			if (gh_vcpu_affinity_reset_fn[vm_name_index])
-				ret = gh_vcpu_affinity_reset_fn[vm_name_index](
-					vmid, label);
+			if (gh_vcpu_affinity_reset_fn)
+				ret = (*gh_vcpu_affinity_reset_fn)(vmid,
+							label, cap_id, &irq);
 			break;
 		case GH_RM_RES_TYPE_VIRTIO_MMIO:
 			/* Virtio cleanup is handled in gh_virtio_mmio_exit() */
 			break;
 		case GH_RM_RES_TYPE_VPMGRP:
-			ret = gh_rm_get_vm_name(vmid, &vm_name_index);
-			if (ret) {
-				pr_err("Fail to find vmname index for vmid%d\n",
-				       vmid);
-				break;
-			}
-			if (gh_vpm_grp_reset_fn[vm_name_index])
-				ret = gh_vpm_grp_reset_fn[vm_name_index](vmid,
-									 &irq);
+			if (gh_vpm_grp_reset_fn)
+				ret = (*gh_vpm_grp_reset_fn)(vmid, &irq);
+			break;
+		case GH_RM_RES_TYPE_WATCHDOG:
+			if (gh_wdog_manage_fn)
+				ret = (*gh_wdog_manage_fn)(vmid, cap_id, false);
 			break;
 		default:
 			pr_err("%s: Unknown resource type: %u\n",
@@ -1209,9 +1086,10 @@ int gh_rm_unpopulate_hyp_res(gh_vmid_t vmid, const char *vm_name)
 
 		if (irq >= 0)
 			gh_rm_put_irq(&res_entries[i], irq);
-
 	}
 
+	if (gh_all_res_populated_fn)
+		(*gh_all_res_populated_fn)(vmid, false);
 out:
 	kfree(res_entries);
 	return ret;
@@ -1264,8 +1142,32 @@ void gh_rm_unset_virtio_mmio_cb(void)
 EXPORT_SYMBOL(gh_rm_unset_virtio_mmio_cb);
 
 /**
+ * gh_rm_set_wdog_manage_cb: Set callback that handles wdog resource
+ * @fnptr: Pointer to callback function
+ *
+ * @fnptr callback is invoked providing details of the wdog resource.
+ *
+ * This function returns these values:
+ *	0	-> indicates success
+ *	-EINVAL -> Indicates invalid input argument
+ *	-EBUSY	-> Indicates that a callback is already set
+ */
+int gh_rm_set_wdog_manage_cb(gh_wdog_manage_cb_t fnptr)
+{
+	if (!fnptr)
+		return -EINVAL;
+
+	if (gh_wdog_manage_fn)
+		return -EBUSY;
+
+	gh_wdog_manage_fn = fnptr;
+
+	return 0;
+}
+EXPORT_SYMBOL(gh_rm_set_wdog_manage_cb);
+
+/**
  * gh_rm_set_vcpu_affinity_cb: Set callback that handles vcpu affinity
- * @vm_name_index: index of VM which will trigger the callback function
  * @fnptr: Pointer to callback function
  *
  * @fnptr callback is invoked providing details of the vcpu resource.
@@ -1275,16 +1177,15 @@ EXPORT_SYMBOL(gh_rm_unset_virtio_mmio_cb);
  *	-EINVAL -> Indicates invalid input argument
  *	-EBUSY	-> Indicates that a callback is already set
  */
-int gh_rm_set_vcpu_affinity_cb(enum gh_vm_names vm_name_index,
-			       gh_vcpu_affinity_set_cb_t fnptr)
+int gh_rm_set_vcpu_affinity_cb(gh_vcpu_affinity_set_cb_t fnptr)
 {
 	if (!fnptr)
 		return -EINVAL;
 
-	if (gh_vcpu_affinity_set_fn[vm_name_index])
+	if (gh_vcpu_affinity_set_fn)
 		return -EBUSY;
 
-	gh_vcpu_affinity_set_fn[vm_name_index] = fnptr;
+	gh_vcpu_affinity_set_fn = fnptr;
 
 	return 0;
 }
@@ -1292,7 +1193,6 @@ EXPORT_SYMBOL(gh_rm_set_vcpu_affinity_cb);
 
 /**
  * gh_rm_reset_vcpu_affinity_cb: Reset callback that handles vcpu affinity
- * @vm_name_index: index of VM which will trigger the callback function
  * @fnptr: Pointer to callback function
  *
  * @fnptr callback is invoked providing details of the vcpu resource.
@@ -1302,16 +1202,15 @@ EXPORT_SYMBOL(gh_rm_set_vcpu_affinity_cb);
  *	-EINVAL -> Indicates invalid input argument
  *	-EBUSY	-> Indicates that a callback is already set
  */
-int gh_rm_reset_vcpu_affinity_cb(enum gh_vm_names vm_name_index,
-				 gh_vcpu_affinity_reset_cb_t fnptr)
+int gh_rm_reset_vcpu_affinity_cb(gh_vcpu_affinity_reset_cb_t fnptr)
 {
 	if (!fnptr)
 		return -EINVAL;
 
-	if (gh_vcpu_affinity_reset_fn[vm_name_index])
+	if (gh_vcpu_affinity_reset_fn)
 		return -EBUSY;
 
-	gh_vcpu_affinity_reset_fn[vm_name_index] = fnptr;
+	gh_vcpu_affinity_reset_fn = fnptr;
 
 	return 0;
 }
@@ -1319,7 +1218,6 @@ EXPORT_SYMBOL(gh_rm_reset_vcpu_affinity_cb);
 
 /**
  * gh_rm_set_vpm_grp_cb: Set callback that handles vpm grp state
- * @vm_name_index: index of VM which will trigger the callback function
  * @fnptr: Pointer to callback function
  *
  * @fnptr callback is invoked providing details of the vcpu grp state IRQ.
@@ -1329,15 +1227,15 @@ EXPORT_SYMBOL(gh_rm_reset_vcpu_affinity_cb);
  *	-EINVAL -> Indicates invalid input argument
  *	-EBUSY	-> Indicates that a callback is already set
  */
-int gh_rm_set_vpm_grp_cb(enum gh_vm_names vm_name_index, gh_vpm_grp_set_cb_t fnptr)
+int gh_rm_set_vpm_grp_cb(gh_vpm_grp_set_cb_t fnptr)
 {
 	if (!fnptr)
 		return -EINVAL;
 
-	if (gh_vpm_grp_set_fn[vm_name_index])
+	if (gh_vpm_grp_set_fn)
 		return -EBUSY;
 
-	gh_vpm_grp_set_fn[vm_name_index] = fnptr;
+	gh_vpm_grp_set_fn = fnptr;
 
 	return 0;
 }
@@ -1345,7 +1243,6 @@ EXPORT_SYMBOL(gh_rm_set_vpm_grp_cb);
 
 /**
  * gh_rm_reset_vpm_grp_cb: Reset callback that handles vpm grp state
- * @vm_name_index: index of VM which will trigger the callback function
  * @fnptr: Pointer to callback function
  *
  * @fnptr callback is invoked providing details of the vcpu grp state IRQ.
@@ -1355,19 +1252,44 @@ EXPORT_SYMBOL(gh_rm_set_vpm_grp_cb);
  *	-EINVAL -> Indicates invalid input argument
  *	-EBUSY	-> Indicates that a callback is already set
  */
-int gh_rm_reset_vpm_grp_cb(enum gh_vm_names vm_name_index, gh_vpm_grp_reset_cb_t fnptr)
+int gh_rm_reset_vpm_grp_cb(gh_vpm_grp_reset_cb_t fnptr)
 {
 	if (!fnptr)
 		return -EINVAL;
 
-	if (gh_vpm_grp_reset_fn[vm_name_index])
+	if (gh_vpm_grp_reset_fn)
 		return -EBUSY;
 
-	gh_vpm_grp_reset_fn[vm_name_index] = fnptr;
+	gh_vpm_grp_reset_fn = fnptr;
 
 	return 0;
 }
 EXPORT_SYMBOL(gh_rm_reset_vpm_grp_cb);
+
+/**
+ * gh_rm_all_res_populated_cb: Set callback that handles all res populated
+ * @fnptr: Pointer to callback function
+ *
+ * @fnptr callback is invoked after all resources are populated/un-pupulated.
+ *
+ * This function returns these values:
+ *	0	-> indicates success
+ *	-EINVAL -> Indicates invalid input argument
+ *	-EBUSY	-> Indicates that a callback is already set
+ */
+int gh_rm_all_res_populated_cb(gh_all_res_populated_cb_t fnptr)
+{
+	if (!fnptr)
+		return -EINVAL;
+
+	if (gh_all_res_populated_fn)
+		return -EBUSY;
+
+	gh_all_res_populated_fn = fnptr;
+
+	return 0;
+}
+EXPORT_SYMBOL(gh_rm_all_res_populated_cb);
 
 static void gh_rm_get_svm_res_work_fn(struct work_struct *work)
 {

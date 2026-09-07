@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2014,2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  */
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -25,7 +25,7 @@ static int change_page_range(pte_t *ptep, unsigned long addr, void *data)
 	return 0;
 }
 
-static bool range_in_range(unsigned long start, unsigned long size,
+static bool in_range(unsigned long start, unsigned long size,
 	unsigned long range_start, unsigned long range_end)
 {
 	return start >= range_start && start < range_end &&
@@ -46,9 +46,8 @@ static int change_memory_common(unsigned long addr, int numpages,
 	if (!size)
 		return 0;
 
-	if (!IS_ENABLED(CONFIG_FORCE_PAGES) &&
-	    !range_in_range(start, size, MODULES_VADDR, MODULES_END) &&
-	    !range_in_range(start, size, VMALLOC_START, VMALLOC_END))
+	if (!in_range(start, size, MODULES_VADDR, MODULES_END) &&
+	    !in_range(start, size, VMALLOC_START, VMALLOC_END))
 		return -EINVAL;
 
 	data.set_mask = set_mask;
@@ -88,19 +87,3 @@ int set_memory_x(unsigned long addr, int numpages)
 					__pgprot(0),
 					__pgprot(L_PTE_XN));
 }
-
-#ifdef CONFIG_ARCH_SUPPORTS_DEBUG_PAGEALLOC
-void __kernel_map_pages(struct page *page, int numpages, int enable)
-{
-	unsigned long addr;
-
-	if (PageHighMem(page))
-		return;
-
-	addr = (unsigned long) page_address(page);
-	if (enable)
-		set_memory_rw(addr, numpages);
-	else
-		set_memory_ro(addr, numpages);
-}
-#endif

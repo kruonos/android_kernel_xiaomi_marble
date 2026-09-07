@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2016, 2019-2021, The Linux Foundation. All rights reserved. */
+/* Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved. */
 
 #include <linux/clk.h>
 #include <linux/export.h>
@@ -24,6 +25,7 @@
 static struct clk_hw *measure;
 static bool debug_suspend;
 static bool debug_suspend_atomic;
+static bool qcom_clk_debug_inited;
 static struct dentry *clk_debugfs_suspend;
 static struct dentry *clk_debugfs_suspend_atomic;
 
@@ -443,6 +445,9 @@ static int clk_debug_measure_get(void *data, u64 *val)
 	int ret = 0;
 	u32 regval;
 
+	if (!measure)
+		return -EINVAL;
+
 	ret = clk_runtime_get_debug_mux(meas);
 	if (ret)
 		return ret;
@@ -711,7 +716,7 @@ void clk_debug_print_hw(struct clk_hw *hw, struct seq_file *f)
 {
 	struct clk_regmap *rclk;
 
-	if (IS_ERR_OR_NULL(hw))
+	if (IS_ERR_OR_NULL(hw) || !hw->core)
 		return;
 
 	clk_debug_print_hw(clk_hw_get_parent(hw), f);
@@ -766,6 +771,27 @@ void clk_common_debug_init(struct clk_hw *hw, struct dentry *dentry)
 	debugfs_create_file("clk_print_regs", 0444, dentry, hw,
 			    &clock_print_hw_fops);
 
+	if (!qcom_clk_debug_inited) {
+		clk_debug_init();
+		qcom_clk_debug_inited = true;
+	}
+}
+
+static int clk_list_rate_vdd_level(struct clk_hw *hw, unsigned int rate)
+{
+	struct clk_regmap *rclk;
+	struct clk_vdd_class_data *vdd_data;
+
+	if (!clk_is_regmap_clk(hw))
+		return 0;
+
+	rclk = to_clk_regmap(hw);
+	vdd_data = &rclk->vdd_data;
+
+	if (!vdd_data->vdd_class)
+		return 0;
+
+	return clk_find_vdd_level(hw, vdd_data, rate);
 }
 
 static int clock_debug_print_clock(struct hw_debug_clk *dclk, struct seq_file *s)

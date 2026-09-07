@@ -6,10 +6,9 @@
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/leds.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -53,17 +52,11 @@
 
 #define LP50XX_SW_RESET		0xff
 #define LP50XX_CHIP_EN		BIT(6)
-#define LP50XX_CHIP_DISABLE	0x00
-#define LP50XX_START_TIME_US	500
-#define LP50XX_RESET_TIME_US	3
-
-#define LP50XX_EN_GPIO_LOW	0
-#define LP50XX_EN_GPIO_HIGH	1
 
 /* There are 3 LED outputs per bank */
 #define LP50XX_LEDS_PER_MODULE	3
 
-#define LP5009_MAX_LED_MODULES	3
+#define LP5009_MAX_LED_MODULES	2
 #define LP5012_MAX_LED_MODULES	4
 #define LP5018_MAX_LED_MODULES	6
 #define LP5024_MAX_LED_MODULES	8
@@ -354,18 +347,20 @@ out:
 	return ret;
 }
 
-static int lp50xx_set_banks(struct lp50xx *priv, u32 led_banks[], int num_leds)
+static int lp50xx_set_banks(struct lp50xx *priv, u32 led_banks[])
 {
 	u8 led_config_lo, led_config_hi;
 	u32 bank_enable_mask = 0;
 	int ret;
 	int i;
 
-	for (i = 0; i < num_leds; i++)
-		bank_enable_mask |= (1 << led_banks[i]);
+	for (i = 0; i < priv->chip_info->max_modules; i++) {
+		if (led_banks[i])
+			bank_enable_mask |= (1 << led_banks[i]);
+	}
 
-	led_config_lo = (u8)(bank_enable_mask & 0xff);
-	led_config_hi = (u8)(bank_enable_mask >> 8) & 0xff;
+	led_config_lo = bank_enable_mask;
+	led_config_hi = bank_enable_mask >> 8;
 
 	ret = regmap_write(priv->regmap, LP50XX_LED_CFG0, led_config_lo);
 	if (ret)
@@ -382,42 +377,19 @@ static int lp50xx_reset(struct lp50xx *priv)
 	return regmap_write(priv->regmap, priv->chip_info->reset_reg, LP50XX_SW_RESET);
 }
 
-static int lp50xx_enable(struct lp50xx *priv)
+static int lp50xx_enable_disable(struct lp50xx *priv, int enable_disable)
 {
 	int ret;
 
-	if (priv->enable_gpio) {
-		ret = gpiod_direction_output(priv->enable_gpio, LP50XX_EN_GPIO_HIGH);
-		if (ret)
-			return ret;
-
-		udelay(LP50XX_START_TIME_US);
-	}
-
-	ret = lp50xx_reset(priv);
+	ret = gpiod_direction_output(priv->enable_gpio, enable_disable);
 	if (ret)
 		return ret;
 
-	return regmap_write(priv->regmap, LP50XX_DEV_CFG0, LP50XX_CHIP_EN);
-}
+	if (enable_disable)
+		return regmap_write(priv->regmap, LP50XX_DEV_CFG0, LP50XX_CHIP_EN);
+	else
+		return regmap_write(priv->regmap, LP50XX_DEV_CFG0, 0);
 
-static int lp50xx_disable(struct lp50xx *priv)
-{
-	int ret;
-
-	ret = regmap_write(priv->regmap, LP50XX_DEV_CFG0, LP50XX_CHIP_DISABLE);
-	if (ret)
-		return ret;
-
-	if (priv->enable_gpio) {
-		ret = gpiod_direction_output(priv->enable_gpio, LP50XX_EN_GPIO_LOW);
-		if (ret)
-			return ret;
-
-		udelay(LP50XX_RESET_TIME_US);
-	}
-
-	return 0;
 }
 
 static int lp50xx_probe_leds(struct fwnode_handle *child, struct lp50xx *priv,
@@ -441,7 +413,7 @@ static int lp50xx_probe_leds(struct fwnode_handle *child, struct lp50xx *priv,
 			return ret;
 		}
 
-		ret = lp50xx_set_banks(priv, led_banks, num_leds);
+		ret = lp50xx_set_banks(priv, led_banks);
 		if (ret) {
 			dev_err(priv->dev, "Cannot setup banked LEDs\n");
 			return ret;
@@ -480,16 +452,9 @@ static int lp50xx_probe_dt(struct lp50xx *priv)
 	int i = 0;
 
 	priv->enable_gpio = devm_gpiod_get_optional(priv->dev, "enable", GPIOD_OUT_LOW);
-	if (IS_ERR(priv->enable_gpio)) {
-		ret = PTR_ERR(priv->enable_gpio);
-		dev_err(&priv->client->dev, "Failed to get enable gpio: %d\n",
-			ret);
-		return ret;
-	}
-
-	ret = lp50xx_enable(priv);
-	if (ret)
-		return ret;
+	if (IS_ERR(priv->enable_gpio))
+		return dev_err_probe(priv->dev, PTR_ERR(priv->enable_gpio),
+				     "Failed to get enable GPIO\n");
 
 	priv->regulator = devm_regulator_get(priv->dev, "vled");
 	if (IS_ERR(priv->regulator))
@@ -522,7 +487,6 @@ static int lp50xx_probe_dt(struct lp50xx *priv)
 		}
 
 		fwnode_for_each_child_node(child, led_node) {
-			int multi_index;
 			ret = fwnode_property_read_u32(led_node, "color",
 						       &color_id);
 			if (ret) {
@@ -530,16 +494,8 @@ static int lp50xx_probe_dt(struct lp50xx *priv)
 				dev_err(priv->dev, "Cannot read color\n");
 				goto child_out;
 			}
-			ret = fwnode_property_read_u32(led_node, "reg", &multi_index);
-			if (ret != 0) {
-				dev_err(priv->dev, "reg must be set\n");
-				return -EINVAL;
-			} else if (multi_index >= LP50XX_LEDS_PER_MODULE) {
-				dev_err(priv->dev, "reg %i out of range\n", multi_index);
-				return -EINVAL;
-			}
 
-			mc_led_info[multi_index].color_index = color_id;
+			mc_led_info[num_colors].color_index = color_id;
 			num_colors++;
 		}
 
@@ -566,8 +522,7 @@ child_out:
 	return ret;
 }
 
-static int lp50xx_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int lp50xx_probe(struct i2c_client *client)
 {
 	struct lp50xx *led;
 	int count;
@@ -587,7 +542,7 @@ static int lp50xx_probe(struct i2c_client *client,
 	mutex_init(&led->lock);
 	led->client = client;
 	led->dev = &client->dev;
-	led->chip_info = &lp50xx_chip_info_tbl[id->driver_data];
+	led->chip_info = device_get_match_data(&client->dev);
 	i2c_set_clientdata(client, led);
 	led->regmap = devm_regmap_init_i2c(client,
 					led->chip_info->lp50xx_regmap_config);
@@ -598,6 +553,14 @@ static int lp50xx_probe(struct i2c_client *client,
 		return ret;
 	}
 
+	ret = lp50xx_reset(led);
+	if (ret)
+		return ret;
+
+	ret = lp50xx_enable_disable(led, 1);
+	if (ret)
+		return ret;
+
 	return lp50xx_probe_dt(led);
 }
 
@@ -606,9 +569,11 @@ static int lp50xx_remove(struct i2c_client *client)
 	struct lp50xx *led = i2c_get_clientdata(client);
 	int ret;
 
-	ret = lp50xx_disable(led);
-	if (ret)
+	ret = lp50xx_enable_disable(led, 0);
+	if (ret) {
 		dev_err(led->dev, "Failed to disable chip\n");
+		return ret;
+	}
 
 	if (led->regulator) {
 		ret = regulator_disable(led->regulator);
@@ -622,24 +587,24 @@ static int lp50xx_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lp50xx_id[] = {
-	{ "lp5009", LP5009 },
-	{ "lp5012", LP5012 },
-	{ "lp5018", LP5018 },
-	{ "lp5024", LP5024 },
-	{ "lp5030", LP5030 },
-	{ "lp5036", LP5036 },
+	{ "lp5009", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5009] },
+	{ "lp5012", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5012] },
+	{ "lp5018", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5018] },
+	{ "lp5024", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5024] },
+	{ "lp5030", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5030] },
+	{ "lp5036", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5036] },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lp50xx_id);
 
 static const struct of_device_id of_lp50xx_leds_match[] = {
-	{ .compatible = "ti,lp5009", .data = (void *)LP5009 },
-	{ .compatible = "ti,lp5012", .data = (void *)LP5012 },
-	{ .compatible = "ti,lp5018", .data = (void *)LP5018 },
-	{ .compatible = "ti,lp5024", .data = (void *)LP5024 },
-	{ .compatible = "ti,lp5030", .data = (void *)LP5030 },
-	{ .compatible = "ti,lp5036", .data = (void *)LP5036 },
-	{},
+	{ .compatible = "ti,lp5009", .data = &lp50xx_chip_info_tbl[LP5009] },
+	{ .compatible = "ti,lp5012", .data = &lp50xx_chip_info_tbl[LP5012] },
+	{ .compatible = "ti,lp5018", .data = &lp50xx_chip_info_tbl[LP5018] },
+	{ .compatible = "ti,lp5024", .data = &lp50xx_chip_info_tbl[LP5024] },
+	{ .compatible = "ti,lp5030", .data = &lp50xx_chip_info_tbl[LP5030] },
+	{ .compatible = "ti,lp5036", .data = &lp50xx_chip_info_tbl[LP5036] },
+	{}
 };
 MODULE_DEVICE_TABLE(of, of_lp50xx_leds_match);
 
@@ -648,7 +613,7 @@ static struct i2c_driver lp50xx_driver = {
 		.name	= "lp50xx",
 		.of_match_table = of_lp50xx_leds_match,
 	},
-	.probe		= lp50xx_probe,
+	.probe_new	= lp50xx_probe,
 	.remove		= lp50xx_remove,
 	.id_table	= lp50xx_id,
 };

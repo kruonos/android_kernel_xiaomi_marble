@@ -304,7 +304,7 @@ static int ntb_transport_bus_probe(struct device *dev)
 	return rc;
 }
 
-static int ntb_transport_bus_remove(struct device *dev)
+static void ntb_transport_bus_remove(struct device *dev)
 {
 	const struct ntb_transport_client *client;
 
@@ -312,8 +312,6 @@ static int ntb_transport_bus_remove(struct device *dev)
 	client->remove(dev);
 
 	put_device(dev);
-
-	return 0;
 }
 
 static struct bus_type ntb_transport_bus = {
@@ -1216,9 +1214,9 @@ static int ntb_transport_init_queue(struct ntb_transport_ctx *nt,
 	qp->tx_max_entry = tx_size / qp->tx_max_frame;
 
 	if (nt->debugfs_node_dir) {
-		char debugfs_name[8];
+		char debugfs_name[4];
 
-		snprintf(debugfs_name, sizeof(debugfs_name), "qp%d", qp_num);
+		snprintf(debugfs_name, 4, "qp%d", qp_num);
 		qp->debugfs_dir = debugfs_create_dir(debugfs_name,
 						     nt->debugfs_node_dir);
 
@@ -1340,7 +1338,7 @@ static int ntb_transport_probe(struct ntb_client *self, struct ntb_dev *ndev)
 	qp_count = ilog2(qp_bitmap);
 	if (nt->use_msi) {
 		qp_count -= 1;
-		nt->msi_db_mask = BIT_ULL(qp_count);
+		nt->msi_db_mask = 1 << qp_count;
 		ntb_db_clear_mask(ndev, nt->msi_db_mask);
 	}
 

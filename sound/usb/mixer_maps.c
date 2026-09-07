@@ -28,7 +28,6 @@ struct usbmix_ctl_map {
 	const struct usbmix_name_map *map;
 	const struct usbmix_selector_map *selector_map;
 	const struct usbmix_connector_map *connector_map;
-	int ignore_ctl_error;
 };
 
 /*
@@ -367,13 +366,6 @@ static const struct usbmix_name_map corsair_virtuoso_map[] = {
 	{ 0 }
 };
 
-/* KTMicro USB */
-static struct usbmix_name_map s31b2_0022_map[] = {
-	{ 23, "Speaker Playback" },
-	{ 18, "Headphone Playback" },
-	{ 0 }
-};
-
 /* ASUS ROG Zenith II with Realtek ALC1220-VB */
 static const struct usbmix_name_map asus_zenith_ii_map[] = {
 	{ 19, NULL, 12 }, /* FU, Input Gain Pad - broken response, disabled */
@@ -446,6 +438,14 @@ static const struct usbmix_name_map aorus_master_alc1220vb_map[] = {
 	{}
 };
 
+/* MSI MPG X570S Carbon Max Wifi with ALC4080  */
+static const struct usbmix_name_map msi_mpg_x570s_carbon_max_wifi_alc4080_map[] = {
+	{ 29, "Speaker Playback" },
+	{ 30, "Front Headphone Playback" },
+	{ 32, "IEC958 Playback" },
+	{}
+};
+
 /*
  * Control map entries
  */
@@ -454,7 +454,6 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 	{
 		.id = USB_ID(0x041e, 0x3000),
 		.map = extigy_map,
-		.ignore_ctl_error = 1,
 	},
 	{
 		.id = USB_ID(0x041e, 0x3010),
@@ -474,27 +473,9 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		.map = audigy2nx_map,
 		.selector_map = audigy2nx_selectors,
 	},
-	{	/* Logitech, Inc. QuickCam Pro for Notebooks */
-		.id = USB_ID(0x046d, 0x0991),
-		.ignore_ctl_error = 1,
-	},
-	{	/* Logitech, Inc. QuickCam E 3500 */
-		.id = USB_ID(0x046d, 0x09a4),
-		.ignore_ctl_error = 1,
-	},
 	{	/* Plantronics GameCom 780 */
 		.id = USB_ID(0x047f, 0xc010),
 		.map = gamecom780_map,
-	},
-	{
-		/* Hercules DJ Console (Windows Edition) */
-		.id = USB_ID(0x06f8, 0xb000),
-		.ignore_ctl_error = 1,
-	},
-	{
-		/* Hercules DJ Console (Macintosh Edition) */
-		.id = USB_ID(0x06f8, 0xd002),
-		.ignore_ctl_error = 1,
 	},
 	{
 		/* Hercules Gamesurround Muse Pocket LT
@@ -514,7 +495,6 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 	{
 		.id = USB_ID(0x08bb, 0x2702),
 		.map = linex_map,
-		.ignore_ctl_error = 1,
 	},
 	{
 		.id = USB_ID(0x0a92, 0x0091),
@@ -539,7 +519,6 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 	{
 		.id = USB_ID(0x13e5, 0x0001),
 		.map = scratch_live_map,
-		.ignore_ctl_error = 1,
 	},
 	{
 		.id = USB_ID(0x200c, 0x1018),
@@ -551,10 +530,6 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		.map = maya44_map,
 	},
 	{
-		.id = USB_ID(0x2708, 0x0002), /* Audient iD14 */
-		.ignore_ctl_error = 1,
-	},
-	{
 		/* KEF X300A */
 		.id = USB_ID(0x27ac, 0x1000),
 		.map = scms_usb3318_map,
@@ -563,20 +538,6 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		/* Arcam rPAC */
 		.id = USB_ID(0x25c4, 0x0003),
 		.map = scms_usb3318_map,
-	},
-	{
-		/* Corsair Virtuoso SE Latest (wired mode) */
-		.id = USB_ID(0x1b1c, 0x0a3f),
-		.map = corsair_virtuoso_map,
-	},
-	{
-		/* Corsair Virtuoso SE Latest (wireless mode) */
-		.id = USB_ID(0x1b1c, 0x0a40),
-		.map = corsair_virtuoso_map,
-	},
-	{
-		.id = USB_ID(0x30be, 0x0101), /*  Schiit Hel */
-		.ignore_ctl_error = 1,
 	},
 	{
 		/* Bose Companion 5 */
@@ -599,18 +560,18 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		.map = corsair_virtuoso_map,
 	},
 	{
+		/* Corsair Virtuoso SE Latest (wired mode) */
+		.id = USB_ID(0x1b1c, 0x0a3f),
+		.map = corsair_virtuoso_map,
+	},
+	{
+		/* Corsair Virtuoso SE Latest (wireless mode) */
+		.id = USB_ID(0x1b1c, 0x0a40),
+		.map = corsair_virtuoso_map,
+	},
+	{
 		/* Corsair Virtuoso (wireless mode) */
 		.id = USB_ID(0x1b1c, 0x0a42),
-		.map = corsair_virtuoso_map,
-	},
-	{
-		/* Corsair HS80 RGB Wireless (wired mode) */
-		.id = USB_ID(0x1b1c, 0x0a6a),
-		.map = corsair_virtuoso_map,
-	},
-	{
-		/* Corsair HS80 RGB Wireless (wireless mode) */
-		.id = USB_ID(0x1b1c, 0x0a6b),
 		.map = corsair_virtuoso_map,
 	},
 	{	/* Gigabyte TRX40 Aorus Master (rear panel + front mic) */
@@ -637,6 +598,14 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		.map = trx40_mobo_map,
 		.connector_map = trx40_mobo_connector_map,
 	},
+	{	/* MSI MPG X570S Carbon Max Wifi */
+		.id = USB_ID(0x0db0, 0x419c),
+		.map = msi_mpg_x570s_carbon_max_wifi_alc4080_map,
+	},
+	{	/* MSI MAG X570S Torpedo Max */
+		.id = USB_ID(0x0db0, 0xa073),
+		.map = msi_mpg_x570s_carbon_max_wifi_alc4080_map,
+	},
 	{	/* MSI TRX40 */
 		.id = USB_ID(0x0db0, 0x543d),
 		.map = trx40_mobo_map,
@@ -655,11 +624,6 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		/* Sennheiser Communications Headset [PC 8] */
 		.id = USB_ID(0x1395, 0x0025),
 		.map = sennheiser_pc8_map,
-	},
-	{
-		/* KTMicro USB */
-		.id = USB_ID(0X31b2, 0x0022),
-		.map = s31b2_0022_map,
 	},
 	{ 0 } /* terminator */
 };

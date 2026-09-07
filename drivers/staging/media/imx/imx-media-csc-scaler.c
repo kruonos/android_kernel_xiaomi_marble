@@ -167,7 +167,7 @@ static int ipu_csc_scaler_enum_fmt(struct file *file, void *fh,
 	int ret;
 
 	ret = imx_media_enum_pixel_formats(&fourcc, f->index,
-					   PIXFMT_SEL_YUV_RGB);
+					   PIXFMT_SEL_YUV_RGB, 0);
 	if (ret)
 		return ret;
 
@@ -803,7 +803,6 @@ static int ipu_csc_scaler_release(struct file *file)
 
 	dev_dbg(priv->dev, "Releasing instance %p\n", ctx);
 
-	v4l2_ctrl_handler_free(&ctx->ctrl_hdlr);
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 	v4l2_fh_del(&ctx->fh);
 	v4l2_fh_exit(&ctx->fh);
@@ -914,7 +913,7 @@ imx_media_csc_scaler_device_init(struct imx_media_dev *md)
 	return &priv->vdev;
 
 err_m2m:
-	video_device_release(vfd);
+	video_set_drvdata(vfd, NULL);
 err_vfd:
 	kfree(priv);
 	return ERR_PTR(ret);

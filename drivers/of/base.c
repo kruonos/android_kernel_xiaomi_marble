@@ -36,6 +36,7 @@ LIST_HEAD(aliases_lookup);
 struct device_node *of_root;
 EXPORT_SYMBOL(of_root);
 struct device_node *of_chosen;
+EXPORT_SYMBOL(of_chosen);
 struct device_node *of_aliases;
 struct device_node *of_stdout;
 static const char *of_stdout_options;
@@ -730,9 +731,7 @@ static struct device_node *__of_get_next_child(const struct device_node *node,
 		return NULL;
 
 	next = prev ? prev->sibling : node->child;
-	for (; next; next = next->sibling)
-		if (of_node_get(next))
-			break;
+	of_node_get(next);
 	of_node_put(prev);
 	return next;
 }
@@ -953,10 +952,10 @@ struct device_node *of_find_node_opts_by_path(const char *path, const char **opt
 	/* The path could begin with an alias */
 	if (*path != '/') {
 		int len;
-		const char *p = strchrnul(path, '/');
+		const char *p = separator;
 
-		if (separator && separator < p)
-			p = separator;
+		if (!p)
+			p = strchrnul(path, '/');
 		len = p - path;
 
 		/* of_aliases must not be NULL */
@@ -1324,8 +1323,8 @@ int of_phandle_iterator_next(struct of_phandle_iterator *it)
 
 		if (it->cells_name) {
 			if (!it->node) {
-				pr_err("%pOF: could not find phandle\n",
-				       it->parent);
+				pr_err("%pOF: could not find phandle %d\n",
+				       it->parent, it->phandle);
 				goto err;
 			}
 
@@ -1648,10 +1647,8 @@ int of_parse_phandle_with_args_map(const struct device_node *np,
 			map_len--;
 
 			/* Check if not found */
-			if (!new) {
-				ret = -EINVAL;
+			if (!new)
 				goto put;
-			}
 
 			if (!of_device_is_available(new))
 				match = 0;
@@ -1661,20 +1658,17 @@ int of_parse_phandle_with_args_map(const struct device_node *np,
 				goto put;
 
 			/* Check for malformed properties */
-			if (WARN_ON(new_size > MAX_PHANDLE_ARGS) ||
-			    map_len < new_size) {
-				ret = -EINVAL;
+			if (WARN_ON(new_size > MAX_PHANDLE_ARGS))
 				goto put;
-			}
+			if (map_len < new_size)
+				goto put;
 
 			/* Move forward by new node's #<list>-cells amount */
 			map += new_size;
 			map_len -= new_size;
 		}
-		if (!match) {
-			ret = -ENOENT;
+		if (!match)
 			goto put;
-		}
 
 		/* Get the <list>-map-pass-thru property (optional) */
 		pass = of_get_property(cur, pass_name, NULL);
@@ -1686,6 +1680,7 @@ int of_parse_phandle_with_args_map(const struct device_node *np,
 		 * specifier into the out_args structure, keeping the
 		 * bits specified in <list>-map-pass-thru.
 		 */
+		match_array = map - new_size;
 		for (i = 0; i < new_size; i++) {
 			__be32 val = *(map - new_size + i);
 
@@ -1694,7 +1689,6 @@ int of_parse_phandle_with_args_map(const struct device_node *np,
 				val |= cpu_to_be32(out_args->args[i]) & pass[i];
 			}
 
-			initial_match_array[i] = val;
 			out_args->args[i] = be32_to_cpu(val);
 		}
 		out_args->args_count = list_size = new_size;
@@ -1813,7 +1807,7 @@ EXPORT_SYMBOL(of_count_phandle_with_args);
 /**
  * __of_add_property - Add a property to a node without lock operations
  * @np:		Caller's Device Node
- * @prob:	Property to add
+ * @prop:	Property to add
  */
 int __of_add_property(struct device_node *np, struct property *prop)
 {
@@ -1836,7 +1830,7 @@ int __of_add_property(struct device_node *np, struct property *prop)
 /**
  * of_add_property - Add a property to a node
  * @np:		Caller's Device Node
- * @prob:	Property to add
+ * @prop:	Property to add
  */
 int of_add_property(struct device_node *np, struct property *prop)
 {
@@ -1883,7 +1877,7 @@ int __of_remove_property(struct device_node *np, struct property *prop)
 /**
  * of_remove_property - Remove a property from a node.
  * @np:		Caller's Device Node
- * @prob:	Property to remove
+ * @prop:	Property to remove
  *
  * Note that we don't actually remove it, since we have given out
  * who-knows-how-many pointers to the data using get-property.
@@ -2046,17 +2040,13 @@ void of_alias_scan(void * (*dt_alloc)(u64 size, u64 align))
 			end--;
 		len = end - start;
 
-		if (kstrtoint(end, 10, &id) < 0) {
-			of_node_put(np);
+		if (kstrtoint(end, 10, &id) < 0)
 			continue;
-		}
 
 		/* Allocate an alias_prop with enough space for the stem */
 		ap = dt_alloc(sizeof(*ap) + len + 1, __alignof__(*ap));
-		if (!ap) {
-			of_node_put(np);
+		if (!ap)
 			continue;
-		}
 		memset(ap, 0, sizeof(*ap) + len + 1);
 		ap->alias = start;
 		of_alias_add(ap, np, id, start, len);

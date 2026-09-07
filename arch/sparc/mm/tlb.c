@@ -9,6 +9,7 @@
 #include <linux/mm.h>
 #include <linux/swap.h>
 #include <linux/preempt.h>
+#include <linux/pagemap.h>
 
 #include <asm/tlbflush.h>
 #include <asm/cacheflush.h>
@@ -51,10 +52,8 @@ out:
 
 void arch_enter_lazy_mmu_mode(void)
 {
-	struct tlb_batch *tb;
+	struct tlb_batch *tb = this_cpu_ptr(&tlb_batch);
 
-	preempt_disable();
-	tb = this_cpu_ptr(&tlb_batch);
 	tb->active = 1;
 }
 
@@ -65,7 +64,6 @@ void arch_leave_lazy_mmu_mode(void)
 	if (tb->tlb_nr)
 		flush_tlb_pending();
 	tb->active = 0;
-	preempt_enable();
 }
 
 static void tlb_batch_add_one(struct mm_struct *mm, unsigned long vaddr,

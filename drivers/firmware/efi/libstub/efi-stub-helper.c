@@ -7,7 +7,7 @@
  * Copyright 2011 Intel Corporation; author Matt Fleming
  */
 
-#include <stdarg.h>
+#include <linux/stdarg.h>
 
 #include <linux/ctype.h>
 #include <linux/efi.h>
@@ -439,17 +439,16 @@ efi_status_t efi_exit_boot_services(void *handle,
 {
 	efi_status_t status;
 
-	status = efi_get_memory_map(map);
+	if (efi_disable_pci_dma)
+		efi_pci_disable_bridge_busmaster();
 
+	status = efi_get_memory_map(map);
 	if (status != EFI_SUCCESS)
 		goto fail;
 
 	status = priv_func(map, priv);
 	if (status != EFI_SUCCESS)
 		goto free_map;
-
-	if (efi_disable_pci_dma)
-		efi_pci_disable_bridge_busmaster();
 
 	status = efi_bs_call(exit_boot_services, handle, *map->key_ptr);
 
@@ -630,8 +629,8 @@ efi_status_t efi_load_initrd_cmdline(efi_loaded_image_t *image,
  * @image:	EFI loaded image protocol
  * @load_addr:	pointer to loaded initrd
  * @load_size:	size of loaded initrd
- * @soft_limit:	preferred size of allocated memory for loading the initrd
- * @hard_limit:	minimum size of allocated memory
+ * @soft_limit:	preferred address for loading the initrd
+ * @hard_limit:	upper limit address for loading the initrd
  *
  * Return:	status code
  */

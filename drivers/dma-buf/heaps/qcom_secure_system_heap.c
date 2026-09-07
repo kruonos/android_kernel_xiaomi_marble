@@ -627,18 +627,23 @@ static long get_pool_size_bytes(struct dma_heap *heap)
 	return total_size << PAGE_SHIFT;
 }
 
-int qcom_secure_system_freeze(void)
+int qcom_secure_system_heap_freeze(void)
 {
 	struct qcom_secure_system_heap *sys_heap;
 	long sz;
 
+	/*
+	 * It is expected that the buffers are freed by the clients
+	 * before the freeze. DMABUF framework tracks the unfreed memory
+	 * by the total_allocated struct member.
+	 */
 	cancel_delayed_work_sync(&prefetch_work);
 	list_for_each_entry(sys_heap, &secure_heaps, list) {
 		sz = atomic_long_read(&sys_heap->total_allocated);
 		if (sz) {
-			pr_err("%s: Allocations not freed for VMID: %d %lx bytes won't be saved across hibernation. Aborting freeze.\n",
-				__func__, sys_heap->vmid, sz);
-			return -EINVAL;
+			pr_err("%s: %lx bytes of allocation not freed for VMID: %d. Aborting freeze.\n",
+				__func__, sz, sys_heap->vmid);
+			return -EBUSY;
 		}
 
 		dynamic_page_pool_release_pools(sys_heap->pool_list);
@@ -646,7 +651,7 @@ int qcom_secure_system_freeze(void)
 	return 0;
 }
 
-int qcom_secure_system_restore(void)
+int qcom_secure_system_heap_restore(void)
 {
 	struct qcom_secure_system_heap *sys_heap;
 
@@ -657,7 +662,6 @@ int qcom_secure_system_restore(void)
 			pr_err("%s: Pool creation failed for VMID: %d, err: %d\n",
 				__func__, sys_heap->vmid,
 				PTR_ERR(sys_heap->pool_list));
-			sys_heap->pool_list = NULL;
 		}
 	}
 	return 0;

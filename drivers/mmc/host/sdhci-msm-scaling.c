@@ -2,7 +2,7 @@
 /*
  * Qualcomm Technologies, Inc. SDHCI Platform driver.
  *
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of_device.h>
@@ -154,18 +154,11 @@ void sdhci_msm_cqe_scaling_resume(struct mmc_host *mhost)
 	struct sdhci_host *shost = mmc_priv(mhost);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(shost);
 	struct sdhci_msm_host *host = sdhci_pltfm_priv(pltfm_host);
-	struct mmc_ios ios = shost->mmc->ios;
 
 	if (host->scaling_suspended == 1) {
 		sdhci_msm_mmc_resume_clk_scaling(mhost);
 		host->scaling_suspended = 0;
 	}
-
-	if (ios.timing == MMC_TIMING_MMC_HS400)
-		host->clk_scaling.curr_freq = MMC_SCALE_HIGH_FREQ;
-
-	if (ios.timing == MMC_TIMING_MMC_DDR52)
-		host->clk_scaling.curr_freq = MMC_SCALE_LOW_FREQ;
 }
 EXPORT_SYMBOL(sdhci_msm_cqe_scaling_resume);
 
@@ -208,10 +201,8 @@ void sdhci_msm_set_factors(struct mmc_host *mhost)
 	struct sdhci_host *shost = mmc_priv(mhost);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(shost);
 	struct sdhci_msm_host *host = sdhci_pltfm_priv(pltfm_host);
-	bool special_scale = host->need_special_up_threshold;
 
-	host->clk_scaling.upthreshold =
-		special_scale ? MMC_DEVFRQ_SPECIAL_UP_THRESHOLD : MMC_DEVFRQ_DEFAULT_UP_THRESHOLD;
+	host->clk_scaling.upthreshold = MMC_DEVFRQ_DEFAULT_UP_THRESHOLD;
 	host->clk_scaling.downthreshold = MMC_DEVFRQ_DEFAULT_DOWN_THRESHOLD;
 	host->clk_scaling.polling_delay_ms = MMC_DEVFRQ_DEFAULT_POLLING_MSEC;
 	host->clk_scaling.skip_clk_scale_freq_update = false;
@@ -773,7 +764,7 @@ int sdhci_msm_mmc_clk_update_freq(struct sdhci_msm_host *host,
 	struct mmc_host *mhost = host->mmc;
 	int err = 0;
 
-	if (!mhost) {
+	if (!host) {
 		pr_err("bad host parameter\n");
 		WARN_ON(1);
 		return -EINVAL;
@@ -1357,7 +1348,7 @@ int _sdhci_msm_mmc_suspend_clk_scaling(struct sdhci_msm_host *host)
 	struct mmc_host *mhost = host->mmc;
 	int err;
 
-	if (!mhost) {
+	if (!host) {
 		WARN(1, "bad host parameter\n");
 		return -EINVAL;
 	}
@@ -1406,7 +1397,7 @@ int _sdhci_msm_mmc_resume_clk_scaling(struct sdhci_msm_host *host)
 	u32 devfreq_max_clk = 0;
 	u32 devfreq_min_clk = 0;
 
-	if (!mhost) {
+	if (!host) {
 		WARN(1, "bad host parameter\n");
 		return -EINVAL;
 	}
@@ -1460,7 +1451,7 @@ int _sdhci_msm_mmc_exit_clk_scaling(struct sdhci_msm_host *host)
 	struct mmc_host *mhost = host->mmc;
 	int err;
 
-	if (!mhost) {
+	if (!host) {
 		pr_err("%s: bad host parameter\n", __func__);
 		WARN_ON(1);
 		return -EINVAL;

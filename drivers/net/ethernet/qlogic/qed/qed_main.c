@@ -49,11 +49,10 @@
 #define QED_NVM_CFG_MAX_ATTRS		50
 
 static char version[] =
-	"QLogic FastLinQ 4xxxx Core Module qed " DRV_MODULE_VERSION "\n";
+	"QLogic FastLinQ 4xxxx Core Module qed\n";
 
 MODULE_DESCRIPTION("QLogic FastLinQ 4xxxx Core Module");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_MODULE_VERSION);
 
 #define FW_FILE_VERSION				\
 	__stringify(FW_MAJOR_VERSION) "."	\
@@ -1221,6 +1220,10 @@ static void qed_slowpath_task(struct work_struct *work)
 
 	if (test_and_clear_bit(QED_SLOWPATH_PERIODIC_DB_REC,
 			       &hwfn->slowpath_task_flags)) {
+		/* skip qed_db_rec_handler during recovery/unload */
+		if (hwfn->cdev->recov_in_prog || !hwfn->slowpath_wq_active)
+			goto out;
+
 		qed_db_rec_handler(hwfn, ptt);
 		if (hwfn->periodic_db_rec_count--)
 			qed_slowpath_delayed_work(hwfn,
@@ -1228,12 +1231,14 @@ static void qed_slowpath_task(struct work_struct *work)
 						  QED_PERIODIC_DB_REC_INTERVAL);
 	}
 
+out:
 	qed_ptt_release(hwfn, ptt);
 }
 
 static int qed_slowpath_wq_start(struct qed_dev *cdev)
 {
 	struct qed_hwfn *hwfn;
+	char name[NAME_SIZE];
 	int i;
 
 	if (IS_VF(cdev))
@@ -1242,11 +1247,11 @@ static int qed_slowpath_wq_start(struct qed_dev *cdev)
 	for_each_hwfn(cdev, i) {
 		hwfn = &cdev->hwfns[i];
 
-		hwfn->slowpath_wq = alloc_workqueue("slowpath-%02x:%02x.%02x",
-					 0, 0, cdev->pdev->bus->number,
-					 PCI_SLOT(cdev->pdev->devfn),
-					 hwfn->abs_pf_id);
+		snprintf(name, NAME_SIZE, "slowpath-%02x:%02x.%02x",
+			 cdev->pdev->bus->number,
+			 PCI_SLOT(cdev->pdev->devfn), hwfn->abs_pf_id);
 
+		hwfn->slowpath_wq = alloc_workqueue(name, 0, 0);
 		if (!hwfn->slowpath_wq) {
 			DP_NOTICE(hwfn, "Cannot create slowpath workqueue\n");
 			return -ENOMEM;
@@ -2887,7 +2892,7 @@ static int qed_update_drv_state(struct qed_dev *cdev, bool active)
 	return status;
 }
 
-static int qed_update_mac(struct qed_dev *cdev, u8 *mac)
+static int qed_update_mac(struct qed_dev *cdev, const u8 *mac)
 {
 	struct qed_hwfn *hwfn = QED_LEADING_HWFN(cdev);
 	struct qed_ptt *ptt;
@@ -3049,7 +3054,7 @@ void qed_get_protocol_stats(struct qed_dev *cdev,
 
 	switch (type) {
 	case QED_MCP_LAN_STATS:
-		qed_get_vport_stats(cdev, &eth_stats);
+		qed_get_vport_stats_context(cdev, &eth_stats, true);
 		stats->lan_stats.ucast_rx_pkts =
 					eth_stats.common.rx_ucast_pkts;
 		stats->lan_stats.ucast_tx_pkts =
@@ -3057,10 +3062,10 @@ void qed_get_protocol_stats(struct qed_dev *cdev,
 		stats->lan_stats.fcs_err = -1;
 		break;
 	case QED_MCP_FCOE_STATS:
-		qed_get_protocol_stats_fcoe(cdev, &stats->fcoe_stats);
+		qed_get_protocol_stats_fcoe(cdev, &stats->fcoe_stats, true);
 		break;
 	case QED_MCP_ISCSI_STATS:
-		qed_get_protocol_stats_iscsi(cdev, &stats->iscsi_stats);
+		qed_get_protocol_stats_iscsi(cdev, &stats->iscsi_stats, true);
 		break;
 	default:
 		DP_VERBOSE(cdev, QED_MSG_SP,

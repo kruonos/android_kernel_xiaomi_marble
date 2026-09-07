@@ -142,7 +142,7 @@ static const struct iio_chan_spec ad7768_channels[] = {
 		.channel = 0,
 		.scan_index = 0,
 		.scan_type = {
-			.sign = 's',
+			.sign = 'u',
 			.realbits = 24,
 			.storagebits = 32,
 			.shift = 8,
@@ -161,6 +161,7 @@ struct ad7768_state {
 	struct completion completion;
 	struct iio_trigger *trig;
 	struct gpio_desc *gpio_sync_in;
+	const char *labels[ARRAY_SIZE(ad7768_channels)];
 	/*
 	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
@@ -168,7 +169,7 @@ struct ad7768_state {
 	union {
 		struct {
 			__be32 chan;
-			aligned_s64 timestamp;
+			s64 timestamp;
 		} scan;
 		__be32 d32;
 		u8 d8[2];
@@ -200,24 +201,6 @@ static int ad7768_spi_reg_write(struct ad7768_state *st,
 	st->data.d8[1] = val & 0xFF;
 
 	return spi_write(st->spi, st->data.d8, 2);
-}
-
-static int ad7768_send_sync_pulse(struct ad7768_state *st)
-{
-	/*
-	 * The datasheet specifies a minimum SYNC_IN pulse width of 1.5 × Tmclk,
-	 * where Tmclk is the MCLK period. The supported MCLK frequencies range
-	 * from 0.6 MHz to 17 MHz, which corresponds to a minimum SYNC_IN pulse
-	 * width of approximately 2.5 µs in the worst-case scenario (0.6 MHz).
-	 *
-	 * Add a delay to ensure the pulse width is always sufficient to
-	 * trigger synchronization.
-	 */
-	gpiod_set_value_cansleep(st->gpio_sync_in, 1);
-	fsleep(3);
-	gpiod_set_value_cansleep(st->gpio_sync_in, 0);
-
-	return 0;
 }
 
 static int ad7768_set_mode(struct ad7768_state *st,
@@ -305,7 +288,10 @@ static int ad7768_set_dig_fil(struct ad7768_state *st,
 		return ret;
 
 	/* A sync-in pulse is required every time the filter dec rate changes */
-	return ad7768_send_sync_pulse(st);
+	gpiod_set_value(st->gpio_sync_in, 1);
+	gpiod_set_value(st->gpio_sync_in, 0);
+
+	return 0;
 }
 
 static int ad7768_set_freq(struct ad7768_state *st,
@@ -384,11 +370,12 @@ static int ad7768_read_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		ret = ad7768_scan_direct(indio_dev);
+		if (ret >= 0)
+			*val = ret;
 
 		iio_device_release_direct_mode(indio_dev);
 		if (ret < 0)
 			return ret;
-		*val = sign_extend32(ret, chan->scan_type.realbits - 1);
 
 		return IIO_VAL_INT;
 
@@ -425,6 +412,14 @@ static int ad7768_write_raw(struct iio_dev *indio_dev,
 	}
 }
 
+static int ad7768_read_label(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan, char *label)
+{
+	struct ad7768_state *st = iio_priv(indio_dev);
+
+	return sprintf(label, "%s\n", st->labels[chan->channel]);
+}
+
 static struct attribute *ad7768_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
 	NULL
@@ -438,6 +433,7 @@ static const struct iio_info ad7768_info = {
 	.attrs = &ad7768_group,
 	.read_raw = &ad7768_read_raw,
 	.write_raw = &ad7768_write_raw,
+	.read_label = ad7768_read_label,
 	.debugfs_reg_access = &ad7768_reg_access,
 };
 
@@ -550,6 +546,33 @@ static void ad7768_clk_disable(void *data)
 	clk_disable_unprepare(st->mclk);
 }
 
+static int ad7768_set_channel_label(struct iio_dev *indio_dev,
+						int num_channels)
+{
+	struct ad7768_state *st = iio_priv(indio_dev);
+	struct device *device = indio_dev->dev.parent;
+	struct fwnode_handle *fwnode;
+	struct fwnode_handle *child;
+	const char *label;
+	int crt_ch = 0;
+
+	fwnode = dev_fwnode(device);
+	fwnode_for_each_child_node(fwnode, child) {
+		if (fwnode_property_read_u32(child, "reg", &crt_ch))
+			continue;
+
+		if (crt_ch >= num_channels)
+			continue;
+
+		if (fwnode_property_read_string(child, "label", &label))
+			continue;
+
+		st->labels[crt_ch] = label;
+	}
+
+	return 0;
+}
+
 static int ad7768_probe(struct spi_device *spi)
 {
 	struct ad7768_state *st;
@@ -591,7 +614,6 @@ static int ad7768_probe(struct spi_device *spi)
 
 	st->mclk_freq = clk_get_rate(st->mclk);
 
-	spi_set_drvdata(spi, indio_dev);
 	mutex_init(&st->lock);
 
 	indio_dev->channels = ad7768_channels;
@@ -607,12 +629,12 @@ static int ad7768_probe(struct spi_device *spi)
 	}
 
 	st->trig = devm_iio_trigger_alloc(&spi->dev, "%s-dev%d",
-					  indio_dev->name, indio_dev->id);
+					  indio_dev->name,
+					  iio_device_id(indio_dev));
 	if (!st->trig)
 		return -ENOMEM;
 
 	st->trig->ops = &ad7768_trigger_ops;
-	st->trig->dev.parent = &spi->dev;
 	iio_trigger_set_drvdata(st->trig, indio_dev);
 	ret = devm_iio_trigger_register(&spi->dev, st->trig);
 	if (ret)
@@ -621,6 +643,10 @@ static int ad7768_probe(struct spi_device *spi)
 	indio_dev->trig = iio_trigger_get(st->trig);
 
 	init_completion(&st->completion);
+
+	ret = ad7768_set_channel_label(indio_dev, ARRAY_SIZE(ad7768_channels));
+	if (ret)
+		return ret;
 
 	ret = devm_request_irq(&spi->dev, spi->irq,
 			       &ad7768_interrupt,

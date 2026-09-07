@@ -167,7 +167,6 @@ struct fsnotify_ops {
  */
 struct fsnotify_event {
 	struct list_head list;
-	unsigned long objectid;	/* identifier for queue merges */
 };
 
 /*
@@ -207,9 +206,6 @@ struct fsnotify_group {
 
 	/* stores all fastpath marks assoc with this group so they can be cleaned on unregister */
 	struct mutex mark_mutex;	/* protect marks_list */
-	atomic_t num_marks;		/* 1 for each mark and 1 for not being
-					 * past the point of no return when freeing
-					 * a group */
 	atomic_t user_waits;		/* Number of tasks waiting for user
 					 * response */
 	struct list_head marks_list;	/* all inode marks for this group */
@@ -234,13 +230,14 @@ struct fsnotify_group {
 #endif
 #ifdef CONFIG_FANOTIFY
 		struct fanotify_group_private_data {
+			/* Hash table of events for merge */
+			struct hlist_head *merge_hash;
 			/* allows a group to block waiting for a userspace response */
 			struct list_head access_list;
 			wait_queue_head_t access_waitq;
 			int flags;           /* flags from fanotify_init() */
 			int f_flags; /* event_f_flags from fanotify_init() */
-			unsigned int max_marks;
-			struct user_struct *user;
+			struct ucounts *ucounts;
 		} fanotify_data;
 #endif /* CONFIG_FANOTIFY */
 	};
@@ -437,14 +434,12 @@ static inline __u32 fsnotify_parent_needed_mask(__u32 mask)
 
 static inline int fsnotify_inode_watches_children(struct inode *inode)
 {
-	__u32 parent_mask = READ_ONCE(inode->i_fsnotify_mask);
-
 	/* FS_EVENT_ON_CHILD is set if the inode may care */
-	if (!(parent_mask & FS_EVENT_ON_CHILD))
+	if (!(inode->i_fsnotify_mask & FS_EVENT_ON_CHILD))
 		return 0;
 	/* this inode might care about child events, does it care about the
 	 * specific set of events that can happen on a child? */
-	return parent_mask & FS_EVENTS_POSS_ON_CHILD;
+	return inode->i_fsnotify_mask & FS_EVENTS_POSS_ON_CHILD;
 }
 
 /*
@@ -458,7 +453,7 @@ static inline void fsnotify_update_flags(struct dentry *dentry)
 	/*
 	 * Serialisation of setting PARENT_WATCHED on the dentries is provided
 	 * by d_lock. If inotify_inode_watched changes after we have taken
-	 * d_lock, the following fsnotify_set_children_dentry_flags call will
+	 * d_lock, the following __fsnotify_update_child_dentry_flags call will
 	 * find our entry, so it will spin until we complete here, and update
 	 * us with the new state.
 	 */
@@ -472,6 +467,7 @@ static inline void fsnotify_update_flags(struct dentry *dentry)
 
 /* create a new group */
 extern struct fsnotify_group *fsnotify_alloc_group(const struct fsnotify_ops *ops);
+extern struct fsnotify_group *fsnotify_alloc_user_group(const struct fsnotify_ops *ops);
 /* get reference to a group */
 extern void fsnotify_get_group(struct fsnotify_group *group);
 /* drop reference on a group from fsnotify_alloc_group */
@@ -488,15 +484,23 @@ extern void fsnotify_destroy_event(struct fsnotify_group *group,
 /* attach the event to the group notification queue */
 extern int fsnotify_add_event(struct fsnotify_group *group,
 			      struct fsnotify_event *event,
-			      int (*merge)(struct list_head *,
-					   struct fsnotify_event *));
+			      int (*merge)(struct fsnotify_group *,
+					   struct fsnotify_event *),
+			      void (*insert)(struct fsnotify_group *,
+					     struct fsnotify_event *));
 /* Queue overflow event to a notification group */
 static inline void fsnotify_queue_overflow(struct fsnotify_group *group)
 {
-	fsnotify_add_event(group, group->overflow_event, NULL);
+	fsnotify_add_event(group, group->overflow_event, NULL, NULL);
 }
 
-/* true if the group notification queue is empty */
+static inline bool fsnotify_notify_queue_is_empty(struct fsnotify_group *group)
+{
+	assert_spin_locked(&group->notification_lock);
+
+	return list_empty(&group->notification_list);
+}
+
 extern bool fsnotify_notify_queue_is_empty(struct fsnotify_group *group);
 /* return, but do not dequeue the first event on the notification queue */
 extern struct fsnotify_event *fsnotify_peek_first_event(struct fsnotify_group *group);
@@ -577,11 +581,9 @@ extern void fsnotify_put_mark(struct fsnotify_mark *mark);
 extern void fsnotify_finish_user_wait(struct fsnotify_iter_info *iter_info);
 extern bool fsnotify_prepare_user_wait(struct fsnotify_iter_info *iter_info);
 
-static inline void fsnotify_init_event(struct fsnotify_event *event,
-				       unsigned long objectid)
+static inline void fsnotify_init_event(struct fsnotify_event *event)
 {
 	INIT_LIST_HEAD(&event->list);
-	event->objectid = objectid;
 }
 
 #else

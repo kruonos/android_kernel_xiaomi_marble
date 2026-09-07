@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __LINUX_USB_REDRIVER_H
@@ -40,10 +40,10 @@
  * @release_usb_lanes: put redriver into 2/4 lanes display mode
  * @notify_connect: cable connect
  * @notify_disconnect: cable disconnect
- * @get_orientation: report orientation to user if orientation source shared
+ * @orientation_get: report orientation to user if orientation source shared
  * @gadget_pullup_enter: operation when enter gadget pullup function
  * @gadget_pullup_exit: operation when exit gadget pullup function
- * @host_powercycle: workaround for host otg case
+ * @host_power_cycle: workaround for host otg case
  * @unbind, change to default state when user unbind it
  * @has_orientation,  provide orientation from chip driver or not
  * @bounded,  bound to user or not
@@ -102,7 +102,7 @@ static inline int usb_remove_redriver(struct usb_redriver *ur)
 
 static inline int usb_redriver_get_orientation(struct usb_redriver *ur)
 {
-	return -EOPNOTSUPP;
+	return -1;
 }
 
 #define usb_put_redriver(ur) do {} while (0)

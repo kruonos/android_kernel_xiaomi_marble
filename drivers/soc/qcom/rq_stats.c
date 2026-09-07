@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2010-2015, 2017, 2019, 2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2015, 2017, 2019-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/init.h>
@@ -54,7 +54,7 @@ static ssize_t show_def_timer_ms(struct kobject *kobj,
 	do_div(diff, 1000 * 1000);
 	udiff = (unsigned int) diff;
 
-	return snprintf(buf, MAX_LONG_SIZE, "%u\n", udiff);
+	return scnprintf(buf, MAX_LONG_SIZE, "%u\n", udiff);
 }
 
 static ssize_t store_def_timer_ms(struct kobject *kobj,

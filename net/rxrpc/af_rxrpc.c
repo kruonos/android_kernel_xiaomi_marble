@@ -471,6 +471,7 @@ static int rxrpc_connect(struct socket *sock, struct sockaddr *addr,
 	switch (rx->sk.sk_state) {
 	case RXRPC_UNBOUND:
 		rx->sk.sk_state = RXRPC_CLIENT_UNBOUND;
+		break;
 	case RXRPC_CLIENT_UNBOUND:
 	case RXRPC_CLIENT_BOUND:
 		break;
@@ -614,6 +615,9 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 			goto success;
 
 		case RXRPC_SECURITY_KEY:
+			ret = -EINVAL;
+			if (rx->key)
+				goto error;
 			ret = -EISCONN;
 			if (rx->sk.sk_state != RXRPC_UNBOUND)
 				goto error;
@@ -621,6 +625,9 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 			goto error;
 
 		case RXRPC_SECURITY_KEYRING:
+			ret = -EINVAL;
+			if (rx->key)
+				goto error;
 			ret = -EISCONN;
 			if (rx->sk.sk_state != RXRPC_UNBOUND)
 				goto error;

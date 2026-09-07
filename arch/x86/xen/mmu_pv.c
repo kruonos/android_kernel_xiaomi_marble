@@ -95,51 +95,6 @@ static pud_t level3_user_vsyscall[PTRS_PER_PUD] __page_aligned_bss;
  */
 static DEFINE_SPINLOCK(xen_reservation_lock);
 
-/* Protected by xen_reservation_lock. */
-#define MIN_CONTIG_ORDER 9 /* 2MB */
-static unsigned int discontig_frames_order = MIN_CONTIG_ORDER;
-static unsigned long discontig_frames_early[1UL << MIN_CONTIG_ORDER] __initdata;
-static unsigned long *discontig_frames __refdata = discontig_frames_early;
-static bool discontig_frames_dyn;
-
-static int alloc_discontig_frames(unsigned int order)
-{
-	unsigned long *new_array, *old_array;
-	unsigned int old_order;
-	unsigned long flags;
-
-	BUG_ON(order < MIN_CONTIG_ORDER);
-	BUILD_BUG_ON(sizeof(discontig_frames_early) != PAGE_SIZE);
-
-	new_array = (unsigned long *)__get_free_pages(GFP_KERNEL,
-						      order - MIN_CONTIG_ORDER);
-	if (!new_array)
-		return -ENOMEM;
-
-	spin_lock_irqsave(&xen_reservation_lock, flags);
-
-	old_order = discontig_frames_order;
-
-	if (order > discontig_frames_order || !discontig_frames_dyn) {
-		if (!discontig_frames_dyn)
-			old_array = NULL;
-		else
-			old_array = discontig_frames;
-
-		discontig_frames = new_array;
-		discontig_frames_order = order;
-		discontig_frames_dyn = true;
-	} else {
-		old_array = new_array;
-	}
-
-	spin_unlock_irqrestore(&xen_reservation_lock, flags);
-
-	free_pages((unsigned long)old_array, old_order - MIN_CONTIG_ORDER);
-
-	return 0;
-}
-
 /*
  * Note about cr3 (pagetable base) values:
  *
@@ -807,7 +762,6 @@ void xen_mm_pin_all(void)
 {
 	struct page *page;
 
-	spin_lock(&init_mm.page_table_lock);
 	spin_lock(&pgd_lock);
 
 	list_for_each_entry(page, &pgd_list, lru) {
@@ -818,7 +772,6 @@ void xen_mm_pin_all(void)
 	}
 
 	spin_unlock(&pgd_lock);
-	spin_unlock(&init_mm.page_table_lock);
 }
 
 static void __init xen_mark_pinned(struct mm_struct *mm, struct page *page,
@@ -838,9 +791,6 @@ static void __init xen_after_bootmem(void)
 	static_branch_enable(&xen_struct_pages_ready);
 	SetPagePinned(virt_to_page(level3_user_vsyscall));
 	xen_pgd_walk(&init_mm, xen_mark_pinned, FIXADDR_TOP);
-
-	if (alloc_discontig_frames(MIN_CONTIG_ORDER))
-		BUG();
 }
 
 static void xen_unpin_page(struct mm_struct *mm, struct page *page,
@@ -916,7 +866,6 @@ void xen_mm_unpin_all(void)
 {
 	struct page *page;
 
-	spin_lock(&init_mm.page_table_lock);
 	spin_lock(&pgd_lock);
 
 	list_for_each_entry(page, &pgd_list, lru) {
@@ -928,7 +877,6 @@ void xen_mm_unpin_all(void)
 	}
 
 	spin_unlock(&pgd_lock);
-	spin_unlock(&init_mm.page_table_lock);
 }
 
 static void xen_activate_mm(struct mm_struct *prev, struct mm_struct *next)
@@ -1299,8 +1247,8 @@ static void xen_flush_tlb_one_user(unsigned long addr)
 	preempt_enable();
 }
 
-static void xen_flush_tlb_others(const struct cpumask *cpus,
-				 const struct flush_tlb_info *info)
+static void xen_flush_tlb_multi(const struct cpumask *cpus,
+				const struct flush_tlb_info *info)
 {
 	struct {
 		struct mmuext_op op;
@@ -1310,7 +1258,7 @@ static void xen_flush_tlb_others(const struct cpumask *cpus,
 	const size_t mc_entry_size = sizeof(args->op) +
 		sizeof(args->mask[0]) * BITS_TO_LONGS(num_possible_cpus());
 
-	trace_xen_mmu_flush_tlb_others(cpus, info->mm, info->start, info->end);
+	trace_xen_mmu_flush_tlb_multi(cpus, info->mm, info->start, info->end);
 
 	if (cpumask_empty(cpus))
 		return;		/* nothing to do */
@@ -1319,9 +1267,8 @@ static void xen_flush_tlb_others(const struct cpumask *cpus,
 	args = mcs.args;
 	args->op.arg2.vcpumask = to_cpumask(args->mask);
 
-	/* Remove us, and any offline CPUS. */
+	/* Remove any offline CPUs */
 	cpumask_and(to_cpumask(args->mask), cpus, cpu_online_mask);
-	cpumask_clear_cpu(smp_processor_id(), to_cpumask(args->mask));
 
 	args->op.cmd = MMUEXT_TLB_FLUSH_MULTI;
 	if (info->end != TLB_FLUSH_ALL &&
@@ -1571,14 +1518,17 @@ static inline void xen_alloc_ptpage(struct mm_struct *mm, unsigned long pfn,
 	if (pinned) {
 		struct page *page = pfn_to_page(pfn);
 
-		if (static_branch_likely(&xen_struct_pages_ready))
+		pinned = false;
+		if (static_branch_likely(&xen_struct_pages_ready)) {
+			pinned = PagePinned(page);
 			SetPagePinned(page);
+		}
 
 		xen_mc_batch();
 
 		__set_pfn_prot(pfn, PAGE_KERNEL_RO);
 
-		if (level == PT_PTE && USE_SPLIT_PTE_PTLOCKS)
+		if (level == PT_PTE && USE_SPLIT_PTE_PTLOCKS && !pinned)
 			__pin_pagetable_pfn(MMUEXT_PIN_L1_TABLE, pfn);
 
 		xen_mc_issue(PARAVIRT_LAZY_MMU);
@@ -2138,7 +2088,7 @@ static const struct pv_mmu_ops xen_mmu_ops __initconst = {
 	.flush_tlb_user = xen_flush_tlb,
 	.flush_tlb_kernel = xen_flush_tlb,
 	.flush_tlb_one_user = xen_flush_tlb_one_user,
-	.flush_tlb_others = xen_flush_tlb_others,
+	.flush_tlb_multi = xen_flush_tlb_multi,
 	.tlb_remove_table = tlb_remove_table,
 
 	.pgd_alloc = xen_pgd_alloc,
@@ -2152,8 +2102,8 @@ static const struct pv_mmu_ops xen_mmu_ops __initconst = {
 	.set_pte = xen_set_pte_init,
 	.set_pmd = xen_set_pmd_hyper,
 
-	.ptep_modify_prot_start = __ptep_modify_prot_start,
-	.ptep_modify_prot_commit = __ptep_modify_prot_commit,
+	.ptep_modify_prot_start = xen_ptep_modify_prot_start,
+	.ptep_modify_prot_commit = xen_ptep_modify_prot_commit,
 
 	.pte_val = PV_CALLEE_SAVE(xen_pte_val),
 	.pgd_val = PV_CALLEE_SAVE(xen_pgd_val),
@@ -2200,6 +2150,10 @@ void __init xen_init_mmu_ops(void)
 
 	memset(dummy_mapping, 0xff, PAGE_SIZE);
 }
+
+/* Protected by xen_reservation_lock. */
+#define MAX_CONTIG_ORDER 9 /* 2MB */
+static unsigned long discontig_frames[1<<MAX_CONTIG_ORDER];
 
 #define VOID_PTE (mfn_pte(0, __pgprot(0)))
 static void xen_zap_pfn_range(unsigned long vaddr, unsigned int order,
@@ -2317,24 +2271,23 @@ int xen_create_contiguous_region(phys_addr_t pstart, unsigned int order,
 				 unsigned int address_bits,
 				 dma_addr_t *dma_handle)
 {
-	unsigned long *in_frames, out_frame;
+	unsigned long *in_frames = discontig_frames, out_frame;
 	unsigned long  flags;
 	int            success;
 	unsigned long vstart = (unsigned long)phys_to_virt(pstart);
 
-	if (unlikely(order > discontig_frames_order)) {
-		if (!discontig_frames_dyn)
-			return -ENOMEM;
+	/*
+	 * Currently an auto-translated guest will not perform I/O, nor will
+	 * it require PAE page directories below 4GB. Therefore any calls to
+	 * this function are redundant and can be ignored.
+	 */
 
-		if (alloc_discontig_frames(order))
-			return -ENOMEM;
-	}
+	if (unlikely(order > MAX_CONTIG_ORDER))
+		return -ENOMEM;
 
 	memset((void *) vstart, 0, PAGE_SIZE << order);
 
 	spin_lock_irqsave(&xen_reservation_lock, flags);
-
-	in_frames = discontig_frames;
 
 	/* 1. Zap current PTEs, remembering MFNs. */
 	xen_zap_pfn_range(vstart, order, in_frames, NULL);
@@ -2359,20 +2312,18 @@ int xen_create_contiguous_region(phys_addr_t pstart, unsigned int order,
 
 void xen_destroy_contiguous_region(phys_addr_t pstart, unsigned int order)
 {
-	unsigned long *out_frames, in_frame;
+	unsigned long *out_frames = discontig_frames, in_frame;
 	unsigned long  flags;
 	int success;
 	unsigned long vstart;
 
-	if (unlikely(order > discontig_frames_order))
+	if (unlikely(order > MAX_CONTIG_ORDER))
 		return;
 
 	vstart = (unsigned long)phys_to_virt(pstart);
 	memset((void *) vstart, 0, PAGE_SIZE << order);
 
 	spin_lock_irqsave(&xen_reservation_lock, flags);
-
-	out_frames = discontig_frames;
 
 	/* 1. Find start MFN of contiguous extent. */
 	in_frame = virt_to_mfn(vstart);
@@ -2447,7 +2398,7 @@ static int remap_area_pfn_pte_fn(pte_t *ptep, unsigned long addr, void *data)
 
 int xen_remap_pfn(struct vm_area_struct *vma, unsigned long addr,
 		  xen_pfn_t *pfn, int nr, int *err_ptr, pgprot_t prot,
-		  unsigned int domid, bool no_translate, struct page **pages)
+		  unsigned int domid, bool no_translate)
 {
 	int err = 0;
 	struct remap_data rmd;
@@ -2461,7 +2412,7 @@ int xen_remap_pfn(struct vm_area_struct *vma, unsigned long addr,
 	rmd.prot = prot;
 	/*
 	 * We use the err_ptr to indicate if there we are doing a contiguous
-	 * mapping or a discontigious mapping.
+	 * mapping or a discontiguous mapping.
 	 */
 	rmd.contiguous = !err_ptr;
 	rmd.no_translate = no_translate;

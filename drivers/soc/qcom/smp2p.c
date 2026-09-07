@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, Sony Mobile Communications AB.
- * Copyright (c) 2012-2013, 2018-2019 The Linux Foundation. All rights reserved.
- * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2012-2013, 2018-2021 The Linux Foundation. All rights reserved.
  */
 
 #include <linux/interrupt.h>
@@ -19,7 +18,6 @@
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
 #include <linux/spinlock.h>
-#include <linux/pm_wakeup.h>
 
 #include <linux/ipc_logging.h>
 
@@ -121,6 +119,7 @@ struct smp2p_entry {
  * struct qcom_smp2p - device driver context
  * @dev:	device driver handle
  * @in:		pointer to the inbound smem item
+ * @out:	pointer to the outbound smem item
  * @smem_items:	ids of the two smem items
  * @valid_entries: already scanned inbound entries
  * @irq_devname: poniter to the smp2p irq devname
@@ -156,7 +155,6 @@ struct qcom_smp2p {
 	struct regmap *ipc_regmap;
 	int ipc_offset;
 	int ipc_bit;
-	struct wakeup_source *ws;
 
 	struct mbox_client mbox_client;
 	struct mbox_chan *mbox_chan;
@@ -296,14 +294,6 @@ static void qcom_smp2p_notify_in(struct qcom_smp2p *smp2p)
 	}
 }
 
-static irqreturn_t qcom_smp2p_isr(int irq, void *data)
-{
-	struct qcom_smp2p *smp2p = data;
-
-	__pm_stay_awake(smp2p->ws);
-	return IRQ_WAKE_THREAD;
-}
-
 /**
  * qcom_smp2p_intr() - interrupt handler for incoming notifications
  * @irq:	unused
@@ -328,7 +318,7 @@ static irqreturn_t qcom_smp2p_intr(int irq, void *data)
 		if (IS_ERR(in)) {
 			dev_err(smp2p->dev,
 				"Unable to acquire remote smp2p item\n");
-			goto out;
+			return IRQ_HANDLED;
 		}
 
 		smp2p->in = in;
@@ -347,8 +337,6 @@ static irqreturn_t qcom_smp2p_intr(int irq, void *data)
 			qcom_smp2p_do_ssr_ack(smp2p);
 	}
 
-out:
-	__pm_relax(smp2p->ws);
 	return IRQ_HANDLED;
 }
 
@@ -582,6 +570,7 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 	struct device_node *node;
 	struct qcom_smp2p *smp2p;
 	const char *key;
+	int irq;
 	int ret;
 
 	if (!ilc)
@@ -613,11 +602,9 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 	if (ret)
 		goto report_read_failure;
 
-	smp2p->irq = platform_get_irq(pdev, 0);
-	if (smp2p->irq < 0) {
-		dev_err(&pdev->dev, "unable to acquire smp2p interrupt\n");
-		return smp2p->irq;
-	}
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
 	smp2p->mbox_client.dev = &pdev->dev;
 	smp2p->mbox_client.knows_txdone = true;
@@ -666,36 +653,27 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 		}
 	}
 
-	smp2p->ws = wakeup_source_register(&pdev->dev, "smp2p");
-	if (!smp2p->ws) {
-		ret = -ENOMEM;
-		goto unwind_interfaces;
-	}
-
 	/* Kick the outgoing edge after allocating entries */
 	qcom_smp2p_kick(smp2p);
 
+	smp2p->irq = irq;
 	smp2p->irq_devname = kasprintf(GFP_KERNEL, "smp2p_%d", smp2p->remote_pid);
 	if (!smp2p->irq_devname) {
 		ret = -ENOMEM;
-		goto unreg_ws;
+		goto unwind_interfaces;
 	}
-
-	ret = devm_request_threaded_irq(&pdev->dev, smp2p->irq,
-					qcom_smp2p_isr, qcom_smp2p_intr,
+	ret = devm_request_threaded_irq(&pdev->dev, irq,
+					NULL, qcom_smp2p_intr,
 					IRQF_ONESHOT,
 					smp2p->irq_devname, (void *)smp2p);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to request interrupt\n");
-		goto unreg_ws;
+		goto unwind_interfaces;
 	}
 
 	enable_irq_wake(smp2p->irq);
 
 	return 0;
-
-unreg_ws:
-	wakeup_source_unregister(smp2p->ws);
 
 unwind_interfaces:
 	list_for_each_entry_safe(entry, next_entry, &smp2p->inbound, node) {
@@ -727,8 +705,6 @@ static int qcom_smp2p_remove(struct platform_device *pdev)
 	struct qcom_smp2p *smp2p = platform_get_drvdata(pdev);
 	struct smp2p_entry *entry;
 	struct smp2p_entry *next_entry;
-
-	wakeup_source_unregister(smp2p->ws);
 
 	list_for_each_entry_safe(entry, next_entry, &smp2p->inbound, node) {
 		irq_domain_remove(entry->domain);

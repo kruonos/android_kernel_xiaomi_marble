@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 /*
@@ -41,6 +41,10 @@
 #define QMI_IPA_IPFLTR_NUM_IHL_RANGE_16_EQNS_V01 2
 #define QMI_IPA_MAX_FILTERS_V01 64
 #define QMI_IPA_IPFLTR_NUM_MEQ_128_EQNS_V01 2
+#define QMI_IPA_MAX_IPV4_ADD_LEN_V01 34
+#define QMI_IPA_MAX_IPV6_ADD_LEN_V01 35
+#define QMI_IPA_IPV6_WORD_ADDR_LEN_V01 4
+#define QMI_IPA_MAX_ETH_HDR_SIZE_V01 64
 #define QMI_IPA_ENDP_DESC_NUM_MAX_V01 31
 #define QMI_IPA_MAX_APN_V01 8
 /* Currently max we can use is only 1. But for scalability purpose
@@ -53,9 +57,6 @@
 #define QMI_IPA_IPFLTR_NUM_MEQ_32_EQNS_V01 2
 #define QMI_IPA_MAX_PIPES_V01 20
 #define QMI_IPA_MAX_PER_CLIENTS_V01 64
-#define QMI_IPA_MAX_RMNET_ETH_INFO_V01 19
-#define QMI_IPA_MAX_MAC_ADDR_LEN_V01 6
-#define QMI_IPA_MAX_IPV4_ADDR_LEN_V01 4
 
 /*
  * Indicates presence of newly added member to support HW stats.
@@ -115,19 +116,6 @@ enum ipa_platform_type_enum_v01 {
 	/*  Platform identifier -	MSM device with QNX HLOS */
 	IPA_PLATFORM_TYPE_ENUM_MAX_ENUM_VAL_V01 = 2147483647
 	/* To force a 32 bit signed enum.  Do not change or use */
-};
-
-enum ipa_eth_hw_config_enum_v01 {
-	IPA_QMI_ETH_HW_CONFIG_ENUM_MIN_ENUM_VAL_V01 = -2147483647,
-	/**< To force a 32 bit signed enum.  Do not change or use*/
-	IPA_QMI_ETH_HW_NONE_V01 = 0x00,
-	/**<  Ethernet Setting HW Default \n  */
-	IPA_QMI_ETH_HW_VLAN_IP_V01 = 0x01,
-	/**<  Ethernet HW VLAN+IP supported \n  */
-	IPA_QMI_ETH_HW_NON_VLAN_IP_V01 = 0x02,
-	/**<  Ethernet HW NON_VLAN+IP supported   */
-	IPA_QMI_ETH_HW_CONFIG_ENUM_MAX_ENUM_VAL_V01 = 2147483647
-	/**< To force a 32 bit signed enum.  Do not change or use*/
 };
 
 #define QMI_IPA_PLATFORM_TYPE_LE_MHI_V01 \
@@ -555,18 +543,6 @@ struct ipa_indication_reg_req_msg_v01 {
 	 * message makes sense only when the QMI_IPA_INDICATION_REGISTER_REQ
 	 * is being originated from the master driver.
 	 */
-
-	/* Optional */
-	/*  Rmnet Ethernet MAC Information */
-	__u8 rmnet_eth_mac_info_valid;
-	/* Must be set to true if rmnet_eth_mac_info is being passed */
-	__u8 rmnet_eth_mac_info;
-	/* If set to TRUE, this field indicates that the client wants to
-	 * receive indications about embeddd rmnet_eth mac info via
-	 * QMI_IPA_RMNET_ETH_INFO_INDICATION. Setting this field in the request
-	 * message makes sense only when the QMI_IPA_INDICATION_REGISTER_REQ is
-	 * being originated from the master driver.
-	 */
 };  /* Message */
 
 
@@ -677,7 +653,7 @@ struct ipa_filter_rule_type_v01 {
 
 	__u8 num_ihl_offset_range_16;
 	/*  The number of 16 bit range check rules at the location
-	 *	determined by IP header length plus a given offset offset
+	 *	determined by IP header length plus a given offset
 	 *	in this rule. See the definition of the ipa_filter_range_eq_16
 	 *	for better understanding. The value of this field cannot exceed
 	 *	IPA_IPFLTR_NUM_IHL_RANGE_16_EQNS which is set as 2
@@ -788,7 +764,7 @@ struct ipa_filter_rule_req2_type_v01 {
 
 	__u8 num_ihl_offset_range_16;
 	/*  The number of 16 bit range check rules at the location
-	 *	determined by IP header length plus a given offset offset
+	 *	determined by IP header length plus a given offset
 	 *	in this rule. See the definition of the ipa_filter_range_eq_16
 	 *	for better understanding. The value of this field cannot exceed
 	 *	IPA_IPFLTR_NUM_IHL_RANGE_16_EQNS which is set as 2
@@ -2622,7 +2598,6 @@ enum ipa_ic_type_enum_v01 {
 	DATA_IC_TYPE_AP_V01 = 0x04,
 	DATA_IC_TYPE_Q6_V01 = 0x05,
 	DATA_IC_TYPE_UC_V01 = 0x06,
-	DATA_IC_TYPE_ETH_V01 = 0x07,
 	IPA_IC_TYPE_ENUM_MAX_VAL_V01 = IPA_INT_MAX,
 };
 
@@ -2846,37 +2821,28 @@ struct ipa_move_nat_table_complt_ind_msg_v01 {
 #define QMI_IPA_NAT_TABLE_MOVE_COMPLETE_IND_MAX_MSG_LEN_V01 7
 
 /*
- * Request Message; QMI request message to request for a dual-backhaul traffic
- * offloading with ethernet and WWAN and notify the eth-header
+ * Request Message; Sends IPA WLAN OPT DATA PATH RESERVED FILTER REQUEST
  */
-struct ipa_eth_backhaul_info_req_msg_v01 {
-	/* Mandatory */
-	/*  SRC MAC ADDR */
-	__u8 src_mac_addr[QMI_IPA_MAX_MAC_ADDR_LEN_V01];
-	/* src mac addr of eth hdr */
-	/* Mandatory */
-	/*  DST MAC ADDR */
-	__u8 dst_mac_addr[QMI_IPA_MAX_MAC_ADDR_LEN_V01];
-	/* dst mac addr of eth hdr */
-	/* Mandatory */
-	/*  IPv4 ADDR of ETH0 */
-	__u32 ipv4_addr_eth0[QMI_IPA_MAX_IPV4_ADDR_LEN_V01];
-	/* ipv4 addr of eth0 */
-	/* Mandatory */
-	/*  ETH PIPE */
-	__u8 eth_pipe;
-	/* Specifies eth pipe for Q6 to route UL pkts for ETH backhaul */
-	/* Mandatory */
-	/*  ACTION */
-	__u8 enable;
-	/* Specifies whether eth backhaul is enabled or disabled */
-};  /* Message */
-#define IPA_ETH_BACKHAUL_INFO_REQ_MSG_V01_MAX_MSG_LEN 45
+struct ipa_wlan_opt_dp_rsrv_filter_req_msg_v01 {
 
-/* Response Message; to notify the status of the dual-backhaul traffic
- * offloading request using QMI_IPA_ETH_BACKHAUL_INFO_REQ
+  /* Mandatory */
+  /*  Number of filters */
+	__u8 num_filters;
+  /* Mandatory */
+  /*  Timeout value in milisecond */
+	__u32 timeout_val_ms;
+  /* Mandatory */
+  /*  Q6 routing table index */
+	__u32 q6_rtng_table_index;
+
+};
+#define IPA_WLAN_OPT_DP_RSRV_FILTER_REQ_MSG_V01_MAX_MSG_LEN 18
+
+/*
+ * Response Message; Sent for IPA WLAN OPT DATA PATH RESERVED FILTER REQUEST
  */
-struct ipa_eth_backhaul_info_resp_msg_v01 {
+struct ipa_wlan_opt_dp_rsrv_filter_resp_msg_v01 {
+
 	/* Mandatory */
 	/* Result Code */
 	struct ipa_qmi_response_type_v01 resp;
@@ -2887,35 +2853,252 @@ struct ipa_eth_backhaul_info_resp_msg_v01 {
 	 * qmi_error_type  -- Error code. Possible error code values are
 	 * described in the error codes section of each message definition.
 	 */
-};  /* Message */
-#define IPA_ETH_BACKHAUL_INFO_RESP_MSG_V01_MAX_MSG_LEN 7
+};
+#define IPA_WLAN_OPT_DP_RSRV_FILTER_RESP_MSG_V01_MAX_MSG_LEN 7
 
-struct ipa_rmnet_eth_info_type_v01 {
-	__u8 mac_addr[QMI_IPA_MAX_MAC_ADDR_LEN_V01];
-	/* mac addr of rmnet_eth */
-	__u32 mux_id;
-	/* QMAP Mux ID. As a part of the QMAP protocol,
-	 * several data calls may be multiplexed over the same physical transport
-	 * channel. This identifier is used to identify one such data call.
-	 * The maximum value for this identifier is 255.
-	 */
-};  /* Type */
-
-/* Indication Message; This is an indication to send rmnet ethernet information
- * for embedded wireless ethernet PDU from the modem processor to
- * the application processor
+/*
+ * Response Message;  Indicates completion of reserve filter status
+ *	       Apps driver sends indication to the modem driver that filter reservation
+ *	       was successful.
  */
-struct ipa_rmnet_eth_info_indication_msg_v01 {
-	/* Optional */
-	/*  Rmnet Ethernet Information */
-	__u8 rmnet_eth_info_valid;
-	/* Must be set to true if rmnet_eth_info is being passed */
-	__u32 rmnet_eth_info_len;
-	/* Must be set to # of elements in rmnet_eth_info */
-	struct ipa_rmnet_eth_info_type_v01 rmnet_eth_info[QMI_IPA_MAX_RMNET_ETH_INFO_V01];
-	/* Rmnet Ethernet Info array */
-};  /* Message */
-#define IPA_RMNET_ETH_INFO_INDICATION_MSG_V01_MAX_MSG_LEN 194
+struct ipa_wlan_opt_dp_rsrv_filter_complt_ind_msg_v01 {
+
+	/* Mandatory */
+	/* Result Code */
+	struct ipa_qmi_response_type_v01 rsrv_filter_status;
+	/*
+	 * Standard response type.
+	 * Standard response type. Contains the following data members:
+	 * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+	 * qmi_error_type  -- Error code. Possible error code values are
+	 * described in the error codes section of each message definition.
+	 */
+};
+#define IPA_WLAN_OPT_DP_RSRV_FILTER_COMPLT_IND_MSG_V01_MAX_MSG_LEN 7
+
+struct ip_hdr_v4_address_info_v01 {
+	/* V4 source IP address */
+	__u32 source;
+	/* V4 destination IP address */
+	__u32 dest;
+};
+
+struct ip_hdr_v6_address_info_v01 {
+	/* V6 source IP address */
+	__u32 source[QMI_IPA_IPV6_WORD_ADDR_LEN_V01];
+	/* V6 destination IP address */
+	__u32 dest[QMI_IPA_IPV6_WORD_ADDR_LEN_V01];
+};
+
+/** Request Message; Sends QMI_IPA_WLAN_OPT_DATAPATH_ADD_FILTER_REQ */
+struct ipa_wlan_opt_dp_add_filter_req_msg_v01 {
+  /* Mandatory */
+  /*  filter index */
+	__u32 filter_idx;
+  /* Mandatory */
+  /*  IP type */
+	enum ipa_ip_type_enum_v01 ip_type;
+  /* Optional */
+	__u8 v4_addr_valid;  /**< Must be set to true if v4_addr is being passed */
+  /*  IPv4 address */
+	struct ip_hdr_v4_address_info_v01 v4_addr;
+	__u8 v6_addr_valid;  /**< Must be set to true if v6_addr is being passed */
+  /*  IPv6 address */
+	struct ip_hdr_v6_address_info_v01 v6_addr;
+};
+#define IPA_WLAN_OPT_DP_ADD_FILTER_REQ_MSG_V01_MAX_MSG_LEN 60
+
+/*
+ * Response Message;  Indicates completion of add  filter status
+ *	       Apps driver sends indication to the modem driver that filter addition
+ *	       was successful.
+ */
+
+struct ipa_wlan_opt_dp_add_filter_resp_msg_v01 {
+
+	/* Mandatory */
+	/* Result Code */
+	struct ipa_qmi_response_type_v01 resp;
+	/*
+	 * Standard response type.
+	 * Standard response type. Contains the following data members:
+	 * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+	 * qmi_error_type  -- Error code. Possible error code values are
+	 * described in the error codes section of each message definition.
+	 */
+};
+#define IPA_WLAN_OPT_DP_ADD_FILTER_RESP_MSG_V01_MAX_MSG_LEN 7
+
+/*
+ *	Indication Message; Indicates completion of add filter request
+ *	Apps driver sends indication to the modem driver that filter addition
+ *	was successful.
+ */
+struct ipa_wlan_opt_dp_add_filter_complt_ind_msg_v01 {
+  /* Mandatory */
+  /* Filter removal status */
+	struct ipa_qmi_response_type_v01 filter_add_status;
+  /*
+   * Standard response type.
+   * Standard response type. Contains the following data members:
+   * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+   * qmi_error_type  -- Error code. Possible error code values are
+   * described in the error codes section of each message definition.
+   */
+
+  /* Mandatory */
+  /*  filter index */
+	__u32 filter_idx;
+
+  /* Optional */
+	__u8 filter_handle_valid;  /**< Must be set to true if filter_handle is being passed */
+
+  /* filter handle */
+	__u32 filter_handle;
+};
+#define IPA_WLAN_OPT_DP_ADD_FILTER_COMPLT_IND_MSG_V01_MAX_MSG_LEN 21
+
+/*
+ * Request Message; Sends QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_FILTER_REQ
+ */
+struct ipa_wlan_opt_dp_remove_filter_req_msg_v01 {
+  /* Mandatory */
+  /*  filter index */
+	__u32 filter_idx;
+
+  /* Mandatory */
+  /*  filter handle */
+	__u32 filter_handle;
+};
+#define IPA_WLAN_OPT_DP_REMOVE_FILTER_REQ_MSG_V01_MAX_MSG_LEN 14
+
+/*
+ * Response Message;  Indicates completion of remove  filter status
+ * Apps driver sends indication to the modem driver that filter removal
+ * was successful.
+ */
+
+struct ipa_wlan_opt_dp_remove_filter_resp_msg_v01 {
+
+	/* Mandatory */
+	/* Result Code */
+	struct ipa_qmi_response_type_v01 resp;
+	/*
+	 * Standard response type.
+	 * Standard response type. Contains the following data members:
+	 * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+	 * qmi_error_type  -- Error code. Possible error code values are
+	 * described in the error codes section of each message definition.
+	 */
+};
+#define IPA_WLAN_OPT_DP_REMOVE_FILTER_RESP_MSG_V01_MAX_MSG_LEN 7
+
+struct ipa_wlan_opt_dp_remove_filter_complt_ind_msg_v01 {
+  /* Mandatory */
+  /*  Filter removal status */
+	struct ipa_qmi_response_type_v01 filter_removal_status;
+  /*
+   * Standard response type.
+   * Standard response type. Contains the following data members:
+   * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+   * qmi_error_type  -- Error code. Possible error code values are
+   * described in the error codes section of each message definition.
+   */
+
+  /* Mandatory */
+  /*  filter index */
+	__u32 filter_idx;
+};
+#define IPA_WLAN_OPT_DP_REM_FILTER_COMPLT_IND_MSG_V01_MAX_MSG_LEN 14
+
+/** Request Message; Sends QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_ALL_FILTER_REQ */
+struct ipa_wlan_opt_dp_remove_all_filter_req_msg_v01 {
+
+  /* Optional */
+  /*  REMOVE ALL FILTER */
+	__u8 reserved_valid;  /**< Must be set to true if reserved is being passed */
+	__u8 reserved;
+
+};
+#define IPA_WLAN_OPT_DP_REM_ALL_FILTER_REQ_MSG_V01_MAX_MSG_LEN 4
+/*
+ * Response Message;  Indicates completion of remove  filter status
+ *	       Apps driver sends indication to the modem driver that filter removal
+ *	       was successful.
+ */
+
+struct ipa_wlan_opt_dp_remove_all_filter_resp_msg_v01 {
+
+	/* Mandatory */
+	/* Result Code */
+	struct ipa_qmi_response_type_v01 resp;
+	/*
+	 * Standard response type.
+	 * Standard response type. Contains the following data members:
+	 * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+	 * qmi_error_type  -- Error code. Possible error code values are
+	 * described in the error codes section of each message definition.
+	 */
+};
+#define IPA_WLAN_OPT_DP_REMOVE_ALL_FILTER_RESP_MSG_V01_MAX_MSG_LEN 7
+
+struct ipa_wlan_opt_dp_remove_all_filter_complt_ind_msg_v01 {
+
+  /* Mandatory */
+  /*  Filter removal status */
+	struct ipa_qmi_response_type_v01 filter_removal_all_status;
+  /*
+   * Standard response type.
+   * Standard response type. Contains the following data members:
+   * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+   * qmi_error_type  -- Error code. Possible error code values are
+   * described in the error codes section of each message definition.
+   */
+
+};
+#define IPA_WLAN_OPT_DP_REM_ALL_FILTER_COMPLT_IND_MSG_V01_MAX_MSG_LEN 7
+
+
+struct ipa_wlan_opt_dp_set_wlan_per_info_req_msg_v01 {
+
+  /* Mandatory */
+  /*  Source WLAN EP ID */
+	__u32 src_wlan_endp_id;
+  /* Mandatory */
+  /*  Destination WLAN EP ID */
+	__u32 dest_wlan_endp_id;
+  /* Mandatory */
+  /*  Destination APPS EP ID */
+	__u32 dest_apps_endp_id;
+  /* Mandatory */
+  /* HDR LEN */
+	__u32 hdr_len;
+  /* Mandatory */
+  /* ETH HDR Offset */
+	__u32 eth_hdr_offset;
+  /* Mandatory */
+  /*	PARTIAL HDR INFO */
+	__u8 hdr_info[QMI_IPA_MAX_ETH_HDR_SIZE_V01];
+};
+#define IPA_WLAN_OPT_DP_SET_WLAN_PER_INFO_REQ_MSG_V1_MAX_MSG_LEN 102
+
+/** Response Message; Sends QMI_IPA_WLAN_OPT_DATAPATH_SET_WLAN_PER_INFO_REQ */
+struct ipa_wlan_opt_dp_set_wlan_per_info_resp_msg_v01 {
+
+  /* Mandatory */
+  /*  Result Code */
+	struct ipa_qmi_response_type_v01 resp;
+  /*
+   * Standard response type.
+   * Standard response type. Contains the following data members:
+   * qmi_result_type -- QMI_RESULT_SUCCESS or QMI_RESULT_FAILURE
+   * qmi_error_type  -- Error code. Possible error code values are
+   * described in the error codes section of each message definition.
+   */
+
+};
+#define IPA_WLAN_OPT_DP_SET_WLAN_PER_INFO_RESP_MSG_V1_MAX_MSG_LEN 7
+
 
 /*Service Message Definition*/
 #define QMI_IPA_INDICATION_REGISTER_REQ_V01 0x0020
@@ -2975,9 +3158,21 @@ struct ipa_rmnet_eth_info_indication_msg_v01 {
 #define QMI_IPA_MOVE_NAT_REQ_V01 0x0046
 #define QMI_IPA_MOVE_NAT_RESP_V01 0x0046
 #define QMI_IPA_MOVE_NAT_COMPLETE_IND_V01 0x0046
-#define QMI_IPA_ETH_BACKHAUL_INFO_REQ_V01 0x0047
-#define QMI_IPA_ETH_BACKHAUL_INFO_RESP_V01 0x0047
-#define QMI_IPA_RMNET_ETH_INFO_INDICATION_V01 0x0048
+#define QMI_IPA_WLAN_OPT_DATAPATH_RSRV_FILTER_REQ_V01 0x0049
+#define QMI_IPA_WLAN_OPT_DATAPATH_RSRV_FILTER_RESP_V01 0x0049
+#define QMI_IPA_WLAN_OPT_DATAPATH_RSRV_FILTER_COMPLT_IND_V01 0x0049
+#define QMI_IPA_WLAN_OPT_DATAPATH_ADD_FILTER_REQ_V01 0x004A
+#define QMI_IPA_WLAN_OPT_DATAPATH_ADD_FILTER_RESP_V01 0x004A
+#define QMI_IPA_WLAN_OPT_DATAPATH_ADD_FILTER_COMPLT_IND_V01 0x004A
+#define QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_FILTER_REQ_V01 0x004B
+#define QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_FILTER_RESP_V01 0x004B
+#define QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_FILTER_COMPLT_IND_V01 0x004B
+#define QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_ALL_FILTER_REQ_V01 0x004C
+#define QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_ALL_FILTER_RESP_V01 0x004C
+#define QMI_IPA_WLAN_OPT_DATAPATH_REMOVE_ALL_FILTER_COMPLT_IND_V01 0x004C
+#define QMI_IPA_WLAN_OPT_DATAPATH_SET_WLAN_PER_INFO_REQ_V01 0x004D
+#define QMI_IPA_WLAN_OPT_DATAPATH_SET_WLAN_PER_INFO_RESP_V01 0x004D
+
 
 /* add for max length*/
 #define QMI_IPA_INIT_MODEM_DRIVER_REQ_MAX_MSG_LEN_V01 197

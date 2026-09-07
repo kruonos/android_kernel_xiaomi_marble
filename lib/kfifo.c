@@ -5,15 +5,6 @@
  * Copyright (C) 2009/2010 Stefani Seibold <stefani@seibold.net>
  */
 
-#ifndef __GENKSYMS__
-#include <linux/err.h>
-#include <linux/export.h>
-#include <linux/kfifo.h>
-#include <linux/log2.h>
-#include <linux/scatterlist.h>
-#include <linux/slab.h>
-#include <linux/uaccess.h>
-#else
 #include <linux/kernel.h>
 #include <linux/export.h>
 #include <linux/slab.h>
@@ -21,7 +12,6 @@
 #include <linux/log2.h>
 #include <linux/uaccess.h>
 #include <linux/kfifo.h>
-#endif
 
 /*
  * internal helper to calculate the unused elements in a fifo
@@ -425,7 +415,7 @@ static unsigned int __kfifo_peek_n(struct __kfifo *fifo, size_t recsize)
 	)
 
 /*
- * __kfifo_poke_n internal helper function for storeing the length of
+ * __kfifo_poke_n internal helper function for storing the length of
  * the record into the fifo
  */
 static void __kfifo_poke_n(struct __kfifo *fifo, unsigned int n, size_t recsize)

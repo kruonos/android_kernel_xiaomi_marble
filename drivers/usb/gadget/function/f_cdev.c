@@ -771,7 +771,6 @@ static int usb_cser_bind(struct usb_configuration *c, struct usb_function *f)
 		if (status < 0)
 			return status;
 		cser_string_defs[0].id = status;
-		cser_interface_desc.iInterface = status;
 	}
 
 	status = usb_interface_id(c, f);
@@ -1020,7 +1019,7 @@ static void usb_cser_write_complete(struct usb_ep *ep, struct usb_request *req)
 	switch (req->status) {
 	default:
 		pr_debug("unexpected %s status %d\n", ep->name, req->status);
-		/* FALL THROUGH */
+		fallthrough;
 	case 0:
 		/* normal completion */
 		break;
@@ -1616,8 +1615,11 @@ static ssize_t cser_rw_write(struct file *file, const char __user *ubuf,
 		gadget = cser->func.config->cdev->gadget;
 		if (gadget->speed >= USB_SPEED_SUPER &&
 			port->func_is_suspended) {
+			ret = -EPERM;
+#ifdef CONFIG_USB_FUNC_WAKEUP_SUPPORTED
 			pr_debug("Calling usb_func_wakeup\n");
 			ret = usb_func_wakeup(func);
+#endif
 		} else {
 			pr_debug("Calling usb_gadget_wakeup\n");
 			ret = usb_gadget_wakeup(gadget);

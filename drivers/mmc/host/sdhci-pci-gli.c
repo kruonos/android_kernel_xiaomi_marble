@@ -12,6 +12,7 @@
 #include <linux/pci.h>
 #include <linux/mmc/mmc.h>
 #include <linux/delay.h>
+#include <linux/of.h>
 #include "sdhci.h"
 #include "sdhci-pci.h"
 #include "cqhci.h"
@@ -21,6 +22,16 @@
 #define   SDHCI_GLI_9750_WT_EN      BIT(0)
 #define   GLI_9750_WT_EN_ON	    0x1
 #define   GLI_9750_WT_EN_OFF	    0x0
+
+#define PCI_GLI_9750_PM_CTRL	0xFC
+#define   PCI_GLI_9750_PM_STATE	  GENMASK(1, 0)
+
+#define PCI_GLI_9750_CORRERR_MASK				0x214
+#define   PCI_GLI_9750_CORRERR_MASK_REPLAY_TIMER_TIMEOUT	  BIT(12)
+
+#define SDHCI_GLI_9750_CFG2          0x848
+#define   SDHCI_GLI_9750_CFG2_L1DLY    GENMASK(28, 24)
+#define   GLI_9750_CFG2_L1DLY_VALUE    0x1F
 
 #define SDHCI_GLI_9750_DRIVING      0x860
 #define   SDHCI_GLI_9750_DRIVING_1    GENMASK(11, 0)
@@ -59,9 +70,6 @@
 #define   GLI_9750_MISC_RX_INV_VALUE     GLI_9750_MISC_RX_INV_OFF
 #define   GLI_9750_MISC_TX1_DLY_VALUE    0x5
 
-#define SDHCI_GLI_9750_GM_BURST_SIZE		  0x510
-#define   SDHCI_GLI_9750_GM_BURST_SIZE_R_OSRC_LMT  GENMASK(17, 16)
-
 #define SDHCI_GLI_9750_TUNING_CONTROL	          0x540
 #define   SDHCI_GLI_9750_TUNING_CONTROL_EN          BIT(4)
 #define   GLI_9750_TUNING_CONTROL_EN_ON             0x1
@@ -87,8 +95,20 @@
 #define   GLI_9763E_VHS_REV_W      0x2
 #define PCIE_GLI_9763E_MB	 0x888
 #define   GLI_9763E_MB_CMDQ_OFF	   BIT(19)
+#define   GLI_9763E_MB_ERP_ON      BIT(7)
 #define PCIE_GLI_9763E_SCR	 0x8E0
 #define   GLI_9763E_SCR_AXI_REQ	   BIT(9)
+
+#define PCIE_GLI_9763E_CFG2      0x8A4
+#define   GLI_9763E_CFG2_L1DLY     GENMASK(28, 19)
+#define   GLI_9763E_CFG2_L1DLY_MID 0x54
+
+#define PCIE_GLI_9763E_MMC_CTRL  0x960
+#define   GLI_9763E_HS400_SLOW     BIT(3)
+
+#define PCIE_GLI_9763E_CLKRXDLY  0x934
+#define   GLI_9763E_HS400_RXDLY    GENMASK(31, 28)
+#define   GLI_9763E_HS400_RXDLY_5  0x5
 
 #define SDHCI_GLI_9763E_CQE_BASE_ADDR	 0x200
 #define GLI_9763E_CQE_TRNS_MODE	   (SDHCI_TRNS_MULTI | \
@@ -100,6 +120,16 @@
 #define   GLI_9755_WT_EN_ON     0x1
 #define   GLI_9755_WT_EN_OFF    0x0
 
+#define PCI_GLI_9755_PECONF   0x44
+#define   PCI_GLI_9755_LFCLK    GENMASK(14, 12)
+#define   PCI_GLI_9755_DMACLK   BIT(29)
+#define   PCI_GLI_9755_INVERT_CD  BIT(30)
+#define   PCI_GLI_9755_INVERT_WP  BIT(31)
+
+#define PCI_GLI_9755_CFG2          0x48
+#define   PCI_GLI_9755_CFG2_L1DLY    GENMASK(28, 24)
+#define   GLI_9755_CFG2_L1DLY_VALUE  0x1F
+
 #define PCI_GLI_9755_PLL            0x64
 #define   PCI_GLI_9755_PLL_LDIV       GENMASK(9, 0)
 #define   PCI_GLI_9755_PLL_PDIV       GENMASK(14, 12)
@@ -109,6 +139,9 @@
 
 #define PCI_GLI_9755_PLLSSC        0x68
 #define   PCI_GLI_9755_PLLSSC_PPM    GENMASK(15, 0)
+
+#define PCI_GLI_9755_SerDes  0x70
+#define PCI_GLI_9755_SCP_DIS   BIT(19)
 
 #define GLI_MAX_TUNING_LOOP 40
 
@@ -155,15 +188,9 @@ static void gli_set_9750(struct sdhci_host *host)
 	u32 misc_value;
 	u32 parameter_value;
 	u32 control_value;
-	u32 burst_value;
 	u16 ctrl2;
 
 	gl9750_wt_on(host);
-
-	/* clear R_OSRC_Lmt to avoid DMA write corruption */
-	burst_value = sdhci_readl(host, SDHCI_GLI_9750_GM_BURST_SIZE);
-	burst_value &= ~SDHCI_GLI_9750_GM_BURST_SIZE_R_OSRC_LMT;
-	sdhci_writel(host, burst_value, SDHCI_GLI_9750_GM_BURST_SIZE);
 
 	driving_value = sdhci_readl(host, SDHCI_GLI_9750_DRIVING);
 	pll_value = sdhci_readl(host, SDHCI_GLI_9750_PLL);
@@ -398,6 +425,38 @@ static void sdhci_gl9750_set_clock(struct sdhci_host *host, unsigned int clock)
 	sdhci_enable_clk(host, clk);
 }
 
+static void gl9750_hw_setting(struct sdhci_host *host)
+{
+	struct sdhci_pci_slot *slot = sdhci_priv(host);
+	struct pci_dev *pdev;
+	u32 value;
+
+	pdev = slot->chip->pdev;
+
+	gl9750_wt_on(host);
+
+	value = sdhci_readl(host, SDHCI_GLI_9750_CFG2);
+	value &= ~SDHCI_GLI_9750_CFG2_L1DLY;
+	/* set ASPM L1 entry delay to 7.9us */
+	value |= FIELD_PREP(SDHCI_GLI_9750_CFG2_L1DLY,
+			    GLI_9750_CFG2_L1DLY_VALUE);
+	sdhci_writel(host, value, SDHCI_GLI_9750_CFG2);
+
+	/* toggle PM state to allow GL9750 to enter ASPM L1.2 */
+	pci_read_config_dword(pdev, PCI_GLI_9750_PM_CTRL, &value);
+	value |= PCI_GLI_9750_PM_STATE;
+	pci_write_config_dword(pdev, PCI_GLI_9750_PM_CTRL, value);
+	value &= ~PCI_GLI_9750_PM_STATE;
+	pci_write_config_dword(pdev, PCI_GLI_9750_PM_CTRL, value);
+
+	/* mask the replay timer timeout of AER */
+	pci_read_config_dword(pdev, PCI_GLI_9750_CORRERR_MASK, &value);
+	value |= PCI_GLI_9750_CORRERR_MASK_REPLAY_TIMER_TIMEOUT;
+	pci_write_config_dword(pdev, PCI_GLI_9750_CORRERR_MASK, value);
+
+	gl9750_wt_off(host);
+}
+
 static void gli_pcie_enable_msi(struct sdhci_pci_slot *slot)
 {
 	int ret;
@@ -528,10 +587,46 @@ static void sdhci_gl9755_set_clock(struct sdhci_host *host, unsigned int clock)
 	sdhci_enable_clk(host, clk);
 }
 
+static void gl9755_hw_setting(struct sdhci_pci_slot *slot)
+{
+	struct pci_dev *pdev = slot->chip->pdev;
+	u32 value;
+
+	gl9755_wt_on(pdev);
+
+	pci_read_config_dword(pdev, PCI_GLI_9755_PECONF, &value);
+	/*
+	 * Apple ARM64 platforms using these chips may have
+	 * inverted CD/WP detection.
+	 */
+	if (of_property_read_bool(pdev->dev.of_node, "cd-inverted"))
+		value |= PCI_GLI_9755_INVERT_CD;
+	if (of_property_read_bool(pdev->dev.of_node, "wp-inverted"))
+		value |= PCI_GLI_9755_INVERT_WP;
+	value &= ~PCI_GLI_9755_LFCLK;
+	value &= ~PCI_GLI_9755_DMACLK;
+	pci_write_config_dword(pdev, PCI_GLI_9755_PECONF, value);
+
+	/* enable short circuit protection */
+	pci_read_config_dword(pdev, PCI_GLI_9755_SerDes, &value);
+	value &= ~PCI_GLI_9755_SCP_DIS;
+	pci_write_config_dword(pdev, PCI_GLI_9755_SerDes, value);
+
+	pci_read_config_dword(pdev, PCI_GLI_9755_CFG2, &value);
+	value &= ~PCI_GLI_9755_CFG2_L1DLY;
+	/* set ASPM L1 entry delay to 7.9us */
+	value |= FIELD_PREP(PCI_GLI_9755_CFG2_L1DLY,
+			    GLI_9755_CFG2_L1DLY_VALUE);
+	pci_write_config_dword(pdev, PCI_GLI_9755_CFG2, value);
+
+	gl9755_wt_off(pdev);
+}
+
 static int gli_probe_slot_gl9750(struct sdhci_pci_slot *slot)
 {
 	struct sdhci_host *host = slot->host;
 
+	gl9750_hw_setting(host);
 	gli_pcie_enable_msi(slot);
 	slot->host->mmc->caps2 |= MMC_CAP2_NO_SDIO;
 	sdhci_enable_v4_mode(host);
@@ -543,6 +638,7 @@ static int gli_probe_slot_gl9755(struct sdhci_pci_slot *slot)
 {
 	struct sdhci_host *host = slot->host;
 
+	gl9755_hw_setting(slot);
 	gli_pcie_enable_msi(slot);
 	slot->host->mmc->caps2 |= MMC_CAP2_NO_SDIO;
 	sdhci_enable_v4_mode(host);
@@ -764,7 +860,7 @@ static void sdhci_gl9763e_reset(struct sdhci_host *host, u8 mask)
 	sdhci_reset(host, mask);
 }
 
-static void gl9763e_hw_setting(struct sdhci_pci_slot *slot)
+static void gli_set_gl9763e(struct sdhci_pci_slot *slot)
 {
 	struct pci_dev *pdev = slot->chip->pdev;
 	u32 value;
@@ -777,6 +873,21 @@ static void gl9763e_hw_setting(struct sdhci_pci_slot *slot)
 	pci_read_config_dword(pdev, PCIE_GLI_9763E_SCR, &value);
 	value |= GLI_9763E_SCR_AXI_REQ;
 	pci_write_config_dword(pdev, PCIE_GLI_9763E_SCR, value);
+
+	pci_read_config_dword(pdev, PCIE_GLI_9763E_MMC_CTRL, &value);
+	value &= ~GLI_9763E_HS400_SLOW;
+	pci_write_config_dword(pdev, PCIE_GLI_9763E_MMC_CTRL, value);
+
+	pci_read_config_dword(pdev, PCIE_GLI_9763E_CFG2, &value);
+	value &= ~GLI_9763E_CFG2_L1DLY;
+	/* set ASPM L1 entry delay to 21us */
+	value |= FIELD_PREP(GLI_9763E_CFG2_L1DLY, GLI_9763E_CFG2_L1DLY_MID);
+	pci_write_config_dword(pdev, PCIE_GLI_9763E_CFG2, value);
+
+	pci_read_config_dword(pdev, PCIE_GLI_9763E_CLKRXDLY, &value);
+	value &= ~GLI_9763E_HS400_RXDLY;
+	value |= FIELD_PREP(GLI_9763E_HS400_RXDLY, GLI_9763E_HS400_RXDLY_5);
+	pci_write_config_dword(pdev, PCIE_GLI_9763E_CLKRXDLY, value);
 
 	pci_read_config_dword(pdev, PCIE_GLI_9763E_VHS, &value);
 	value &= ~GLI_9763E_VHS_REV;
@@ -801,12 +912,13 @@ static int gli_probe_slot_gl9763e(struct sdhci_pci_slot *slot)
 
 	pci_read_config_dword(pdev, PCIE_GLI_9763E_MB, &value);
 	if (!(value & GLI_9763E_MB_CMDQ_OFF))
-		host->mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
+		if (value & GLI_9763E_MB_ERP_ON)
+			host->mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
 
 	gli_pcie_enable_msi(slot);
 	host->mmc_host_ops.hs400_enhanced_strobe =
 					gl9763e_hs400_enhanced_strobe;
-	gl9763e_hw_setting(slot);
+	gli_set_gl9763e(slot);
 	sdhci_enable_v4_mode(host);
 
 	return 0;

@@ -11,7 +11,6 @@
 #include <sys/resource.h>
 #include <signal.h>
 #include "bench.h"
-#include "bpf_util.h"
 #include "testing_helpers.h"
 
 struct env env = {
@@ -44,6 +43,7 @@ void setup_libbpf()
 {
 	int err;
 
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	libbpf_set_print(libbpf_print_fn);
 
 	err = bump_memlock_rlimit();

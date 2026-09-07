@@ -184,7 +184,7 @@ static unsigned char *ses_get_page2_descriptor(struct enclosure_device *edev,
 	unsigned char *type_ptr = ses_dev->page1_types;
 	unsigned char *desc_ptr = ses_dev->page2 + 8;
 
-	if (ses_recv_diag(sdev, 2, ses_dev->page2, ses_dev->page2_len))
+	if (ses_recv_diag(sdev, 2, ses_dev->page2, ses_dev->page2_len) < 0)
 		return NULL;
 
 	for (i = 0; i < ses_dev->page1_num_types; i++, type_ptr += 4) {
@@ -497,8 +497,9 @@ struct efd {
 };
 
 static int ses_enclosure_find_by_addr(struct enclosure_device *edev,
-				      struct efd *efd)
+				      void *data)
 {
+	struct efd *efd = data;
 	int i;
 	struct ses_component *scomp;
 
@@ -651,7 +652,7 @@ static void ses_match_to_enclosure(struct enclosure_device *edev,
 	if (efd.addr) {
 		efd.dev = &sdev->sdev_gendev;
 
-		ses_enclosure_find_by_addr(edev, &efd);
+		enclosure_for_each_device(ses_enclosure_find_by_addr, &efd);
 	}
 }
 

@@ -69,7 +69,7 @@ static long ntfs_compat_ioctl(struct file *filp, u32 cmd, unsigned long arg)
 /*
  * ntfs_getattr - inode_operations::getattr
  */
-int ntfs_getattr(const struct path *path,
+int ntfs_getattr(struct user_namespace *mnt_userns, const struct path *path,
 		 struct kstat *stat, u32 request_mask, u32 flags)
 {
 	struct inode *inode = d_inode(path->dentry);
@@ -83,7 +83,7 @@ int ntfs_getattr(const struct path *path,
 
 	stat->attributes_mask |= STATX_ATTR_COMPRESSED | STATX_ATTR_ENCRYPTED;
 
-	generic_fillattr(inode, stat);
+	generic_fillattr(mnt_userns, inode, stat);
 
 	stat->result_mask |= STATX_BTIME;
 	stat->btime = ni->i_crtime;
@@ -438,7 +438,6 @@ static int ntfs_extend(struct inode *inode, loff_t pos, size_t count,
 	}
 
 	if (extend_init && !is_compressed(ni)) {
-		WARN_ON(ni->i_valid >= pos);
 		err = ntfs_extend_initialized_size(file, ni, ni->i_valid, pos);
 		if (err)
 			goto out;
@@ -735,7 +734,7 @@ out:
 /*
  * ntfs3_setattr - inode_operations::setattr
  */
-int ntfs3_setattr(struct dentry *dentry,
+int ntfs3_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		  struct iattr *attr)
 {
 	struct super_block *sb = dentry->d_sb;
@@ -754,7 +753,7 @@ int ntfs3_setattr(struct dentry *dentry,
 		ia_valid = attr->ia_valid;
 	}
 
-	err = setattr_prepare(dentry, attr);
+	err = setattr_prepare(mnt_userns, dentry, attr);
 	if (err)
 		goto out;
 
@@ -779,10 +778,10 @@ int ntfs3_setattr(struct dentry *dentry,
 		ni->ni_flags |= NI_FLAG_UPDATE_PARENT;
 	}
 
-	setattr_copy(inode, attr);
+	setattr_copy(mnt_userns, inode, attr);
 
 	if (mode != inode->i_mode) {
-		err = ntfs_acl_chmod(inode);
+		err = ntfs_acl_chmod(mnt_userns, inode);
 		if (err)
 			goto out;
 
@@ -932,12 +931,8 @@ static ssize_t ntfs_compress_write(struct kiocb *iocb, struct iov_iter *from)
 			goto out;
 
 		if (lcn == SPARSE_LCN) {
-			valid = frame_vbo + ((u64)clen << sbi->cluster_bits);
-			if (ni->i_valid == valid) {
-				err = -EINVAL;
-				goto out;
-			}
-			ni->i_valid = valid;
+			ni->i_valid = valid =
+				frame_vbo + ((u64)clen << sbi->cluster_bits);
 			continue;
 		}
 
@@ -1000,7 +995,7 @@ static ssize_t ntfs_compress_write(struct kiocb *iocb, struct iov_iter *from)
 		frame_vbo = pos & ~(frame_size - 1);
 		index = frame_vbo >> PAGE_SHIFT;
 
-		if (unlikely(iov_iter_fault_in_readable(from, bytes))) {
+		if (unlikely(fault_in_iov_iter_readable(from, bytes))) {
 			err = -EFAULT;
 			goto out;
 		}
@@ -1039,10 +1034,10 @@ static ssize_t ntfs_compress_write(struct kiocb *iocb, struct iov_iter *from)
 			size_t cp, tail = PAGE_SIZE - off;
 
 			page = pages[ip];
-			cp = iov_iter_copy_from_user_atomic(page, from, off,
-							    min(tail, bytes));
+			cp = copy_page_from_iter_atomic(page, off,
+							min(tail, bytes), from);
 			flush_dcache_page(page);
-			iov_iter_advance(from, cp);
+
 			copied += cp;
 			bytes -= cp;
 			if (!bytes || !cp)
@@ -1095,8 +1090,6 @@ out:
 	iocb->ki_pos += written;
 	if (iocb->ki_pos > ni->i_valid)
 		ni->i_valid = iocb->ki_pos;
-	if (iocb->ki_pos > i_size)
-		i_size_write(inode, iocb->ki_pos);
 
 	return written;
 }
@@ -1200,16 +1193,8 @@ static int ntfs_file_release(struct inode *inode, struct file *file)
 	int err = 0;
 
 	/* If we are last writer on the inode, drop the block reservation. */
-	if (sbi->options->prealloc &&
-	    ((file->f_mode & FMODE_WRITE) &&
-	     atomic_read(&inode->i_writecount) == 1)
-	   /*
-	    * The only file when inode->i_fop = &ntfs_file_operations and
-	    * init_rwsem(&ni->file.run_lock) is not called explicitly is MFT.
-	    *
-	    * Add additional check here.
-	    */
-	    && inode->i_ino != MFT_REC_MFT) {
+	if (sbi->options->prealloc && ((file->f_mode & FMODE_WRITE) &&
+				      atomic_read(&inode->i_writecount) == 1)) {
 		ni_lock(ni);
 		down_write(&ni->file.run_lock);
 

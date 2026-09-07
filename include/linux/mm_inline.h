@@ -4,6 +4,7 @@
 
 #include <linux/huge_mm.h>
 #include <linux/swap.h>
+#include <linux/string.h>
 #ifndef __GENKSYMS__
 #define PROTECT_TRACE_INCLUDE_PATH
 #include <trace/hooks/mm.h>
@@ -44,27 +45,12 @@ static __always_inline void __update_lru_size(struct lruvec *lruvec,
 
 static __always_inline void update_lru_size(struct lruvec *lruvec,
 				enum lru_list lru, enum zone_type zid,
-				int nr_pages)
+				long nr_pages)
 {
 	__update_lru_size(lruvec, lru, zid, nr_pages);
 #ifdef CONFIG_MEMCG
 	mem_cgroup_update_lru_size(lruvec, lru, zid, nr_pages);
 #endif
-}
-
-/**
- * page_lru_base_type - which LRU list type should a page be on?
- * @page: the page to test
- *
- * Used for LRU list index arithmetic.
- *
- * Returns the base LRU type - file or anon - @page should be on.
- */
-static inline enum lru_list page_lru_base_type(struct page *page)
-{
-	if (page_is_file_lru(page))
-		return LRU_INACTIVE_FILE;
-	return LRU_INACTIVE_ANON;
 }
 
 /**
@@ -99,12 +85,12 @@ static __always_inline enum lru_list page_lru(struct page *page)
 	VM_BUG_ON_PAGE(PageActive(page) && PageUnevictable(page), page);
 
 	if (PageUnevictable(page))
-		lru = LRU_UNEVICTABLE;
-	else {
-		lru = page_lru_base_type(page);
-		if (PageActive(page))
-			lru += LRU_ACTIVE;
-	}
+		return LRU_UNEVICTABLE;
+
+	lru = page_is_file_lru(page) ? LRU_INACTIVE_FILE : LRU_INACTIVE_ANON;
+	if (PageActive(page))
+		lru += LRU_ACTIVE;
+
 	return lru;
 }
 
@@ -177,13 +163,11 @@ static inline bool lru_gen_is_active(struct lruvec *lruvec, int gen)
 	VM_WARN_ON_ONCE(gen >= MAX_NR_GENS);
 
 	/* see the comment on MIN_NR_GENS */
-	return gen == lru_gen_from_seq(max_seq) ||
-	       gen == lru_gen_from_seq(max_seq - 1);
+	return gen == lru_gen_from_seq(max_seq) || gen == lru_gen_from_seq(max_seq - 1);
 }
 
-static inline void lru_gen_update_size(struct lruvec *lruvec,
-				       struct page *page, int old_gen,
-				       int new_gen)
+static inline void lru_gen_update_size(struct lruvec *lruvec, struct page *page,
+				       int old_gen, int new_gen)
 {
 	int type = page_is_file_lru(page);
 	int zone = page_zonenum(page);
@@ -219,19 +203,16 @@ static inline void lru_gen_update_size(struct lruvec *lruvec,
 	}
 
 	/* promotion */
-	if (!lru_gen_is_active(lruvec, old_gen) &&
-	    lru_gen_is_active(lruvec, new_gen)) {
+	if (!lru_gen_is_active(lruvec, old_gen) && lru_gen_is_active(lruvec, new_gen)) {
 		__update_lru_size(lruvec, lru, zone, -delta);
 		__update_lru_size(lruvec, lru + LRU_ACTIVE, zone, delta);
 	}
 
 	/* demotion requires isolation, e.g., lru_deactivate_fn() */
-	VM_WARN_ON_ONCE(lru_gen_is_active(lruvec, old_gen) &&
-			!lru_gen_is_active(lruvec, new_gen));
+	VM_WARN_ON_ONCE(lru_gen_is_active(lruvec, old_gen) && !lru_gen_is_active(lruvec, new_gen));
 }
 
-static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page,
-				    bool reclaiming)
+static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page, bool reclaiming)
 {
 	unsigned long seq;
 	unsigned long flags;
@@ -245,8 +226,13 @@ static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page,
 	if (PageUnevictable(page) || !lrugen->enabled)
 		return false;
 	/*
-	 * Add hot pages to the youngest generation, cold unevictable pages to
-	 * the second oldest generation and clean cold pages to the oldest.
+	 * There are three common cases for this page:
+	 * 1. If it's hot, e.g., freshly faulted in or previously hot and
+	 *    migrated, add it to the youngest generation.
+	 * 2. If it's cold but can't be evicted immediately, i.e., an anon page
+	 *    not in swapcache or a dirty page pending writeback, add it to the
+	 *    second oldest generation.
+	 * 3. Everything else (clean, cold) is added to the oldest generation.
 	 */
 	if (PageActive(page))
 		seq = lrugen->max_seq;
@@ -263,6 +249,7 @@ static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page,
 	set_mask_bits(&page->flags, LRU_GEN_MASK | BIT(PG_active), flags);
 
 	lru_gen_update_size(lruvec, page, -1, gen);
+	/* for rotate_reclaimable_page() */
 	if (reclaiming)
 		list_add_tail(&page->lru, &lrugen->lists[gen][type][zone]);
 	else
@@ -271,8 +258,7 @@ static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page,
 	return true;
 }
 
-static inline bool lru_gen_del_page(struct lruvec *lruvec, struct page *page,
-				    bool reclaiming)
+static inline bool lru_gen_del_page(struct lruvec *lruvec, struct page *page, bool reclaiming)
 {
 	unsigned long flags;
 	int gen = page_lru_gen(page);
@@ -284,8 +270,7 @@ static inline bool lru_gen_del_page(struct lruvec *lruvec, struct page *page,
 	VM_WARN_ON_ONCE_PAGE(PageUnevictable(page), page);
 
 	/* for migrate_page_states() */
-	flags = !reclaiming && lru_gen_is_active(lruvec, gen) ?
-		BIT(PG_active) : 0;
+	flags = !reclaiming && lru_gen_is_active(lruvec, gen) ? BIT(PG_active) : 0;
 	flags = set_mask_bits(&page->flags, LRU_GEN_MASK, flags);
 	gen = ((flags & LRU_GEN_MASK) >> LRU_GEN_PGOFF) - 1;
 
@@ -307,14 +292,12 @@ static inline bool lru_gen_in_fault(void)
 	return false;
 }
 
-static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page,
-				    bool reclaiming)
+static inline bool lru_gen_add_page(struct lruvec *lruvec, struct page *page, bool reclaiming)
 {
 	return false;
 }
 
-static inline bool lru_gen_del_page(struct lruvec *lruvec, struct page *page,
-				    bool reclaiming)
+static inline bool lru_gen_del_page(struct lruvec *lruvec, struct page *page, bool reclaiming)
 {
 	return false;
 }
@@ -326,10 +309,10 @@ static __always_inline void add_page_to_lru_list(struct page *page,
 {
 	enum lru_list lru = page_lru(page);
 
-	trace_android_vh_add_page_to_lrulist(page, false, lru);
 	if (lru_gen_add_page(lruvec, page, false))
 		return;
 
+	trace_android_vh_add_page_to_lrulist(page, false, lru);
 	update_lru_size(lruvec, lru, page_zonenum(page), thp_nr_pages(page));
 	list_add(&page->lru, &lruvec->lists[lru]);
 }
@@ -339,10 +322,10 @@ static __always_inline void add_page_to_lru_list_tail(struct page *page,
 {
 	enum lru_list lru = page_lru(page);
 
-	trace_android_vh_add_page_to_lrulist(page, false, lru);
 	if (lru_gen_add_page(lruvec, page, true))
 		return;
 
+	trace_android_vh_add_page_to_lrulist(page, false, page_lru(page));
 	update_lru_size(lruvec, lru, page_zonenum(page), thp_nr_pages(page));
 	list_add_tail(&page->lru, &lruvec->lists[lru]);
 }
@@ -350,13 +333,101 @@ static __always_inline void add_page_to_lru_list_tail(struct page *page,
 static __always_inline void del_page_from_lru_list(struct page *page,
 				struct lruvec *lruvec)
 {
-	enum lru_list lru = page_lru(page);
-
-	trace_android_vh_del_page_from_lrulist(page, false, lru);
 	if (lru_gen_del_page(lruvec, page, false))
 		return;
 
+	trace_android_vh_del_page_from_lrulist(page, false, page_lru(page));
 	list_del(&page->lru);
-	update_lru_size(lruvec, lru, page_zonenum(page), -thp_nr_pages(page));
+	update_lru_size(lruvec, page_lru(page), page_zonenum(page),
+			-thp_nr_pages(page));
 }
+
+#ifdef CONFIG_ANON_VMA_NAME
+/*
+ * mmap_lock should be read-locked when calling anon_vma_name(). Caller should
+ * either keep holding the lock while using the returned pointer or it should
+ * raise anon_vma_name refcount before releasing the lock.
+ */
+extern struct anon_vma_name *anon_vma_name(struct vm_area_struct *vma);
+extern struct anon_vma_name *anon_vma_name_alloc(const char *name);
+extern void anon_vma_name_free(struct kref *kref);
+
+/* mmap_lock should be read-locked */
+static inline void anon_vma_name_get(struct anon_vma_name *anon_name)
+{
+	if (anon_name)
+		kref_get(&anon_name->kref);
+}
+
+static inline void anon_vma_name_put(struct anon_vma_name *anon_name)
+{
+	if (anon_name)
+		kref_put(&anon_name->kref, anon_vma_name_free);
+}
+
+static inline
+struct anon_vma_name *anon_vma_name_reuse(struct anon_vma_name *anon_name)
+{
+	/* Prevent anon_name refcount saturation early on */
+	if (kref_read(&anon_name->kref) < REFCOUNT_MAX) {
+		anon_vma_name_get(anon_name);
+		return anon_name;
+
+	}
+	return anon_vma_name_alloc(anon_name->name);
+}
+
+static inline void dup_anon_vma_name(struct vm_area_struct *orig_vma,
+				     struct vm_area_struct *new_vma)
+{
+	struct anon_vma_name *anon_name = anon_vma_name(orig_vma);
+
+	if (anon_name)
+		new_vma->anon_name = anon_vma_name_reuse(anon_name);
+}
+
+static inline void free_anon_vma_name(struct vm_area_struct *vma)
+{
+	/*
+	 * Not using anon_vma_name because it generates a warning if mmap_lock
+	 * is not held, which might be the case here.
+	 */
+	if (!vma->vm_file)
+		anon_vma_name_put(vma->anon_name);
+}
+
+static inline bool anon_vma_name_eq(struct anon_vma_name *anon_name1,
+				    struct anon_vma_name *anon_name2)
+{
+	if (anon_name1 == anon_name2)
+		return true;
+
+	return anon_name1 && anon_name2 &&
+		!strcmp(anon_name1->name, anon_name2->name);
+}
+#else /* CONFIG_ANON_VMA_NAME */
+static inline struct anon_vma_name *anon_vma_name(struct vm_area_struct *vma)
+{
+	return NULL;
+}
+
+static inline struct anon_vma_name *anon_vma_name_alloc(const char *name)
+{
+	return NULL;
+}
+
+static inline void anon_vma_name_get(struct anon_vma_name *anon_name) {}
+static inline void anon_vma_name_put(struct anon_vma_name *anon_name) {}
+static inline void dup_anon_vma_name(struct vm_area_struct *orig_vma,
+				     struct vm_area_struct *new_vma) {}
+static inline void free_anon_vma_name(struct vm_area_struct *vma) {}
+
+static inline bool anon_vma_name_eq(struct anon_vma_name *anon_name1,
+				    struct anon_vma_name *anon_name2)
+{
+	return true;
+}
+
+#endif  /* CONFIG_ANON_VMA_NAME */
+
 #endif

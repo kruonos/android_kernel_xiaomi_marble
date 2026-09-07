@@ -899,6 +899,7 @@ void ath11k_debugfs_soc_destroy(struct ath11k_base *ab)
 	 * debugfs.
 	 */
 }
+EXPORT_SYMBOL(ath11k_debugfs_soc_destroy);
 
 void ath11k_debugfs_fw_stats_init(struct ath11k *ar)
 {

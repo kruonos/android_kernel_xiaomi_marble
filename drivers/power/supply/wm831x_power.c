@@ -144,7 +144,6 @@ static int wm831x_usb_limit_change(struct notifier_block *nb,
 							 struct wm831x_power,
 							 usb_notify);
 	unsigned int i, best;
-	int ret;
 
 	/* Find the highest supported limit */
 	best = 0;
@@ -157,13 +156,8 @@ static int wm831x_usb_limit_change(struct notifier_block *nb,
 	dev_dbg(wm831x_power->wm831x->dev,
 		"Limiting USB current to %umA", wm831x_usb_limits[best]);
 
-	ret = wm831x_set_bits(wm831x_power->wm831x, WM831X_POWER_STATE,
-			      WM831X_USB_ILIM_MASK, best);
-	if (ret < 0) {
-		dev_err(wm831x_power->wm831x->dev,
-			"Failed to set USB current limit: %d\n", ret);
-		return ret;
-	}
+	wm831x_set_bits(wm831x_power->wm831x, WM831X_POWER_STATE,
+		        WM831X_USB_ILIM_MASK, best);
 
 	return 0;
 }
@@ -674,7 +668,6 @@ static int wm831x_power_probe(struct platform_device *pdev)
 		fallthrough;
 	case -EPROBE_DEFER:
 		goto err_bat_irq;
-		break;
 	}
 
 	return ret;

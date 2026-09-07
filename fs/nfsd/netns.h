@@ -10,6 +10,7 @@
 
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+#include <linux/percpu_counter.h>
 
 /* Hash tables for nfs4_clientid state */
 #define CLIENT_HASH_BITS                 4
@@ -20,6 +21,14 @@
 
 struct cld_net;
 struct nfsd4_client_tracking_ops;
+
+enum {
+	/* cache misses due only to checksum comparison failures */
+	NFSD_NET_PAYLOAD_MISSES,
+	/* amount of memory (in bytes) currently consumed by the DRC */
+	NFSD_NET_DRC_MEM_USAGE,
+	NFSD_NET_COUNTERS_NUM
+};
 
 /*
  * Represents a nfsd "container". With respect to nfsv4 state tracking, the
@@ -128,7 +137,6 @@ struct nfsd_net {
 	u32		s2s_cp_cl_id;
 	struct idr	s2s_cp_stateids;
 	spinlock_t	s2s_cp_lock;
-	atomic_t	pending_async_copies;
 
 	/*
 	 * Version information
@@ -150,20 +158,16 @@ struct nfsd_net {
 
 	/*
 	 * Stats and other tracking of on the duplicate reply cache.
-	 * These fields and the "rc" fields in nfsdstats are modified
-	 * with only the per-bucket cache lock, which isn't really safe
-	 * and should be fixed if we want the statistics to be
-	 * completely accurate.
+	 * The longest_chain* fields are modified with only the per-bucket
+	 * cache lock, which isn't really safe and should be fixed if we want
+	 * these statistics to be completely accurate.
 	 */
 
 	/* total number of entries */
 	atomic_t                 num_drc_entries;
 
-	/* cache misses due only to checksum comparison failures */
-	unsigned int             payload_misses;
-
-	/* amount of memory (in bytes) currently consumed by the DRC */
-	unsigned int             drc_mem_usage;
+	/* Per-netns stats counters */
+	struct percpu_counter    counter[NFSD_NET_COUNTERS_NUM];
 
 	/* longest hash chain seen */
 	unsigned int             longest_chain;
@@ -172,6 +176,12 @@ struct nfsd_net {
 	unsigned int             longest_chain_cachesize;
 
 	struct shrinker		nfsd_reply_cache_shrinker;
+
+	/* tracking server-to-server copy mounts */
+	spinlock_t              nfsd_ssc_lock;
+	struct list_head        nfsd_ssc_mount_list;
+	wait_queue_head_t       nfsd_ssc_waitq;
+
 	/* utsname taken from the process that starts the server */
 	char			nfsd_name[UNX_MAXNODENAME+1];
 };

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2014, 2019-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, 2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2014, 2019-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/device.h>
@@ -196,7 +196,7 @@ EXPORT_SYMBOL(clk_post_change_regmap);
 int clk_prepare_regmap(struct clk_hw *hw)
 {
 	struct clk_regmap *rclk = to_clk_regmap(hw);
-	int rate = clk_hw_get_rate(hw);
+	unsigned long rate = clk_hw_get_rate(hw);
 	int vdd_level;
 
 	if (!rclk->vdd_data.rate_max)
@@ -269,6 +269,7 @@ EXPORT_SYMBOL(clk_is_regmap_clk);
 /**
  * devm_clk_register_regmap - register a clk_regmap clock
  *
+ * @dev: reference to the caller's device
  * @rclk: clk to operate on
  *
  * Clocks that use regmap for their register I/O should register their
@@ -310,6 +311,19 @@ int devm_clk_register_regmap(struct device *dev, struct clk_regmap *rclk)
 }
 EXPORT_SYMBOL_GPL(devm_clk_register_regmap);
 
+/**
+ * devm_clk_regmap_list_node - Add a clk-regmap clock list for providers
+ *
+ * @rclk: clk to operate on
+ *
+ * Maintain clk-regmap clks list for providers use.
+ */
+void devm_clk_regmap_list_node(struct device *dev, struct clk_regmap *rclk)
+{
+	list_add(&rclk->list_node, &clk_regmap_list);
+}
+EXPORT_SYMBOL(devm_clk_regmap_list_node);
+
 int clk_runtime_get_regmap(struct clk_regmap *rclk)
 {
 	int ret;
@@ -338,8 +352,11 @@ void clk_restore_critical_clocks(struct device *dev)
 	struct critical_clk_offset *cclks = desc->critical_clk_en;
 	int i;
 
+	if (!regmap)
+		return;
+
 	for (i = 0; i < desc->num_critical_clk; i++)
 		regmap_update_bits(regmap, cclks[i].offset, cclks[i].mask,
 					 cclks[i].mask);
 }
-EXPORT_SYMBOL_GPL(clk_restore_critical_clocks);
+EXPORT_SYMBOL(clk_restore_critical_clocks);

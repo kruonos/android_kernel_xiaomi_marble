@@ -88,11 +88,6 @@
 /* Default trace flags */
 #define L2TP_DEFAULT_DEBUG_FLAGS	0
 
-#define L2TP_DEPTH_NESTING		2
-#if L2TP_DEPTH_NESTING == SINGLE_DEPTH_NESTING
-#error "L2TP requires its own lockdep subclass"
-#endif
-
 /* Private data stored for received packets in the skb.
  */
 struct l2tp_skb_cb {
@@ -805,7 +800,7 @@ static int l2tp_udp_recv_core(struct l2tp_tunnel *tunnel, struct sk_buff *skb)
 	u16 version;
 	int length;
 
-	/* UDP has verifed checksum */
+	/* UDP has verified checksum */
 
 	/* UDP always verifies the packet length. */
 	__skb_pull(skb, sizeof(struct udphdr));
@@ -1046,13 +1041,7 @@ static int l2tp_xmit_core(struct l2tp_session *session, struct sk_buff *skb, uns
 	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED | IPSKB_REROUTED);
 	nf_reset_ct(skb);
 
-	/* L2TP uses its own lockdep subclass to avoid lockdep splats caused by
-	 * nested socket calls on the same lockdep socket class. This can
-	 * happen when data from a user socket is routed over l2tp, which uses
-	 * another userspace socket.
-	 */
-	spin_lock_nested(&sk->sk_lock.slock, L2TP_DEPTH_NESTING);
-
+	bh_lock_sock_nested(sk);
 	if (sock_owned_by_user(sk)) {
 		kfree_skb(skb);
 		ret = NET_XMIT_DROP;
@@ -1104,7 +1093,7 @@ static int l2tp_xmit_core(struct l2tp_session *session, struct sk_buff *skb, uns
 	ret = l2tp_xmit_queue(tunnel, skb, &inet->cork.fl);
 
 out_unlock:
-	spin_unlock(&sk->sk_lock.slock);
+	bh_unlock_sock(sk);
 
 	return ret;
 }
@@ -1252,6 +1241,8 @@ static void l2tp_tunnel_del_work(struct work_struct *work)
 {
 	struct l2tp_tunnel *tunnel = container_of(work, struct l2tp_tunnel,
 						  del_work);
+	struct sock *sk = tunnel->sock;
+	struct socket *sock = sk->sk_socket;
 
 	l2tp_tunnel_closeall(tunnel);
 
@@ -1259,8 +1250,6 @@ static void l2tp_tunnel_del_work(struct work_struct *work)
 	 * the sk API to release it here.
 	 */
 	if (tunnel->fd < 0) {
-		struct socket *sock = tunnel->sock->sk_socket;
-
 		if (sock) {
 			kernel_sock_shutdown(sock, SHUT_RDWR);
 			sock_release(sock);

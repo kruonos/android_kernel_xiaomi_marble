@@ -432,7 +432,7 @@ static ssize_t zstd_decompress_safe(struct mount_info *mi,
 		return result;
 
 	if (!mi->mi_zstd_stream) {
-		unsigned int workspace_size = zstd_dstream_workspace_bound(
+		unsigned int workspace_size = ZSTD_DStreamWorkspaceBound(
 						INCFS_DATA_FILE_BLOCK_SIZE);
 		void *workspace = kvmalloc(workspace_size, GFP_NOFS);
 		ZSTD_DStream *stream;
@@ -442,7 +442,7 @@ static ssize_t zstd_decompress_safe(struct mount_info *mi,
 			goto out;
 		}
 
-		stream = zstd_init_dstream(INCFS_DATA_FILE_BLOCK_SIZE, workspace,
+		stream = ZSTD_initDStream(INCFS_DATA_FILE_BLOCK_SIZE, workspace,
 				  workspace_size);
 		if (!stream) {
 			kvfree(workspace);
@@ -718,6 +718,7 @@ static int validate_hash_tree(struct backing_file_context *bfc, struct file *f,
 
 			memcpy(stored_digest, addr + hash_offset_in_block[lvl],
 			       digest_size);
+
 			kunmap_atomic(addr);
 			put_page(page);
 			continue;
@@ -765,6 +766,7 @@ static int validate_hash_tree(struct backing_file_context *bfc, struct file *f,
 			memcpy(addr, buf, INCFS_DATA_FILE_BLOCK_SIZE);
 			kunmap_atomic(addr);
 			SetPageChecked(page);
+			SetPageUptodate(page);
 			unlock_page(page);
 			put_page(page);
 		}

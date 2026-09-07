@@ -265,85 +265,6 @@ struct uart_port {
 	ANDROID_KABI_RESERVE(2);
 };
 
-/**
- * uart_port_lock - Lock the UART port
- * @up:		Pointer to UART port structure
- */
-static inline void uart_port_lock(struct uart_port *up)
-{
-	spin_lock(&up->lock);
-}
-
-/**
- * uart_port_lock_irq - Lock the UART port and disable interrupts
- * @up:		Pointer to UART port structure
- */
-static inline void uart_port_lock_irq(struct uart_port *up)
-{
-	spin_lock_irq(&up->lock);
-}
-
-/**
- * uart_port_lock_irqsave - Lock the UART port, save and disable interrupts
- * @up:		Pointer to UART port structure
- * @flags:	Pointer to interrupt flags storage
- */
-static inline void uart_port_lock_irqsave(struct uart_port *up, unsigned long *flags)
-{
-	spin_lock_irqsave(&up->lock, *flags);
-}
-
-/**
- * uart_port_trylock - Try to lock the UART port
- * @up:		Pointer to UART port structure
- *
- * Returns: True if lock was acquired, false otherwise
- */
-static inline bool uart_port_trylock(struct uart_port *up)
-{
-	return spin_trylock(&up->lock);
-}
-
-/**
- * uart_port_trylock_irqsave - Try to lock the UART port, save and disable interrupts
- * @up:		Pointer to UART port structure
- * @flags:	Pointer to interrupt flags storage
- *
- * Returns: True if lock was acquired, false otherwise
- */
-static inline bool uart_port_trylock_irqsave(struct uart_port *up, unsigned long *flags)
-{
-	return spin_trylock_irqsave(&up->lock, *flags);
-}
-
-/**
- * uart_port_unlock - Unlock the UART port
- * @up:		Pointer to UART port structure
- */
-static inline void uart_port_unlock(struct uart_port *up)
-{
-	spin_unlock(&up->lock);
-}
-
-/**
- * uart_port_unlock_irq - Unlock the UART port and re-enable interrupts
- * @up:		Pointer to UART port structure
- */
-static inline void uart_port_unlock_irq(struct uart_port *up)
-{
-	spin_unlock_irq(&up->lock);
-}
-
-/**
- * uart_port_unlock_irqrestore - Unlock the UART port, restore interrupts
- * @up:		Pointer to UART port structure
- * @flags:	The saved interrupt flags for restore
- */
-static inline void uart_port_unlock_irqrestore(struct uart_port *up, unsigned long flags)
-{
-	spin_unlock_irqrestore(&up->lock, flags);
-}
-
 static inline int serial_port_in(struct uart_port *up, int offset)
 {
 	return up->serial_in(up, offset);
@@ -462,8 +383,8 @@ struct earlycon_id {
 	int	(*setup)(struct earlycon_device *, const char *options);
 };
 
-extern const struct earlycon_id *__earlycon_table[];
-extern const struct earlycon_id *__earlycon_table_end[];
+extern const struct earlycon_id __earlycon_table[];
+extern const struct earlycon_id __earlycon_table_end[];
 
 #if defined(CONFIG_SERIAL_EARLYCON) && !defined(MODULE)
 #define EARLYCON_USED_OR_UNUSED	__used
@@ -471,19 +392,13 @@ extern const struct earlycon_id *__earlycon_table_end[];
 #define EARLYCON_USED_OR_UNUSED	__maybe_unused
 #endif
 
-#define _OF_EARLYCON_DECLARE(_name, compat, fn, unique_id)		\
-	static const struct earlycon_id unique_id			\
-	     EARLYCON_USED_OR_UNUSED __initconst			\
+#define OF_EARLYCON_DECLARE(_name, compat, fn)				\
+	static const struct earlycon_id __UNIQUE_ID(__earlycon_##_name) \
+		EARLYCON_USED_OR_UNUSED  __section("__earlycon_table")  \
+		__aligned(__alignof__(struct earlycon_id))		\
 		= { .name = __stringify(_name),				\
 		    .compatible = compat,				\
-		    .setup = fn  };					\
-	static const struct earlycon_id EARLYCON_USED_OR_UNUSED		\
-		__section("__earlycon_table")				\
-		* const __PASTE(__p, unique_id) = &unique_id
-
-#define OF_EARLYCON_DECLARE(_name, compat, fn)				\
-	_OF_EARLYCON_DECLARE(_name, compat, fn,				\
-			     __UNIQUE_ID(__earlycon_##_name))
+		    .setup = fn }
 
 #define EARLYCON_DECLARE(_name, fn)	OF_EARLYCON_DECLARE(_name, "", fn)
 
@@ -524,7 +439,8 @@ int uart_register_driver(struct uart_driver *uart);
 void uart_unregister_driver(struct uart_driver *uart);
 int uart_add_one_port(struct uart_driver *reg, struct uart_port *port);
 int uart_remove_one_port(struct uart_driver *reg, struct uart_port *port);
-int uart_match_port(struct uart_port *port1, struct uart_port *port2);
+bool uart_match_port(const struct uart_port *port1,
+		const struct uart_port *port2);
 
 /*
  * Power Management
@@ -544,7 +460,7 @@ int uart_resume_port(struct uart_driver *reg, struct uart_port *port);
 static inline int uart_tx_stopped(struct uart_port *port)
 {
 	struct tty_struct *tty = port->state->port.tty;
-	if ((tty && tty->stopped) || port->hw_stopped)
+	if ((tty && tty->flow.stopped) || port->hw_stopped)
 		return 1;
 	return 0;
 }
@@ -618,19 +534,38 @@ static inline int uart_prepare_sysrq_char(struct uart_port *port, unsigned int c
 	return 0;
 }
 
-static inline void uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
+static inline void uart_unlock_and_check_sysrq(struct uart_port *port)
 {
 	int sysrq_ch;
 
 	if (!port->has_sysrq) {
-		spin_unlock_irqrestore(&port->lock, irqflags);
+		spin_unlock(&port->lock);
 		return;
 	}
 
 	sysrq_ch = port->sysrq_ch;
 	port->sysrq_ch = 0;
 
-	spin_unlock_irqrestore(&port->lock, irqflags);
+	spin_unlock(&port->lock);
+
+	if (sysrq_ch)
+		handle_sysrq(sysrq_ch);
+}
+
+static inline void uart_unlock_and_check_sysrq_irqrestore(struct uart_port *port,
+		unsigned long flags)
+{
+	int sysrq_ch;
+
+	if (!port->has_sysrq) {
+		spin_unlock_irqrestore(&port->lock, flags);
+		return;
+	}
+
+	sysrq_ch = port->sysrq_ch;
+	port->sysrq_ch = 0;
+
+	spin_unlock_irqrestore(&port->lock, flags);
 
 	if (sysrq_ch)
 		handle_sysrq(sysrq_ch);
@@ -644,9 +579,14 @@ static inline int uart_prepare_sysrq_char(struct uart_port *port, unsigned int c
 {
 	return 0;
 }
-static inline void uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
+static inline void uart_unlock_and_check_sysrq(struct uart_port *port)
 {
-	spin_unlock_irqrestore(&port->lock, irqflags);
+	spin_unlock(&port->lock);
+}
+static inline void uart_unlock_and_check_sysrq_irqrestore(struct uart_port *port,
+		unsigned long flags)
+{
+	spin_unlock_irqrestore(&port->lock, flags);
 }
 #endif	/* CONFIG_MAGIC_SYSRQ_SERIAL */
 

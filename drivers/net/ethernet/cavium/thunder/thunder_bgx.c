@@ -594,9 +594,6 @@ static void bgx_lmac_handler(struct net_device *netdev)
 	struct phy_device *phydev;
 	int link_changed = 0;
 
-	if (!lmac)
-		return;
-
 	phydev = lmac->phydev;
 
 	if (!phydev->link && lmac->last_link)
@@ -1430,9 +1427,9 @@ static acpi_status bgx_acpi_match_id(acpi_handle handle, u32 lvl,
 {
 	struct acpi_buffer string = { ACPI_ALLOCATE_BUFFER, NULL };
 	struct bgx *bgx = context;
-	char bgx_sel[7];
+	char bgx_sel[5];
 
-	snprintf(bgx_sel, sizeof(bgx_sel), "BGX%d", bgx->bgx_id);
+	snprintf(bgx_sel, 5, "BGX%d", bgx->bgx_id);
 	if (ACPI_FAILURE(acpi_get_name(handle, ACPI_SINGLE_NAME, &string))) {
 		pr_warn("Invalid link device\n");
 		return AE_OK;
@@ -1476,7 +1473,6 @@ static int bgx_init_of_phy(struct bgx *bgx)
 	device_for_each_child_node(&bgx->pdev->dev, fwn) {
 		struct phy_device *pd;
 		struct device_node *phy_np;
-		const char *mac;
 
 		/* Should always be an OF node.  But if it is not, we
 		 * cannot handle it, so exit the loop.
@@ -1485,9 +1481,7 @@ static int bgx_init_of_phy(struct bgx *bgx)
 		if (!node)
 			break;
 
-		mac = of_get_mac_address(node);
-		if (!IS_ERR(mac))
-			ether_addr_copy(bgx->lmac[lmac].mac, mac);
+		of_get_mac_address(node, bgx->lmac[lmac].mac);
 
 		SET_NETDEV_DEV(&bgx->lmac[lmac].netdev, &bgx->pdev->dev);
 		bgx->lmac[lmac].lmacid = lmac;
@@ -1497,17 +1491,13 @@ static int bgx_init_of_phy(struct bgx *bgx)
 		 * this cortina phy, for which there is no driver
 		 * support, ignore it.
 		 */
-		if (phy_np) {
-			if (!of_device_is_compatible(phy_np, "cortina,cs4223-slice")) {
-				/* Wait until the phy drivers are available */
-				pd = of_phy_find_device(phy_np);
-				if (!pd) {
-					of_node_put(phy_np);
-					goto defer;
-				}
-				bgx->lmac[lmac].phydev = pd;
-			}
-			of_node_put(phy_np);
+		if (phy_np &&
+		    !of_device_is_compatible(phy_np, "cortina,cs4223-slice")) {
+			/* Wait until the phy drivers are available */
+			pd = of_phy_find_device(phy_np);
+			if (!pd)
+				goto defer;
+			bgx->lmac[lmac].phydev = pd;
 		}
 
 		lmac++;
@@ -1523,11 +1513,11 @@ defer:
 	 * for phy devices we may have already found.
 	 */
 	while (lmac) {
-		lmac--;
 		if (bgx->lmac[lmac].phydev) {
 			put_device(&bgx->lmac[lmac].phydev->mdio.dev);
 			bgx->lmac[lmac].phydev = NULL;
 		}
+		lmac--;
 	}
 	of_node_put(node);
 	return -EPROBE_DEFER;

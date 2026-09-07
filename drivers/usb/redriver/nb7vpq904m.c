@@ -14,7 +14,6 @@
 #include <linux/ctype.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/of_gpio.h>
-#include <linux/regulator/consumer.h>
 #include <linux/usb/redriver.h>
 
 /* priority: INT_MAX >= x >= 0 */
@@ -31,10 +30,10 @@
 #define OUT_COMP_AND_POL_REG_BASE	0x02
 #define LOSS_MATCH_REG_BASE		0x19
 
-#define AUX_SWITCH_REG			0x09
-#define AUX_NORMAL_VAL			0
-#define AUX_FLIP_VAL			1
-#define AUX_DISABLE_VAL			2
+#define AUX_SWITCH_REG		0x09
+#define AUX_NORMAL_VAL		0
+#define AUX_FLIP_VAL		1
+#define AUX_DISABLE_VAL		2
 
 /* Default Register Value */
 #define GEN_DEV_SET_REG_DEFAULT		0xFB
@@ -80,21 +79,11 @@ enum operation_mode {
 
 #define CHAN_MODE_DISABLE	0xff /* when disable, not configure eq, gain ... */
 
-#define LANES_DP		4
-#define LANES_DP_AND_USB	2
-
-#define PULLUP_WORKER_DELAY_US	500000
-
-#define CHIP_MAX_PWR_UA		260000
-#define CHIP_MIN_PWR_UV		1710000
-#define CHIP_MAX_PWR_UV		1890000
-
 struct nb7vpq904m_redriver {
 	struct usb_redriver	r;
 	struct device		*dev;
 	struct regmap		*regmap;
 	struct i2c_client	*client;
-	struct regulator	*vdd;
 
 	int orientation_gpio;
 	int typec_orientation;
@@ -109,7 +98,6 @@ struct nb7vpq904m_redriver {
 
 	u8	gen_dev_val;
 	bool	lane_channel_swap;
-	bool	vdd_enable;
 	bool	is_set_aux;
 
 	struct workqueue_struct *pullup_wq;
@@ -148,30 +136,6 @@ static int nb7vpq904m_reg_set(struct nb7vpq904m_redriver *redriver,
 	dev_dbg(redriver->dev, "writing reg 0x%02x=0x%02x\n", reg, val);
 
 	return 0;
-}
-
-static void nb7vpq904m_vdd_enable(struct nb7vpq904m_redriver *redriver, bool on)
-{
-	int l, v, s;
-
-	if (!redriver->vdd) {
-		dev_dbg(redriver->dev, "no vdd regulator operation\n");
-		return;
-	}
-
-	if (on && !redriver->vdd_enable) {
-		redriver->vdd_enable = true;
-		l = regulator_set_load(redriver->vdd, CHIP_MAX_PWR_UA);
-		v = regulator_set_voltage(redriver->vdd, CHIP_MIN_PWR_UV, CHIP_MAX_PWR_UV);
-		s = regulator_enable(redriver->vdd);
-		dev_dbg(redriver->dev, "vdd regulator enable return %d-%d-%d\n", l, v, s);
-	} else if (!on && redriver->vdd_enable) {
-		redriver->vdd_enable = false;
-		s = regulator_disable(redriver->vdd);
-		v = regulator_set_voltage(redriver->vdd, 0, CHIP_MAX_PWR_UV);
-		l = regulator_set_load(redriver->vdd, 0);
-		dev_dbg(redriver->dev, "vdd regulator disable return %d-%d-%d\n", l, v, s);
-	}
 }
 
 static void nb7vpq904m_dev_aux_set(struct nb7vpq904m_redriver *redriver)
@@ -477,18 +441,6 @@ static int nb7vpq904m_get_orientation(struct usb_redriver *r)
 	return gpio_get_value(redriver->orientation_gpio);
 }
 
-static inline void orientation_set(struct nb7vpq904m_redriver *redriver, int ort)
-{
-	redriver->typec_orientation = ort;
-
-	if (redriver->lane_channel_swap) {
-		if (redriver->typec_orientation == ORIENTATION_CC1)
-			redriver->typec_orientation = ORIENTATION_CC2;
-		else
-			redriver->typec_orientation = ORIENTATION_CC1;
-	}
-}
-
 static int nb7vpq904m_notify_connect(struct usb_redriver *r, int ort)
 {
 	struct nb7vpq904m_redriver *redriver =
@@ -499,12 +451,16 @@ static int nb7vpq904m_notify_connect(struct usb_redriver *r, int ort)
 		ort == ORIENTATION_CC1 ? "CC1" : "CC2",
 		redriver->lane_channel_swap);
 
-	nb7vpq904m_vdd_enable(redriver, true);
-
 	if (redriver->op_mode == OP_MODE_NONE)
 		redriver->op_mode = OP_MODE_USB;
 
-	orientation_set(redriver, ort);
+	redriver->typec_orientation = ort;
+	if (redriver->lane_channel_swap) {
+		if (redriver->typec_orientation == ORIENTATION_CC1)
+			redriver->typec_orientation = ORIENTATION_CC2;
+		else
+			redriver->typec_orientation = ORIENTATION_CC1;
+	}
 
 	nb7vpq904m_gen_dev_set(redriver);
 	nb7vpq904m_channel_update(redriver);
@@ -516,7 +472,6 @@ static int nb7vpq904m_notify_disconnect(struct usb_redriver *r)
 {
 	struct nb7vpq904m_redriver *redriver =
 		container_of(r, struct nb7vpq904m_redriver, r);
-	int ret;
 
 	dev_dbg(redriver->dev, "%s: mode %s\n", __func__,
 		OPMODESTR(redriver->op_mode));
@@ -525,12 +480,9 @@ static int nb7vpq904m_notify_disconnect(struct usb_redriver *r)
 		return 0;
 
 	redriver->op_mode = OP_MODE_NONE;
-	ret = nb7vpq904m_reg_set(redriver, GEN_DEV_SET_REG, 0);
+	nb7vpq904m_reg_set(redriver, GEN_DEV_SET_REG, 0);
 
-	if (!ret)
-		nb7vpq904m_vdd_enable(redriver, false);
-
-	return ret;
+	return 0;
 }
 
 static int nb7vpq904m_release_usb_lanes(struct usb_redriver *r, int ort, int num)
@@ -542,15 +494,19 @@ static int nb7vpq904m_release_usb_lanes(struct usb_redriver *r, int ort, int num
 		OPMODESTR(redriver->op_mode), ort == ORIENTATION_CC1 ? "CC1" : "CC2",
 		redriver->lane_channel_swap, num);
 
-	if (num == LANES_DP)
+	if (num == 4)
 		redriver->op_mode = OP_MODE_DP;
-	else if (num == LANES_DP_AND_USB)
+	else if (num == 2)
 		redriver->op_mode = OP_MODE_USB_AND_DP;
 
-	nb7vpq904m_vdd_enable(redriver, true);
-
 	/* in case it need aux function from redriver and the first call is release lane */
-	orientation_set(redriver, ort);
+	redriver->typec_orientation = ort;
+	if (redriver->lane_channel_swap) {
+		if (redriver->typec_orientation == ORIENTATION_CC1)
+			redriver->typec_orientation = ORIENTATION_CC2;
+		else
+			redriver->typec_orientation = ORIENTATION_CC1;
+	}
 
 	nb7vpq904m_gen_dev_set(redriver);
 
@@ -590,12 +546,8 @@ static int nb7vpq904m_gadget_pullup_enter(struct usb_redriver *r, int is_on)
 		return 0;
 
 	while (redriver->work_ongoing) {
-		/*
-		 * this function can work in atomic context, no sleep function here,
-		 * it need wait pull down complete before pull up again.
-		 */
 		udelay(1);
-		if (time++ > PULLUP_WORKER_DELAY_US) {
+		if (time++ > 500000) {
 			dev_warn(redriver->dev, "pullup timeout\n");
 			break;
 		}
@@ -633,7 +585,6 @@ static void nb7vpq904m_host_work(struct work_struct *w)
 	u8 val = redriver->gen_dev_val;
 
 	nb7vpq904m_reg_set(redriver, GEN_DEV_SET_REG, val & ~CHIP_EN);
-	/* sleep for a while to make sure xhci host detect device disconnect */
 	usleep_range(2000, 2500);
 	nb7vpq904m_reg_set(redriver, GEN_DEV_SET_REG, val);
 }
@@ -716,14 +667,6 @@ static int nb7vpq904m_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	redriver->vdd = devm_regulator_get_optional(&client->dev, "vdd");
-	if (IS_ERR(redriver->vdd)) {
-		ret = PTR_ERR(redriver->vdd);
-		redriver->vdd = NULL;
-		if (ret != -ENODEV)
-			dev_err(&client->dev, "Failed to get vdd regulator %d\n", ret);
-	}
-
 	INIT_WORK(&redriver->pullup_work, nb7vpq904m_gadget_pullup_work);
 	INIT_WORK(&redriver->host_work, nb7vpq904m_host_work);
 
@@ -732,16 +675,7 @@ static int nb7vpq904m_probe(struct i2c_client *client,
 
 	/* disable it at start, one i2c register write time is acceptable */
 	redriver->op_mode = OP_MODE_NONE;
-	nb7vpq904m_vdd_enable(redriver, true);
-	ret = nb7vpq904m_gen_dev_set(redriver);
-	/* when private vdd present and change to none mode, it can simply disable vdd regulator,
-	 * but to keep things simple and avoid if/else operation, keep one same rule as,
-	 * allow original register write operation then control vdd regulator.
-	 * also it will keep consistent behavior if it still need vdd control when multiple
-	 * clients share the same vdd regulator.
-	 */
-	if (!ret)
-		nb7vpq904m_vdd_enable(redriver, false);
+	nb7vpq904m_gen_dev_set(redriver);
 
 	nb7vpq904m_orientation_gpio_init(redriver);
 
@@ -770,9 +704,6 @@ static int nb7vpq904m_remove(struct i2c_client *client)
 	debugfs_remove_recursive(redriver->debug_root);
 	redriver->work_ongoing = false;
 	destroy_workqueue(redriver->pullup_wq);
-
-	if (redriver->vdd)
-		regulator_disable(redriver->vdd);
 
 	return 0;
 }
@@ -1119,8 +1050,8 @@ static void nb7vpq904m_shutdown(struct i2c_client *client)
 }
 
 static const struct of_device_id nb7vpq904m_match_table[] = {
-	{ .compatible = "onnn,redriver" },
-	{ }
+	{ .compatible = "onnn,redriver",},
+	{ },
 };
 
 static struct i2c_driver nb7vpq904m_driver = {
@@ -1137,5 +1068,5 @@ static struct i2c_driver nb7vpq904m_driver = {
 
 module_i2c_driver(nb7vpq904m_driver);
 
-MODULE_DESCRIPTION("USB Super Speed Linear Re-Driver");
+MODULE_DESCRIPTION("USB Super Speed Linear Re-Driver Driver");
 MODULE_LICENSE("GPL v2");

@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-09-07",
+  "status": "candidate_pins_not_a_validated_release_manifest",
+  "branch": "android-msm-p11-5.15-tm-wear-kr3-dr-p11-qpr3-release",
+  "base_url": "https://android.googlesource.com/",
+  "local_source_reference": "cd3f531d2230a22812f6c3f0ffe0148928d70d03",
+  "verification": "Each revision resolved with git ls-remote for the exact branch; only the Qualcomm core has subsequently been fetched, at depth one without checkout.",
+  "repositories": [
+    {
+      "name": "kernel/msm",
+      "revision": "603278d412c33acb62666bf8e09ccfc0b8732165",
+      "role": "Qualcomm core",
+      "inspection": "5.15.149; locally available at refs/port/waipio-5.15-base; source delta applied in place with retained Marble/Cape files and reviewed adapters"
+    },
+    {
+      "name": "kernel/common",
+      "revision": "6675208808ecf871ffa5d6d97eff6b21407ad93e",
+      "role": "Android Common candidate for mixed build",
+      "inspection": "5.15.149; build.config.constants specifies android13-5.15 and r450784e; KMI compatibility not validated"
+    },
+    {
+      "name": "kernel/build",
+      "revision": "c881fa3f9da3433cb694c300b9e61781a924d8f7",
+      "role": "Build infrastructure",
+      "inspection": "Branch revision only; execution and host compatibility not validated"
+    },
+    {
+      "name": "platform/prebuilts/clang/host/linux-x86",
+      "revision": "9f759dee5cdc5f85d076c642a192f6a9232f7058",
+      "role": "Reference compiler",
+      "inspection": "clang-r450784e directory exists; host is aarch64, so native toolchain strategy remains unresolved"
+    },
+    {
+      "name": "kernel/msm-extra/devicetree",
+      "revision": "f0293ca3d5547cd4bf539c7800845139fa67fa79",
+      "role": "Platform DT",
+      "inspection": "qcom directory contains Waipio but no Cape/Ukee-named files; waipiop.dtsi has MSM ID 482, not Ukee 591"
+    },
+    {
+      "name": "kernel/msm-modules/graphics",
+      "revision": "c19409a1d5f8fbadd01e49a94941cc72bf228082",
+      "role": "External KGSL",
+      "inspection": "adreno-gpulist.h contains and registers qcom,adreno-gpu-gen7-4-0; full firmware/userspace compatibility not validated"
+    },
+    {
+      "name": "kernel/msm-extra/graphics-devicetree",
+      "revision": "b8c849e838ca1ce51342ececd79dc8e8dc46611b",
+      "role": "Graphics DT candidate",
+      "inspection": "Root listing inspected; full platform coverage not established"
+    },
+    {
+      "name": "kernel/msm-extra/video-driver",
+      "revision": "85e9602320ab8f3df05aeda7c18efbabc41911b0",
+      "role": "Video driver",
+      "inspection": "Branch-relative source previously verified to handle Ukee in Waipio platform initialization"
+    },
+    {
+      "name": "kernel/msm-extra/video-devicetree",
+      "revision": "637dfb88d5ce53923df3c543ead53644c8c10255",
+      "role": "Video DT",
+      "inspection": "Branch-relative ukee-vidc.dts previously verified; not a complete Ukee platform DT"
+    },
+    {
+      "name": "kernel/msm-modules/wlan-platform",
+      "revision": "20d0c94142ead2cfd83fb808ff6bd198ee52de5d",
+      "role": "WLAN platform",
+      "inspection": "Branch revision only; qcacld/fw-api/host-cmn dependency set still to resolve"
+    },
+    {
+      "name": "kernel/msm-extra/display-drivers",
+      "revision": "83b809f0ee38968ddd514b61dc65294be54f66eb",
+      "role": "Display candidate",
+      "inspection": "Branch revision only"
+    },
+    {
+      "name": "kernel/msm-extra",
+      "revision": "d87ecf945e34134362634799aeefd83b7259a27a",
+      "role": "Audio candidate; role identified by related EOS manifest",
+      "inspection": "Branch revision only"
+    },
+    {
+      "name": "kernel/msm-modules/mmrm",
+      "revision": "a197b8fe755b0e5521ee8aad6e405f8841ae06be",
+      "role": "Multimedia resource manager candidate",
+      "inspection": "Branch revision only"
+    },
+    {
+      "name": "kernel/msm-modules/securemsm",
+      "revision": "dcea3cb53d2e4950ae7afe99afc8754077f7453f",
+      "role": "Secure interfaces candidate",
+      "inspection": "Branch revision only"
+    }
+  ],
+  "manifest_discovery": {
+    "exact_p11_branch_in_kernel_manifest": false,
+    "p11_named_heads_in_kernel_manifest_or_superproject": false,
+    "scope": "Public heads returned by git ls-remote; tags and other release repositories not exhaustively searched",
+    "reference_only": {
+      "name": "kernel/manifest",
+      "revision": "958c54560112ac3c67c12c5af30e0c94b9c565b2",
+      "branch": "android-msm-eos-5.15-tm-wear-kr3-dr-eos",
+      "file": "default.xml",
+      "use": "Repository naming/layout reference only; Monaco/EOS device build, not a P11 or Marble release lock"
+    }
+  },
+  "core_acquisition": {
+    "status": "complete_without_checkout",
+    "local_ref": "refs/port/waipio-5.15-base",
+    "revision": "603278d412c33acb62666bf8e09ccfc0b8732165",
+    "depth": 1,
+    "shallow_boundary": "603278d412c33acb62666bf8e09ccfc0b8732165",
+    "note": "Only the target commit is a shallow boundary. Existing branch tips are unchanged; target ancestry is not available for merge-base decisions.",
+    "storage": "Reported packed Git size increased from 2.77 GiB to 2.98 GiB; filesystem still reports 29 GiB free.",
+    "limits": "Serial low-priority fetch, two pack threads, no automatic maintenance, no tags, no FETCH_HEAD write, 4 GiB per-file ulimit (not an aggregate quota).",
+    "command": "ulimit -f 4194304 && exec nice -n 10 ionice -c 2 -n 7 git -c pack.threads=2 -c gc.auto=0 fetch --no-auto-maintenance --no-tags --depth=1 --no-write-fetch-head https://android.googlesource.com/kernel/msm 603278d412c33acb62666bf8e09ccfc0b8732165:refs/port/waipio-5.15-base"
+  },
+  "target_tree_inventory": {
+    "method": "git ls-tree metadata comparison, not a semantic diff or disk-allocation estimate",
+    "target_files": 71028,
+    "target_blob_bytes": 1111825061,
+    "baseline_files": 82470,
+    "same_path_same_blob": 38791,
+    "same_path_changed_blob": 26723,
+    "baseline_only_paths": 16956,
+    "target_only_paths": 5514
+  },
+  "initial_build_strategy": {
+    "choice": "single Qualcomm downstream core plus modules rebuilt with the same native toolchain",
+    "status": "configured_and_26_native_module_prelinks_passed",
+    "evidence": "Target Makefile has a normal vmlinux/modules path when KBUILD_MIXED_TREE is unset; gki_defconfig enables MODVERSIONS.",
+    "reason": "Avoid a second Common source/output tree and mixed prebuilt KMI dependencies during initial bringup.",
+    "constraints": "Preserve required userspace/firmware interfaces; no GKI certification or stock binary-module compatibility claim; external-module symbol/config requirements still need validation."
+  },
+  "native_toolchain": {
+    "candidate": "Ubuntu LLVM/Clang/LLD 18.1.3, native aarch64 packages already installed",
+    "reference_equivalence_claimed": false,
+    "target_llvm_suffix_selection_supported": false,
+    "selection_evidence": "Target Makefile:451-480 treats any nonempty LLVM value as unversioned tool selection; use explicit command-line assignments, not LLVM=-18.",
+    "make_assignments": [
+      "ARCH=arm64", "LLVM=1", "LLVM_IAS=1",
+      "CC=clang-18", "HOSTCC=clang-18", "HOSTCXX=clang++-18",
+      "LD=ld.lld-18", "AR=llvm-ar-18", "NM=llvm-nm-18",
+      "OBJCOPY=llvm-objcopy-18", "OBJDUMP=llvm-objdump-18",
+      "READELF=llvm-readelf-18", "STRIP=llvm-strip-18"
+    ],
+    "smoke_test": {
+      "result": "passed_llvm_ir_generation_only",
+      "source": "int call_indirect(int (*fn)(int), int value) { return fn(value); }",
+      "flags": [
+        "--target=aarch64-linux-gnu", "-O2", "-ffreestanding", "-fno-builtin",
+        "-flto=thin", "-fsplit-lto-unit", "-fvisibility=default",
+        "-fsanitize=cfi", "-fsanitize-cfi-cross-dso",
+        "-fno-sanitize-cfi-canonical-jump-tables", "-fno-sanitize-trap=cfi",
+        "-fno-sanitize-blacklist", "-S", "-emit-llvm", "-x", "c", "-", "-o", "-"
+      ],
+      "observed_ir": ["llvm.type.test", "__cfi_slowpath_diag", "Cross-DSO CFI", "EnableSplitLTOUnit"],
+      "limit": "Not kernel compilation/linking, module ABI or runtime CFI validation; no KCFI substitution or CFI disabling approved."
+    }
+  },
+  "baseline_module_dependencies": {
+    "artifact_directory": "../Bouquet_marble_release/vendor_boot_modules",
+    "method": "Read existing modinfo metadata recursively; module names normalized from hyphens to underscores; no module loading or archive extraction.",
+    "vermagic": "5.10.258-Bouquet-v4.9 SMP preempt mod_unload modversions aarch64",
+    "seeds": ["ufs_qcom", "phy_qcom_ufs_qmp_v4_cape", "pinctrl_cape", "arm_smmu", "bcl_pmic5", "bcl_soc", "qcom_tsens"],
+    "hard_closure_count": 25,
+    "unresolved_hard_dependencies": [],
+    "hard_dependencies": {
+      "arm_smmu": ["qcom_scm", "qcom_iommu_util", "iommu_logger", "secure_buffer"],
+      "bcl_pmic5": ["qcom_ipc_logging"],
+      "bcl_soc": [],
+      "clk_qcom": ["gdsc_regulator"],
+      "crypto_qti_common": ["qcom_scm", "crypto_qti_hwkm"],
+      "crypto_qti_hwkm": ["qcom_scm", "hwkm"],
+      "debug_regulator": [],
+      "gdsc_regulator": ["debug_regulator", "proxy_consumer"],
+      "hwkm": ["tmecom_intf"],
+      "iommu_logger": [],
+      "minidump": ["smem"],
+      "phy_qcom_ufs": [],
+      "phy_qcom_ufs_qmp_v4_cape": ["phy_qcom_ufs"],
+      "pinctrl_cape": ["pinctrl_msm"],
+      "pinctrl_msm": ["qcom_scm"],
+      "proxy_consumer": [],
+      "qcom_iommu_util": [],
+      "qcom_ipc_logging": ["minidump"],
+      "qcom_scm": [],
+      "qcom_tsens": ["qcom_ipc_logging"],
+      "secure_buffer": ["qcom_scm"],
+      "smem": [],
+      "tmecom_intf": [],
+      "ufs_qcom": ["qcom_scm", "crypto_qti_common", "phy_qcom_ufs", "clk_qcom", "qcom_ipc_logging", "ufshcd_crypto_qti"],
+      "ufshcd_crypto_qti": ["crypto_qti_common"]
+    },
+    "observed_softdeps": {
+      "pinctrl_cape": ["pre: qcom_tlmm_vm_irqchip"],
+      "pinctrl_msm": ["pre: qcom-pdc"],
+      "smem": ["pre: qcom_hwspinlock"]
+    },
+    "limits": "Existing 5.10 artifact evidence only. Softdeps not traversed; built-ins and DT/probe suppliers are not captured by hard module depends. Not a complete boot list or 5.15 dependency graph."
+  },
+  "cape_comparison": {
+    "local_revision": "cd3f531d2230a22812f6c3f0ffe0148928d70d03",
+    "target_revision": "603278d412c33acb62666bf8e09ccfc0b8732165",
+    "gpio_groups_compared": 210,
+    "changed_gpio_groups": [98],
+    "gpio98_difference": "Cape has pll_clk in the third alternate-function slot; target Waipio has NA. Cape pll_clk_groups also includes gpio98.",
+    "pdc_map_equal_ignoring_whitespace": true,
+    "qup_map_equal_ignoring_whitespace": true,
+    "phy_c_equal_after_identity_normalization": true,
+    "phy_headers_interchangeable": false,
+    "phy_register_map": {
+      "cape_phy_base": "0x400",
+      "waipio_phy_base": "0xC00",
+      "cape_rx_clock_edge_bit": 6,
+      "waipio_rx_clock_edge_bit": 5
+    },
+    "review_constraints": [
+      "Retain Cape PHY calibration and register offsets; do not alias the Cape binding to Waipio data.",
+      "Keep target PHY common header/core together; validate supply handling and Cape host submode stays within NON_G4/G4.",
+      "Target G5 submode value 2 would be treated as G4 by the existing boolean Cape driver; no G5 enablement.",
+      "Cape non-VM pinctrl needs a wrapper without the absent VM GPIO trace-hook dependency; do not advertise unimplemented VM behavior.",
+      "Target pinctrl dereferences dir_conn for extra platform IRQs. Cape base DT has one IRQ, but the final composed target DT must retain that contract."
+    ],
+    "sha256": {
+      "cape_pinctrl_header": "7bd55d53c148056cbcdc1f4a65d671f5ad4e458366c527cef568f6411a273297",
+      "target_waipio_pinctrl_header": "d5032eeae048042d0d206eae5ec2c479cab45706033f95a8aec9bc58fb75dd44",
+      "cape_phy_c": "48189ae5abb8bff146fae9b44e6ffc8a714aedee7a16e97d34056e2f062c48ef",
+      "target_waipio_phy_c": "cb8105d8002bff3bd867df85c637fef6c2f80c5fd9fb6a19e62d1765c9d8acdd"
+    }
+  },
+  "board_include_closure": {
+    "tool": "python3 -B tools/port_515_dt_inventory.py",
+    "method": "Lexical recursive literal includes and tracked symlink targets from frozen Git source; includes conditional branches, not preprocessed or compiled DT.",
+    "roots": [
+      "arch/arm64/boot/dts/vendor/qcom/ukee.dts",
+      "arch/arm64/boot/dts/vendor/qcom/marble-sm7475-pm8008-overlay.dts"
+    ],
+    "file_count": 69,
+    "symlink_count": 2,
+    "source_bytes": 661631,
+    "unresolved_literal_includes": [],
+    "gear_limit_properties_found": false,
+    "note": "Initial 67-entry scan did not follow two Git symlinks; corrected inventory includes their target headers. No literal gear-limit assignments matched the initial DT scan; target host defaults and composed DT still need validation."
+  },
+  "target_boot_module_sources": {
+    "scope": "Makefile/Kconfig mappings for the 25-module baseline hard closure; not a generated 5.15 dependency graph",
+    "present_count": 23,
+    "retained_adapter_count": 2,
+    "modules": {
+      "arm_smmu": {"directory": "drivers/iommu/arm/arm-smmu", "object": "arm_smmu.o", "config": "ARM_SMMU"},
+      "bcl_pmic5": {"directory": "drivers/thermal/qcom", "object": "bcl_pmic5.o", "config": "QTI_BCL_PMIC5"},
+      "bcl_soc": {"directory": "drivers/thermal/qcom", "object": "bcl_soc.o", "config": "QTI_BCL_SOC_DRIVER"},
+      "clk_qcom": {"directory": "drivers/clk/qcom", "object": "clk-qcom.o", "config": "COMMON_CLK_QCOM"},
+      "crypto_qti_common": {"directory": "drivers/soc/qcom", "object": "crypto-qti-common.o", "config": "QTI_CRYPTO_COMMON"},
+      "crypto_qti_hwkm": {"directory": "drivers/soc/qcom", "object": "crypto-qti-hwkm.o", "config": "QTI_HW_KEY_MANAGER"},
+      "debug_regulator": {"directory": "drivers/regulator", "object": "debug-regulator.o", "config": "REGULATOR_DEBUG_CONTROL"},
+      "gdsc_regulator": {"directory": "drivers/clk/qcom", "object": "gdsc-regulator.o", "config": "QCOM_GDSC_REGULATOR"},
+      "hwkm": {"directory": "drivers/soc/qcom", "object": "hwkm.o", "config": "QTI_HW_KEY_MANAGER"},
+      "iommu_logger": {"directory": "drivers/iommu", "object": "iommu-logger.o", "config": "QTI_IOMMU_SUPPORT"},
+      "minidump": {"directory": "drivers/soc/qcom", "object": "minidump.o", "config": "QCOM_MINIDUMP"},
+      "phy_qcom_ufs": {"directory": "drivers/phy/qualcomm", "object": "phy-qcom-ufs.o", "config": "PHY_QCOM_UFS"},
+      "phy_qcom_ufs_qmp_v4_cape": {"directory": "drivers/phy/qualcomm", "object": "phy-qcom-ufs-qmp-v4-cape.o", "config": "PHY_QCOM_UFS_V4", "requires_retained_adapter": true},
+      "pinctrl_cape": {"directory": "drivers/pinctrl/qcom", "object": "pinctrl-cape.o", "config": "PINCTRL_CAPE", "requires_retained_adapter": true},
+      "pinctrl_msm": {"directory": "drivers/pinctrl/qcom", "object": "pinctrl-msm.o", "config": "PINCTRL_MSM"},
+      "proxy_consumer": {"directory": "drivers/regulator", "object": "proxy-consumer.o", "config": "REGULATOR_PROXY_CONSUMER"},
+      "qcom_iommu_util": {"directory": "drivers/iommu", "object": "qcom_iommu_util.o", "config": "QCOM_IOMMU_UTIL"},
+      "qcom_ipc_logging": {"directory": "kernel/trace", "object": "qcom_ipc_logging.o", "config": "IPC_LOGGING"},
+      "qcom_scm": {"directory": "drivers/firmware", "object": "qcom-scm.o", "config": "QCOM_SCM"},
+      "qcom_tsens": {"directory": "drivers/thermal/qcom", "object": "qcom_tsens.o", "config": "QCOM_TSENS"},
+      "secure_buffer": {"directory": "drivers/soc/qcom", "object": "secure_buffer.o", "config": "QCOM_SECURE_BUFFER"},
+      "smem": {"directory": "drivers/soc/qcom", "object": "smem.o", "config": "QCOM_SMEM"},
+      "tmecom_intf": {"directory": "drivers/soc/qcom/tmecom", "object": "tmecom-intf.o", "config": "MSM_TMECOM_QMP"},
+      "ufs_qcom": {"directory": "drivers/scsi/ufs", "object": "ufs_qcom.o", "config": "SCSI_UFS_QCOM"},
+      "ufshcd_crypto_qti": {"directory": "drivers/scsi/ufs", "object": "ufshcd-crypto-qti.o", "config": "SCSI_UFS_CRYPTO_QTI"}
+    },
+    "not_explicit_in_reference_configs": [
+      "QTI_BCL_PMIC5", "QTI_BCL_SOC_DRIVER", "QCOM_TSENS", "IPC_LOGGING",
+      "SCSI_UFS_CRYPTO_QTI", "QTI_CRYPTO_COMMON", "QTI_HW_KEY_MANAGER", "MSM_TMECOM_QMP"
+    ],
+    "additional_dependencies_to_request": ["POWER_SUPPLY", "NVMEM", "QCOM_QFPROM", "DEBUG_FS"],
+    "reference_configs": ["arch/arm64/configs/gki_defconfig", "arch/arm64/configs/vendor/waipio_GKI.config"]
+  },
+  "dt_transition_policy": {
+    "retain_absent_board_files": 35,
+    "identical_shared_entries": 20,
+    "different_shared_headers": 14,
+    "shared_headers": "Use target definitions; do not overwrite target drivers' numeric binding namespace with 5.10 headers.",
+    "used_definition_changes": {
+      "RPMH_IPA_CLK": {"baseline": 22, "target": 12},
+      "QMI_SDR0_PA": {"baseline": 64, "target": 72},
+      "QMI_SDR1_PA": {"baseline": 65, "target": 73}
+    },
+    "required_gpucc_extension": {
+      "macro": "GPUCC_GPU_CC_FREQUENCY_LIMITER_IRQ_CLEAR",
+      "id": 8,
+      "register": "0x9538",
+      "bit": 0,
+      "source": "Frozen Bouquet header and gpucc-waipio.c reset entry",
+      "review": "Source applicability reviewed; target window and reset table support index 8. Target generic reset code lacks baseline write readback, so runtime IRQ-clear timing remains unvalidated."
+    }
+  },
+  "source_transition": {
+    "status": "applied_in_place",
+    "checkpoint_policy": "Commit validated source batches from this checkpoint onward; exclude generated outputs, logs, downloaded toolchains and leftover tool binaries.",
+    "tool": "python3 -B tools/port_515_transition.py --apply",
+    "baseline": "cd3f531d2230a22812f6c3f0ffe0148928d70d03",
+    "target": "603278d412c33acb62666bf8e09ccfc0b8732165",
+    "retained_board_files": 35,
+    "retained_driver_files": 4,
+    "preserved_workflow_paths": [".gitignore", "build_bouquet.sh", "package_bouquet.sh", "consolidation"],
+    "method": "Streamed Git-generated source delta, excluding the retained set; git apply --check passed before application. No saved patch, archive or duplicate checkout.",
+    "branch_tips_changed": false,
+    "index_changed": false,
+    "legacy_workflow_guards": "Both old scripts now reject non-5.10 source before creating outputs. Negative tests passed on the new 5.15 source.",
+    "cape_hardware_headers": "Both retained pin tables and PHY calibration/register header match their frozen baseline Git blob IDs exactly.",
+    "adapters": [
+      "Physical Cape pinctrl Kconfig/object, no unsupported VM binding/hook, negative IRQ count propagated and exactly one IRQ required",
+      "Cape PHY object added to V4 build; reject non-NON_G4/G4 submodes before calibration reset writes",
+      "GPUCC frequency-limiter reset ID8 and matching 0x9538 bit0 entry retained from baseline"
+    ]
+  },
+  "compile_probe": {
+    "status": "26_boot_module_object_and_native_prelink_probes_passed",
+    "command": "nice -n 10 ionice -c 2 -n 7 bash tools/port_515_prepare.sh",
+    "output": "out-5.15-probe",
+    "initial_log": "consolidation/scratch/port-515-prepare-first.log",
+    "dt_log": "consolidation/scratch/port-515-prepare-dt.log",
+    "boot_link_log": "consolidation/scratch/port-515-bootlinks-retry.log",
+    "kernel_release": "5.15.149-marble-5.15-probe+",
+    "baseline_output_release_unchanged": "5.10.258-Bouquet-v4.9",
+    "workers": 2,
+    "budget": "2 GiB output budget checked after probe; at least 20 GiB free required before start; 1 GiB per-file limit; not a full-build allocation.",
+    "initial_output_kib": 24536,
+    "output_with_dt_kib": 25404,
+    "output_with_boot_prelinks_kib": 64476,
+    "output_after_warning_comparison_kib": 64512,
+    "config_fragment": "arch/arm64/configs/vendor/marble_515_bringup.config",
+    "config_gates": "All 25 mapped module gates enabled as m/y after Kconfig; CFI and SCS=y; CFI permissive disabled; target GKI FullLTO retained.",
+    "initial_objects": [
+      "drivers/pinctrl/qcom/pinctrl-cape.o",
+      "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4-cape.o",
+      "drivers/clk/qcom/gpucc-waipio.o"
+    ],
+    "object_format": "C .o files are LLVM bitcode and composite .o files are thin archives under FullLTO; the new .lto.o prelinks are native ELF. None are final loadable modules.",
+    "boot_prelinks": {
+      "report": "out-5.15-probe/boot-link-report.json",
+      "count": 26,
+      "scope": "The 25 mapped boot-dependency modules plus GPUCC",
+      "target_rule": "Kbuild per-module .lto.o prelink from scripts/Makefile.build:290-308",
+      "format": "Verified ELF64 little-endian AArch64 ET_REL for every result",
+      "total_bytes": 20049008,
+      "unique_undefined_symbols": 696,
+      "native_cfi_check_entrypoints_verified": 26,
+      "concurrency": "Object compilation -j2; per-module prelinks serial with -j1 and target-specific --threads=1",
+      "security": "FullLTO, legacy CFI and SCS retained; no diagnostic suppression or CFI bypass",
+      "compiler_fix": "drivers/soc/qcom/minidump_log.c:119 now declares static int md_align_offset, matching its previous implicit-int semantics",
+      "limits": "Native module-sized relocatable links permit unresolved imports. Counts are not missing-module counts. Global exports/CRCs, modpost, final .ko metadata, BTF and runtime behavior remain unvalidated."
+    },
+    "diagnostic_dt": {
+      "directory": "out-5.15-probe/dt-probe",
+      "composed": "marble-composed.dtb",
+      "msm_id_hex": ["24f", "10000"],
+      "msm_id_decimal": 591,
+      "tlmm_path": "/soc/pinctrl@f000000",
+      "tlmm_compatible": "qcom,cape-pinctrl",
+      "tlmm_interrupt_cells_hex": ["0", "d0", "4"],
+      "warning_lines": 139,
+      "warning_status": "All 139 warning messages reproduce on frozen baseline with the same compiler/DTC; no added or removed warning messages. Inherited does not mean harmless or schema-clean.",
+      "baseline_comparison": {
+        "tool": "python3 -B tools/port_515_dt_compare.py",
+        "report": "out-5.15-probe/dt-warning-comparison.json",
+        "log": "consolidation/scratch/port-515-dt-warning-comparison-retry.log",
+        "baseline_revision": "cd3f531d2230a22812f6c3f0ffe0148928d70d03",
+        "method": "Frozen Git blobs in anonymous memfds, LLVM VFS with fallthrough disabled, identical clang-18/DTC flags. No persistent baseline source copy.",
+        "normalization": "Warning category and message multiset; location prefixes excluded",
+        "baseline_warning_count": 139,
+        "current_warning_count": 139,
+        "added": 0,
+        "removed": 0,
+        "current_dtb_hashes_match_existing_probe": true,
+        "baseline_ukee_dtb_differs_from_current": true,
+        "baseline_board_overlay_matches_current": true
+      }
+    },
+    "limits": "Native per-module prelinks passed, but no full vmlinux link, loadable-module final link/modpost, boot Image, package or hardware test. Pahole was not found in PATH; full BTF generation remains untested. Diagnostic DTs are not flash artifacts."
+  },
+  "integration_gate_open": true,
+  "integration_gate_scope": "Initial source transition and bounded compile/DT probes only",
+  "boot_gate_open": false,
+  "packaging_gate_open": false,
+  "unresolved": [
+    "Release-level coherence and KMI/symbol dependencies across candidate repositories",
+    "Complete Marble peripheral/techpack DT and driver adaptation beyond the retained base/board set",
+    "Cape pinctrl runtime probe and IRQ behavior; source adapter and object compile passed",
+    "Cape UFS host submode, supplies and calibration behavior on hardware; source adapter and object compile passed",
+    "Complete early-boot module dependency closure and source provenance",
+    "Validate native LLVM18 full kernel/module linking, BTF generation and runtime legacy CFI",
+    "Storage budget for remaining external sources and target build outputs; core-only acquisition completed",
+    "Firmware, installed userspace and remaining multimedia/peripheral compatibility"
+  ]
+}

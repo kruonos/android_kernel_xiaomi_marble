@@ -17,16 +17,6 @@
 
 static DEFINE_MUTEX(qcom_scm_lock);
 
-
-/**
- * struct arm_smccc_args
- * @args:	The array of values used in registers in smc instruction
- */
-struct arm_smccc_args {
-	unsigned long args[8];
-};
-
-
 /**
  * struct scm_legacy_command - one SCM command buffer
  * @len: total available memory for command and response
@@ -118,7 +108,7 @@ static void __scm_legacy_do(const struct arm_smccc_args *smc,
 }
 
 /**
- * qcom_scm_call() - Sends a command to the SCM and waits for the command to
+ * scm_legacy_call() - Sends a command to the SCM and waits for the command to
  * finish processing.
  *
  * A note on cache maintenance:
@@ -145,9 +135,6 @@ int scm_legacy_call(struct device *dev, const struct qcom_scm_desc *desc,
 	__le32 *arg_buf;
 	const __le32 *res_buf;
 
-	if (!dev)
-		return -EPROBE_DEFER;
-
 	cmd = kzalloc(PAGE_ALIGN(alloc_len), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
@@ -162,6 +149,9 @@ int scm_legacy_call(struct device *dev, const struct qcom_scm_desc *desc,
 		arg_buf[i] = cpu_to_le32(desc->args[i]);
 
 	rsp = scm_legacy_command_to_response(cmd);
+
+	if (!dev)
+		return -EPROBE_DEFER;
 
 	cmd_phys = dma_map_single(dev, cmd, alloc_len, DMA_TO_DEVICE);
 	if (dma_mapping_error(dev, cmd_phys)) {
@@ -212,7 +202,7 @@ out:
 				(n & 0xf))
 
 /**
- * qcom_scm_call_atomic() - Send an atomic SCM command with up to 5 arguments
+ * scm_legacy_call_atomic() - Send an atomic SCM command with up to 5 arguments
  * and 3 return values
  * @desc: SCM call descriptor containing arguments
  * @res:  SCM call return values

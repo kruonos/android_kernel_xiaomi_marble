@@ -9,7 +9,7 @@
 
 enum HCLGE_MBX_OPCODE {
 	HCLGE_MBX_RESET = 0x01,		/* (VF -> PF) assert reset */
-	HCLGE_MBX_ASSERTING_RESET,	/* (PF -> VF) PF is asserting reset*/
+	HCLGE_MBX_ASSERTING_RESET,	/* (PF -> VF) PF is asserting reset */
 	HCLGE_MBX_SET_UNICAST,		/* (VF -> PF) set UC addr */
 	HCLGE_MBX_SET_MULTICAST,	/* (VF -> PF) set MC addr */
 	HCLGE_MBX_SET_VLAN,		/* (VF -> PF) set VLAN */
@@ -20,7 +20,7 @@ enum HCLGE_MBX_OPCODE {
 	HCLGE_MBX_API_NEGOTIATE,	/* (VF -> PF) negotiate API version */
 	HCLGE_MBX_GET_QINFO,		/* (VF -> PF) get queue config */
 	HCLGE_MBX_GET_QDEPTH,		/* (VF -> PF) get queue depth */
-	HCLGE_MBX_GET_TCINFO,		/* (VF -> PF) get TC config */
+	HCLGE_MBX_GET_BASIC_INFO,	/* (VF -> PF) get basic info */
 	HCLGE_MBX_GET_RETA,		/* (VF -> PF) get RETA */
 	HCLGE_MBX_GET_RSS_KEY,		/* (VF -> PF) get RSS key */
 	HCLGE_MBX_GET_MAC_ADDR,		/* (VF -> PF) get MAC addr */
@@ -69,6 +69,7 @@ enum hclge_mbx_vlan_cfg_subcode {
 	HCLGE_MBX_VLAN_RX_OFF_CFG,	/* set rx side vlan offload */
 	HCLGE_MBX_PORT_BASE_VLAN_CFG,	/* set port based vlan configuration */
 	HCLGE_MBX_GET_PORT_BASE_VLAN_STATE,	/* get port based vlan state */
+	HCLGE_MBX_ENABLE_VLAN_FILTER,
 };
 
 enum hclge_mbx_tbl_cfg_subcode {
@@ -85,11 +86,19 @@ struct hclge_ring_chain_param {
 	u8 int_gl_index;
 };
 
+struct hclge_basic_info {
+	u8 hw_tc_map;
+	u8 rsv;
+	u16 mbx_api_version;
+	u32 pf_caps;
+};
+
 struct hclgevf_mbx_resp_status {
 	struct mutex mbx_mutex; /* protects against contending sync cmd resp */
 	u32 origin_mbx_msg;
 	bool received_resp;
 	int resp_status;
+	u16 match_id;
 	u8 additional_info[HCLGE_MBX_MAX_RESP_DATA_SIZE];
 };
 
@@ -110,6 +119,7 @@ struct hclge_vf_to_pf_msg {
 			u8 en_bc;
 			u8 en_uc;
 			u8 en_mc;
+			u8 en_limit_promisc;
 		};
 		struct {
 			u8 vector_id;
@@ -121,11 +131,20 @@ struct hclge_vf_to_pf_msg {
 };
 
 struct hclge_pf_to_vf_msg {
-	u16 code;
-	u16 vf_mbx_msg_code;
-	u16 vf_mbx_msg_subcode;
-	u16 resp_status;
-	u8 resp_data[HCLGE_MBX_MAX_RESP_DATA_SIZE];
+	__le16 code;
+	union {
+		/* used for mbx response */
+		struct {
+			__le16 vf_mbx_msg_code;
+			__le16 vf_mbx_msg_subcode;
+			__le16 resp_status;
+			u8 resp_data[HCLGE_MBX_MAX_RESP_DATA_SIZE];
+		};
+		/* used for general mbx */
+		struct {
+			u8 msg_data[HCLGE_MBX_MAX_MSG_SIZE];
+		};
+	};
 };
 
 struct hclge_mbx_vf_to_pf_cmd {
@@ -135,7 +154,7 @@ struct hclge_mbx_vf_to_pf_cmd {
 	u8 rsv1[1];
 	u8 msg_len;
 	u8 rsv2;
-	u16 match_id;
+	__le16 match_id;
 	struct hclge_vf_to_pf_msg msg;
 };
 
@@ -146,7 +165,7 @@ struct hclge_mbx_pf_to_vf_cmd {
 	u8 rsv[3];
 	u8 msg_len;
 	u8 rsv1;
-	u16 match_id;
+	__le16 match_id;
 	struct hclge_pf_to_vf_msg msg;
 };
 
@@ -156,6 +175,28 @@ struct hclge_vf_rst_cmd {
 	u8 rsv[22];
 };
 
+#pragma pack(1)
+struct hclge_mbx_link_status {
+	__le16 link_status;
+	__le32 speed;
+	__le16 duplex;
+	u8 flag;
+};
+
+struct hclge_mbx_link_mode {
+	__le16 idx;
+	__le64 link_mode;
+};
+
+struct hclge_mbx_port_base_vlan {
+	__le16 state;
+	__le16 vlan_proto;
+	__le16 qos;
+	__le16 vlan_tag;
+};
+
+#pragma pack()
+
 /* used by VF to store the received Async responses from PF */
 struct hclgevf_mbx_arq_ring {
 #define HCLGE_MBX_MAX_ARQ_MSG_SIZE	8
@@ -164,7 +205,7 @@ struct hclgevf_mbx_arq_ring {
 	u32 head;
 	u32 tail;
 	atomic_t count;
-	u16 msg_q[HCLGE_MBX_MAX_ARQ_MSG_NUM][HCLGE_MBX_MAX_ARQ_MSG_SIZE];
+	__le16 msg_q[HCLGE_MBX_MAX_ARQ_MSG_NUM][HCLGE_MBX_MAX_ARQ_MSG_SIZE];
 };
 
 #define hclge_mbx_ring_ptr_move_crq(crq) \
@@ -173,4 +214,7 @@ struct hclgevf_mbx_arq_ring {
 		(arq.tail = (arq.tail + 1) % HCLGE_MBX_MAX_ARQ_MSG_NUM)
 #define hclge_mbx_head_ptr_move_arq(arq) \
 		(arq.head = (arq.head + 1) % HCLGE_MBX_MAX_ARQ_MSG_NUM)
+
+/* PF immediately push link status to VFs when link status changed */
+#define HCLGE_MBX_PUSH_LINK_STATUS_EN			BIT(0)
 #endif

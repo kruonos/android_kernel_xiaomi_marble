@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2019-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
-
 #define pr_fmt(fmt) "%s: " fmt, __func__
-
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -40,7 +38,6 @@
 #define READ_BUF_MAX_SIZE 128
 #define WRITE_BUF_MAX_SIZE 128
 #define EDID_TIMEOUT_MS 2000
-
 struct lt9611uxc_reg_cfg {
 	u8 reg;
 	u8 val;
@@ -1070,7 +1067,7 @@ static int lt9611uxc_get_dt_supply(struct device *dev,
 			goto error;
 		}
 
-		strlcpy(pdata->vreg_config[i].vreg_name, st,
+		strscpy(pdata->vreg_config[i].vreg_name, st,
 				sizeof(pdata->vreg_config[i].vreg_name));
 
 		rc = of_property_read_u32(supply_node,
@@ -1570,8 +1567,7 @@ static int lt9611uxc_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_at
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
-			  MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO_BLLP |
-			  MIPI_DSI_MODE_VIDEO_EOF_BLLP;
+			  MIPI_DSI_MODE_VIDEO_HSE;
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
@@ -1780,7 +1776,7 @@ static int lt9611uxc_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	pr_err("@lt9611 lt9611uxc_probe\n");
+	pr_err("@lt9611 %s...\n", __func__);
 
 	pdata = devm_kzalloc(&client->dev,
 		sizeof(struct lt9611uxc), GFP_KERNEL);
@@ -1930,7 +1926,7 @@ MODULE_DEVICE_TABLE(of, lt9611uxc_match_table);
 
 static struct i2c_driver lt9611uxc_driver = {
 	.driver = {
-		.name = "lt9611uxc",
+		.name = "lt-lt9611uxc",
 		.of_match_table = lt9611uxc_match_table,
 	},
 	.probe = lt9611uxc_probe,

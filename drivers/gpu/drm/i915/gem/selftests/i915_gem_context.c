@@ -182,97 +182,108 @@ out_file:
 }
 
 struct parallel_switch {
-	struct task_struct *tsk;
+	struct kthread_worker *worker;
+	struct kthread_work work;
 	struct intel_context *ce[2];
+	int result;
 };
 
-static int __live_parallel_switch1(void *data)
+static void __live_parallel_switch1(struct kthread_work *work)
 {
-	struct parallel_switch *arg = data;
+	struct parallel_switch *arg =
+		container_of(work, typeof(*arg), work);
 	IGT_TIMEOUT(end_time);
 	unsigned long count;
 
 	count = 0;
+	arg->result = 0;
 	do {
 		struct i915_request *rq = NULL;
-		int err, n;
+		int n;
 
-		err = 0;
-		for (n = 0; !err && n < ARRAY_SIZE(arg->ce); n++) {
+		for (n = 0; !arg->result && n < ARRAY_SIZE(arg->ce); n++) {
 			struct i915_request *prev = rq;
 
 			rq = i915_request_create(arg->ce[n]);
 			if (IS_ERR(rq)) {
 				i915_request_put(prev);
-				return PTR_ERR(rq);
+				arg->result = PTR_ERR(rq);
+				break;
 			}
 
 			i915_request_get(rq);
 			if (prev) {
-				err = i915_request_await_dma_fence(rq, &prev->fence);
+				arg->result =
+					i915_request_await_dma_fence(rq,
+								     &prev->fence);
 				i915_request_put(prev);
 			}
 
 			i915_request_add(rq);
 		}
-		if (i915_request_wait(rq, 0, HZ / 5) < 0)
-			err = -ETIME;
+
+		if (IS_ERR_OR_NULL(rq))
+			break;
+
+		if (i915_request_wait(rq, 0, HZ) < 0)
+			arg->result = -ETIME;
+
 		i915_request_put(rq);
-		if (err)
-			return err;
 
 		count++;
-	} while (!__igt_timeout(end_time, NULL));
+	} while (!arg->result && !__igt_timeout(end_time, NULL));
 
-	pr_info("%s: %lu switches (sync)\n", arg->ce[0]->engine->name, count);
-	return 0;
+	pr_info("%s: %lu switches (sync) <%d>\n",
+		arg->ce[0]->engine->name, count, arg->result);
 }
 
-static int __live_parallel_switchN(void *data)
+static void __live_parallel_switchN(struct kthread_work *work)
 {
-	struct parallel_switch *arg = data;
+	struct parallel_switch *arg =
+		container_of(work, typeof(*arg), work);
 	struct i915_request *rq = NULL;
 	IGT_TIMEOUT(end_time);
 	unsigned long count;
 	int n;
 
 	count = 0;
+	arg->result = 0;
 	do {
-		for (n = 0; n < ARRAY_SIZE(arg->ce); n++) {
+		for (n = 0; !arg->result && n < ARRAY_SIZE(arg->ce); n++) {
 			struct i915_request *prev = rq;
-			int err = 0;
 
 			rq = i915_request_create(arg->ce[n]);
 			if (IS_ERR(rq)) {
 				i915_request_put(prev);
-				return PTR_ERR(rq);
+				arg->result = PTR_ERR(rq);
+				break;
 			}
 
 			i915_request_get(rq);
 			if (prev) {
-				err = i915_request_await_dma_fence(rq, &prev->fence);
+				arg->result =
+					i915_request_await_dma_fence(rq,
+								     &prev->fence);
 				i915_request_put(prev);
 			}
 
 			i915_request_add(rq);
-			if (err) {
-				i915_request_put(rq);
-				return err;
-			}
 		}
 
 		count++;
-	} while (!__igt_timeout(end_time, NULL));
-	i915_request_put(rq);
+	} while (!arg->result && !__igt_timeout(end_time, NULL));
 
-	pr_info("%s: %lu switches (many)\n", arg->ce[0]->engine->name, count);
-	return 0;
+	if (!IS_ERR_OR_NULL(rq))
+		i915_request_put(rq);
+
+	pr_info("%s: %lu switches (many) <%d>\n",
+		arg->ce[0]->engine->name, count, arg->result);
 }
 
 static int live_parallel_switch(void *arg)
 {
 	struct drm_i915_private *i915 = arg;
-	static int (* const func[])(void *arg) = {
+	static void (* const func[])(struct kthread_work *) = {
 		__live_parallel_switch1,
 		__live_parallel_switchN,
 		NULL,
@@ -280,7 +291,7 @@ static int live_parallel_switch(void *arg)
 	struct parallel_switch *data = NULL;
 	struct i915_gem_engines *engines;
 	struct i915_gem_engines_iter it;
-	int (* const *fn)(void *arg);
+	void (* const *fn)(struct kthread_work *);
 	struct i915_gem_context *ctx;
 	struct intel_context *ce;
 	struct file *file;
@@ -338,8 +349,10 @@ static int live_parallel_switch(void *arg)
 				continue;
 
 			ce = intel_context_create(data[m].ce[0]->engine);
-			if (IS_ERR(ce))
+			if (IS_ERR(ce)) {
+				err = PTR_ERR(ce);
 				goto out;
+			}
 
 			err = intel_context_pin(ce);
 			if (err) {
@@ -351,9 +364,24 @@ static int live_parallel_switch(void *arg)
 		}
 	}
 
+	for (n = 0; n < count; n++) {
+		struct kthread_worker *worker;
+
+		if (!data[n].ce[0])
+			continue;
+
+		worker = kthread_create_worker(0, "igt/parallel:%s",
+					       data[n].ce[0]->engine->name);
+		if (IS_ERR(worker)) {
+			err = PTR_ERR(worker);
+			goto out;
+		}
+
+		data[n].worker = worker;
+	}
+
 	for (fn = func; !err && *fn; fn++) {
 		struct igt_live_test t;
-		int n;
 
 		err = igt_live_test_begin(&t, i915, __func__, "");
 		if (err)
@@ -363,34 +391,23 @@ static int live_parallel_switch(void *arg)
 			if (!data[n].ce[0])
 				continue;
 
-			data[n].tsk = kthread_run(*fn, &data[n],
-						  "igt/parallel:%s",
-						  data[n].ce[0]->engine->name);
-			if (IS_ERR(data[n].tsk)) {
-				err = PTR_ERR(data[n].tsk);
-				break;
-			}
-			get_task_struct(data[n].tsk);
+			data[n].result = 0;
+			kthread_init_work(&data[n].work, *fn);
+			kthread_queue_work(data[n].worker, &data[n].work);
 		}
-
-		yield(); /* start all threads before we kthread_stop() */
 
 		for (n = 0; n < count; n++) {
-			int status;
-
-			if (IS_ERR_OR_NULL(data[n].tsk))
-				continue;
-
-			status = kthread_stop(data[n].tsk);
-			if (status && !err)
-				err = status;
-
-			put_task_struct(data[n].tsk);
-			data[n].tsk = NULL;
+			if (data[n].ce[0]) {
+				kthread_flush_work(&data[n].work);
+				if (data[n].result && !err)
+					err = data[n].result;
+			}
 		}
 
-		if (igt_live_test_end(&t))
-			err = -EIO;
+		if (igt_live_test_end(&t)) {
+			err = err ?: -EIO;
+			break;
+		}
 	}
 
 out:
@@ -402,6 +419,9 @@ out:
 			intel_context_unpin(data[n].ce[m]);
 			intel_context_put(data[n].ce[m]);
 		}
+
+		if (data[n].worker)
+			kthread_destroy_worker(data[n].worker);
 	}
 	kfree(data);
 out_file:
@@ -680,7 +700,7 @@ static int igt_ctx_exec(void *arg)
 			struct i915_gem_context *ctx;
 			struct intel_context *ce;
 
-			ctx = kernel_context(i915);
+			ctx = kernel_context(i915, NULL);
 			if (IS_ERR(ctx)) {
 				err = PTR_ERR(ctx);
 				goto out_file;
@@ -813,15 +833,11 @@ static int igt_shared_ctx_exec(void *arg)
 			struct i915_gem_context *ctx;
 			struct intel_context *ce;
 
-			ctx = kernel_context(i915);
+			ctx = kernel_context(i915, ctx_vm(parent));
 			if (IS_ERR(ctx)) {
 				err = PTR_ERR(ctx);
 				goto out_test;
 			}
-
-			mutex_lock(&ctx->mutex);
-			__assign_ppgtt(ctx, ctx_vm(parent));
-			mutex_unlock(&ctx->mutex);
 
 			ce = i915_gem_context_get_engine(ctx, engine->legacy_idx);
 			GEM_BUG_ON(IS_ERR(ce));
@@ -897,7 +913,7 @@ static int rpcs_query_batch(struct drm_i915_gem_object *rpcs, struct i915_vma *v
 {
 	u32 *cmd;
 
-	GEM_BUG_ON(INTEL_GEN(vma->vm->i915) < 8);
+	GEM_BUG_ON(GRAPHICS_VER(vma->vm->i915) < 8);
 
 	cmd = i915_gem_object_pin_map(rpcs, I915_MAP_WB);
 	if (IS_ERR(cmd))
@@ -932,7 +948,7 @@ emit_rpcs_query(struct drm_i915_gem_object *obj,
 
 	GEM_BUG_ON(!intel_engine_can_store_dword(ce->engine));
 
-	if (INTEL_GEN(i915) < 8)
+	if (GRAPHICS_VER(i915) < 8)
 		return -EINVAL;
 
 	vma = i915_vma_instance(obj, ce->vm, NULL);
@@ -1094,13 +1110,13 @@ __read_slice_count(struct intel_context *ce,
 	if (ret < 0)
 		return ret;
 
-	buf = i915_gem_object_pin_map(obj, I915_MAP_WB);
+	buf = i915_gem_object_pin_map_unlocked(obj, I915_MAP_WB);
 	if (IS_ERR(buf)) {
 		ret = PTR_ERR(buf);
 		return ret;
 	}
 
-	if (INTEL_GEN(ce->engine->i915) >= 11) {
+	if (GRAPHICS_VER(ce->engine->i915) >= 11) {
 		s_mask = GEN11_RPCS_S_CNT_MASK;
 		s_shift = GEN11_RPCS_S_CNT_SHIFT;
 	} else {
@@ -1229,7 +1245,7 @@ __igt_ctx_sseu(struct drm_i915_private *i915,
 	int inst = 0;
 	int ret = 0;
 
-	if (INTEL_GEN(i915) < 9)
+	if (GRAPHICS_VER(i915) < 9)
 		return 0;
 
 	if (flags & TEST_RESET)
@@ -1511,14 +1527,14 @@ static int write_to_scratch(struct i915_gem_context *ctx,
 	if (IS_ERR(obj))
 		return PTR_ERR(obj);
 
-	cmd = i915_gem_object_pin_map(obj, I915_MAP_WB);
+	cmd = i915_gem_object_pin_map_unlocked(obj, I915_MAP_WB);
 	if (IS_ERR(cmd)) {
 		err = PTR_ERR(cmd);
 		goto out;
 	}
 
 	*cmd++ = MI_STORE_DWORD_IMM_GEN4;
-	if (INTEL_GEN(i915) >= 8) {
+	if (GRAPHICS_VER(i915) >= 8) {
 		*cmd++ = lower_32_bits(offset);
 		*cmd++ = upper_32_bits(offset);
 	} else {
@@ -1608,7 +1624,7 @@ static int read_from_scratch(struct i915_gem_context *ctx,
 	if (IS_ERR(obj))
 		return PTR_ERR(obj);
 
-	if (INTEL_GEN(i915) >= 8) {
+	if (GRAPHICS_VER(i915) >= 8) {
 		const u32 GPR0 = engine->mmio_base + 0x600;
 
 		vm = i915_gem_context_get_vm_rcu(ctx);
@@ -1622,7 +1638,7 @@ static int read_from_scratch(struct i915_gem_context *ctx,
 		if (err)
 			goto out_vm;
 
-		cmd = i915_gem_object_pin_map(obj, I915_MAP_WB);
+		cmd = i915_gem_object_pin_map_unlocked(obj, I915_MAP_WB);
 		if (IS_ERR(cmd)) {
 			err = PTR_ERR(cmd);
 			goto out;
@@ -1658,7 +1674,7 @@ static int read_from_scratch(struct i915_gem_context *ctx,
 		if (err)
 			goto out_vm;
 
-		cmd = i915_gem_object_pin_map(obj, I915_MAP_WB);
+		cmd = i915_gem_object_pin_map_unlocked(obj, I915_MAP_WB);
 		if (IS_ERR(cmd)) {
 			err = PTR_ERR(cmd);
 			goto out;
@@ -1715,7 +1731,7 @@ static int read_from_scratch(struct i915_gem_context *ctx,
 	if (err)
 		goto out_vm;
 
-	cmd = i915_gem_object_pin_map(obj, I915_MAP_WB);
+	cmd = i915_gem_object_pin_map_unlocked(obj, I915_MAP_WB);
 	if (IS_ERR(cmd)) {
 		err = PTR_ERR(cmd);
 		goto out_vm;
@@ -1740,7 +1756,6 @@ out:
 static int check_scratch_page(struct i915_gem_context *ctx, u32 *out)
 {
 	struct i915_address_space *vm;
-	struct page *page;
 	u32 *vaddr;
 	int err = 0;
 
@@ -1748,24 +1763,18 @@ static int check_scratch_page(struct i915_gem_context *ctx, u32 *out)
 	if (!vm)
 		return -ENODEV;
 
-	page = __px_page(vm->scratch[0]);
-	if (!page) {
+	if (!vm->scratch[0]) {
 		pr_err("No scratch page!\n");
 		return -EINVAL;
 	}
 
-	vaddr = kmap(page);
-	if (!vaddr) {
-		pr_err("No (mappable) scratch page!\n");
-		return -EINVAL;
-	}
+	vaddr = __px_vaddr(vm->scratch[0]);
 
 	memcpy(out, vaddr, sizeof(*out));
 	if (memchr_inv(vaddr, *out, PAGE_SIZE)) {
 		pr_err("Inconsistent initial state of scratch page!\n");
 		err = -EINVAL;
 	}
-	kunmap(page);
 
 	return err;
 }
@@ -1783,7 +1792,7 @@ static int igt_vm_isolation(void *arg)
 	u32 expected;
 	int err;
 
-	if (INTEL_GEN(i915) < 7)
+	if (GRAPHICS_VER(i915) < 7)
 		return 0;
 
 	/*
@@ -1837,7 +1846,7 @@ static int igt_vm_isolation(void *arg)
 			continue;
 
 		/* Not all engines have their own GPR! */
-		if (INTEL_GEN(i915) < 8 && engine->class != RENDER_CLASS)
+		if (GRAPHICS_VER(i915) < 8 && engine->class != RENDER_CLASS)
 			continue;
 
 		while (!__igt_timeout(end_time, NULL)) {
@@ -1879,125 +1888,6 @@ out_file:
 	if (igt_live_test_end(&t))
 		err = -EIO;
 	fput(file);
-	return err;
-}
-
-static bool skip_unused_engines(struct intel_context *ce, void *data)
-{
-	return !ce->state;
-}
-
-static void mock_barrier_task(void *data)
-{
-	unsigned int *counter = data;
-
-	++*counter;
-}
-
-static int mock_context_barrier(void *arg)
-{
-#undef pr_fmt
-#define pr_fmt(x) "context_barrier_task():" # x
-	struct drm_i915_private *i915 = arg;
-	struct i915_gem_context *ctx;
-	struct i915_request *rq;
-	unsigned int counter;
-	int err;
-
-	/*
-	 * The context barrier provides us with a callback after it emits
-	 * a request; useful for retiring old state after loading new.
-	 */
-
-	ctx = mock_context(i915, "mock");
-	if (!ctx)
-		return -ENOMEM;
-
-	counter = 0;
-	err = context_barrier_task(ctx, 0, NULL, NULL, NULL,
-				   mock_barrier_task, &counter);
-	if (err) {
-		pr_err("Failed at line %d, err=%d\n", __LINE__, err);
-		goto out;
-	}
-	if (counter == 0) {
-		pr_err("Did not retire immediately with 0 engines\n");
-		err = -EINVAL;
-		goto out;
-	}
-
-	counter = 0;
-	err = context_barrier_task(ctx, ALL_ENGINES, skip_unused_engines,
-				   NULL, NULL, mock_barrier_task, &counter);
-	if (err) {
-		pr_err("Failed at line %d, err=%d\n", __LINE__, err);
-		goto out;
-	}
-	if (counter == 0) {
-		pr_err("Did not retire immediately for all unused engines\n");
-		err = -EINVAL;
-		goto out;
-	}
-
-	rq = igt_request_alloc(ctx, i915->gt.engine[RCS0]);
-	if (IS_ERR(rq)) {
-		pr_err("Request allocation failed!\n");
-		goto out;
-	}
-	i915_request_add(rq);
-
-	counter = 0;
-	context_barrier_inject_fault = BIT(RCS0);
-	err = context_barrier_task(ctx, ALL_ENGINES, NULL, NULL, NULL,
-				   mock_barrier_task, &counter);
-	context_barrier_inject_fault = 0;
-	if (err == -ENXIO)
-		err = 0;
-	else
-		pr_err("Did not hit fault injection!\n");
-	if (counter != 0) {
-		pr_err("Invoked callback on error!\n");
-		err = -EIO;
-	}
-	if (err)
-		goto out;
-
-	counter = 0;
-	err = context_barrier_task(ctx, ALL_ENGINES, skip_unused_engines,
-				   NULL, NULL, mock_barrier_task, &counter);
-	if (err) {
-		pr_err("Failed at line %d, err=%d\n", __LINE__, err);
-		goto out;
-	}
-	mock_device_flush(i915);
-	if (counter == 0) {
-		pr_err("Did not retire on each active engines\n");
-		err = -EINVAL;
-		goto out;
-	}
-
-out:
-	mock_context_close(ctx);
-	return err;
-#undef pr_fmt
-#define pr_fmt(x) x
-}
-
-int i915_gem_context_mock_selftests(void)
-{
-	static const struct i915_subtest tests[] = {
-		SUBTEST(mock_context_barrier),
-	};
-	struct drm_i915_private *i915;
-	int err;
-
-	i915 = mock_gem_device();
-	if (!i915)
-		return -ENOMEM;
-
-	err = i915_subtests(tests, i915);
-
-	mock_destroy_device(i915);
 	return err;
 }
 

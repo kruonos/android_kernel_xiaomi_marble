@@ -368,8 +368,7 @@ static unsigned long via_mode_filter(struct ata_device *dev, unsigned long mask)
 	}
 
 	if (dev->class == ATA_DEV_ATAPI &&
-	    (dmi_check_system(no_atapi_dma_dmi_table) ||
-	     config->id == PCI_DEVICE_ID_VIA_6415)) {
+	    dmi_check_system(no_atapi_dma_dmi_table)) {
 		ata_dev_warn(dev, "controller locks up on ATAPI DMA, forcing PIO\n");
 		mask &= ATA_MASK_PIO;
 	}
@@ -664,7 +663,7 @@ static int via_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 #ifdef CONFIG_PM_SLEEP
 /**
  *	via_reinit_one		-	reinit after resume
- *	@pdev; PCI device
+ *	@pdev: PCI device
  *
  *	Called when the VIA PATA device is resumed. We must then
  *	reconfigure the fifo and other setup we may have altered. In

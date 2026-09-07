@@ -65,7 +65,11 @@
 #include "task.h"
 #include "probe_roms.h"
 
-#define DRV_VERSION "1.2.0"
+#define MAJ 1
+#define MIN 2
+#define BUILD 0
+#define DRV_VERSION __stringify(MAJ) "." __stringify(MIN) "." \
+	__stringify(BUILD)
 
 MODULE_VERSION(DRV_VERSION);
 
@@ -712,10 +716,6 @@ static int isci_suspend(struct device *dev)
 		isci_host_deinit(ihost);
 	}
 
-	pci_save_state(pdev);
-	pci_disable_device(pdev);
-	pci_set_power_state(pdev, PCI_D3hot);
-
 	return 0;
 }
 
@@ -723,19 +723,7 @@ static int isci_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct isci_host *ihost;
-	int rc, i;
-
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-
-	rc = pcim_enable_device(pdev);
-	if (rc) {
-		dev_err(&pdev->dev,
-			"enabling device failure after resume(%d)\n", rc);
-		return rc;
-	}
-
-	pci_set_master(pdev);
+	int i;
 
 	for_each_isci_host(i, ihost, pdev) {
 		sas_prep_resume_ha(&ihost->sas_ha);

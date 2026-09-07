@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef UFS_QCOM_H_
@@ -10,7 +10,8 @@
 #include <linux/reset.h>
 #include <linux/phy/phy.h>
 #include <linux/pm_qos.h>
-#include <linux/nvmem-consumer.h>
+#include <linux/notifier.h>
+#include <linux/panic_notifier.h>
 #include "ufshcd.h"
 #include "unipro.h"
 
@@ -30,16 +31,30 @@
 #define UFS_HW_VER_STEP_SHFT	(0)
 #define UFS_HW_VER_STEP_MASK	(0xFFFF << UFS_HW_VER_STEP_SHFT)
 
-#define UFS_VENDOR_MICRON	0x12C
+/*
+ * UFS_MEM_DEBUG_SPARE_CFG[0:3] = UFS device's minor version
+ * UFS_MEM_DEBUG_SPARE_CFG[4:7] = UFS device's major version
+ */
+#define UFS_DEVICE_VER_MAJOR_SHFT (4)
+#define UFS_DEVICE_VER_MAJOR_MASK  (0x000F << UFS_DEVICE_VER_MAJOR_SHFT)
+#define UFS_DEVICE_VER_MINOR_MASK 0x000F
 
-/* vendor specific pre-defined parameters */
-#define UFS_HS_G4	4		/* HS Gear 4 */
+#define UFS_VENDOR_MICRON	0x12C
 
 #define SLOW 1
 #define FAST 2
 
-#define UFS_QCOM_PHY_SUBMODE_NON_G4	0
-#define UFS_QCOM_PHY_SUBMODE_G4		1
+enum ufs_qcom_phy_submode {
+	UFS_QCOM_PHY_SUBMODE_NON_G4,
+	UFS_QCOM_PHY_SUBMODE_G4,
+	UFS_QCOM_PHY_SUBMODE_G5,
+};
+
+enum ufs_qcom_ber_mode {
+	UFS_QCOM_BER_MODE_G1_G4,
+	UFS_QCOM_BER_MODE_G5,
+	UFS_QCOM_BER_MODE_MAX,
+};
 
 #define UFS_QCOM_LIMIT_NUM_LANES_RX	2
 #define UFS_QCOM_LIMIT_NUM_LANES_TX	2
@@ -54,9 +69,7 @@
 #define UFS_QCOM_LIMIT_HS_RATE		PA_HS_MODE_B
 #define UFS_QCOM_LIMIT_DESIRED_MODE	FAST
 #define UFS_QCOM_LIMIT_PHY_SUBMODE	UFS_QCOM_PHY_SUBMODE_G4
-#define UFS_QCOM_DEFAULT_TURBO_FREQ     300000000
-#define UFS_QCOM_DEFAULT_TURBO_L1_FREQ  300000000
-#define UFS_NOM_THRES_FREQ	300000000
+#define UFS_MEM_REG_PA_ERR_CODE	0xCC
 
 /* default value of auto suspend is 3 seconds */
 #define UFS_QCOM_AUTO_SUSPEND_DELAY	3000
@@ -69,9 +82,9 @@ enum {
 	REG_UFS_TX_SYMBOL_CLK_NS_US         = 0xC4,
 	REG_UFS_LOCAL_PORT_ID_REG           = 0xC8,
 	REG_UFS_PA_ERR_CODE                 = 0xCC,
-	/* On older UFS revisions, this register is called "RETRY_TIMER_REG" */
 	REG_UFS_PARAM0                      = 0xD0,
-	/* On older UFS revisions, this register is called "REG_UFS_PA_LINK_STARTUP_TIMER" */
+	REG_UFS_PA_LINK_STARTUP_TIMER       = 0xD8,
+
 	REG_UFS_CFG0                        = 0xD8,
 	REG_UFS_CFG1                        = 0xDC,
 	REG_UFS_CFG2                        = 0xE0,
@@ -88,6 +101,8 @@ enum {
 	 * added in HW Version 3.0.0
 	 */
 	UFS_AH8_CFG				= 0xFC,
+	UFS_MEM_ICE				= 0x2600,
+	REG_UFS_DEBUG_SPARE_CFG			= 0x284C,
 };
 
 /* QCOM UFS host controller vendor specific debug registers */
@@ -154,10 +169,22 @@ enum {
 #define CC_UFS_UNIPRO_CORE_CLK_REQ_EN	BIT(4)
 #define CC_UFS_AUXCLK_REQ_EN		BIT(5)
 
+#define UNUSED_UNIPRO_CORE_CGC_EN	BIT(11)
+#define UNUSED_UNIPRO_SYMB_CGC_EN	BIT(12)
+#define UNUSED_UNIPRO_CLK_GATED	(UNUSED_UNIPRO_CORE_CGC_EN |\
+					UNUSED_UNIPRO_SYMB_CGC_EN)
+
 #define UFS_HW_CLK_CTRL_EN	(CC_UFS_SYS_CLK_REQ_EN |\
 				 CC_UFS_ICE_CORE_CLK_REQ_EN |\
 				 CC_UFS_UNIPRO_CORE_CLK_REQ_EN |\
 				 CC_UFS_AUXCLK_REQ_EN)
+
+/* UFS_MEM_PARAM0 register */
+#define UFS_MAX_HS_GEAR_SHIFT	(4)
+#define UFS_MAX_HS_GEAR_MASK	(0x7 << UFS_MAX_HS_GEAR_SHIFT)
+#define UFS_QCOM_MAX_HS_GEAR(x) (((x) & UFS_MAX_HS_GEAR_MASK) >>\
+				 UFS_MAX_HS_GEAR_SHIFT)
+
 /* bit offset */
 enum {
 	OFFSET_UFS_PHY_SOFT_RESET           = 1,
@@ -203,14 +230,8 @@ enum ufs_qcom_phy_init_type {
 
 #define PA_VS_CLK_CFG_REG	0x9004
 #define PA_VS_CLK_CFG_REG_MASK	0x1FF
-#define PA_VS_CLK_CFG_REG_MASK1 0xFF
-
 #define DME_VS_CORE_CLK_CTRL_MAX_CORE_CLK_1US_CYCLES_MASK_V4	0xFFF
 #define DME_VS_CORE_CLK_CTRL_MAX_CORE_CLK_1US_CYCLES_OFFSET_V4	0x10
-
-#define PA_VS_CLK_CFG_REG_MASK_TURBO 0x100
-#define ATTR_HW_CGC_EN_TURBO 0x100
-#define ATTR_HW_CGC_EN_NON_TURBO 0x000
 
 #define PA_VS_CORE_CLK_40NS_CYCLES	0x9007
 #define PA_VS_CORE_CLK_40NS_CYCLES_MASK	0xF
@@ -226,10 +247,6 @@ enum ufs_qcom_phy_init_type {
 #define DME_VS_CORE_CLK_CTRL_CORE_CLK_DIV_EN_BIT		BIT(8)
 #define DME_VS_CORE_CLK_CTRL_DME_HW_CGC_EN			BIT(9)
 
-#define TEST_BUS_CTRL_2_HCI_SEL_TURBO_MASK 0x010
-#define TEST_BUS_CTRL_2_HCI_SEL_TURBO 0x010
-#define TEST_BUS_CTRL_2_HCI_SEL_NONTURBO 0x000
-
 /* Device Quirks */
 /*
  * Some ufs devices may need more time to be in hibern8 before exiting.
@@ -242,6 +259,9 @@ enum ufs_qcom_phy_init_type {
  * Enable this quirk to give an additional TX_HS_SYNC_LENGTH.
  */
 #define UFS_DEVICE_QUIRK_PA_TX_HSG1_SYNC_LENGTH (1 << 16)
+
+/* UECPA - Host UIC Error Code Data Link Layer */
+#define UIC_DATA_LINK_LAYER_EC_PA_ERROR_IND_RECEIVED	0x4000
 
 static inline void
 ufs_qcom_get_controller_revision(struct ufs_hba *hba,
@@ -260,10 +280,10 @@ static inline void ufs_qcom_assert_reset(struct ufs_hba *hba)
 			1 << OFFSET_UFS_PHY_SOFT_RESET, REG_UFS_CFG1);
 
 	/*
-	 * Dummy read to ensure the write takes effect before doing any sort
-	 * of delay
+	 * Make sure assertion of ufs phy reset is written to
+	 * register before returning
 	 */
-	ufshcd_readl(hba, REG_UFS_CFG1);
+	mb();
 }
 
 static inline void ufs_qcom_deassert_reset(struct ufs_hba *hba)
@@ -272,10 +292,10 @@ static inline void ufs_qcom_deassert_reset(struct ufs_hba *hba)
 			0 << OFFSET_UFS_PHY_SOFT_RESET, REG_UFS_CFG1);
 
 	/*
-	 * Dummy read to ensure the write takes effect before doing any sort
-	 * of delay
+	 * Make sure de-assertion of ufs phy reset is written to
+	 * register before returning
 	 */
-	ufshcd_readl(hba, REG_UFS_CFG1);
+	mb();
 }
 
 struct ufs_qcom_bus_vote {
@@ -356,6 +376,118 @@ struct ufs_qcom_thermal {
 	unsigned long curr_state;
 };
 
+/* Algorithm Selection */
+#define STATIC_ALLOC_ALG1 0x0
+#define FLOOR_BASED_ALG2 BIT(0)
+#define INSTANTANEOUS_ALG3 BIT(1)
+
+enum {
+	REG_UFS_MEM_ICE_NUM_AES_CORES = 0x2608,
+	REG_UFS_MEM_SHARED_ICE_CONFIG = 0x260C,
+	REG_UFS_MEM_SHARED_ICE_ALG1_NUM_CORE = 0x2610,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_0 = 0x2614,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_0 = 0x2618,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_1 = 0x261C,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_1 = 0x2620,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_2 = 0x2624,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_2 = 0x2628,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_3 = 0x262C,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_3 = 0x2630,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_4 = 0x2634,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_4 = 0x2638,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_5 = 0x263C,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_5 = 0x2640,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_6 = 0x2644,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_6 = 0x2648,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_7 = 0x264C,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_7 = 0x2650,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_8 = 0x2654,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_8 = 0x2658,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_CORE_9 = 0x265C,
+	REG_UFS_MEM_SHARED_ICE_ALG2_NUM_TASK_9 = 0x2660,
+	REG_UFS_MEM_SHARED_ICE_ALG3_NUM_CORE = 0x2664,
+};
+
+struct shared_ice_alg2_config {
+	/* group names */
+	char name[3];
+	/*
+	 * num_core_tx_stream, num_core_rx_stream, num_wr_task_max,
+	 * num_wr_task_min, num_rd_task_max, num_rd_task_min
+	 */
+	unsigned int val[6];
+};
+
+/*
+ * Default overrides:
+ * There're 10 sets of settings for floor-based algorithm
+ */
+static struct shared_ice_alg2_config alg2_config[] = {
+	{"G0", {5, 12, 0, 0, 32, 0}},
+	{"G1", {12, 5, 32, 0, 0, 0}},
+	{"G2", {6, 11, 4, 1, 32, 1}},
+	{"G3", {6, 11, 7, 1, 32, 1}},
+	{"G4", {7, 10, 11, 1, 32, 1}},
+	{"G5", {7, 10, 14, 1, 32, 1}},
+	{"G6", {8, 9, 18, 1, 32, 1}},
+	{"G7", {9, 8, 21, 1, 32, 1}},
+	{"G8", {10, 7, 24, 1, 32, 1}},
+	{"G9", {10, 7, 32, 1, 32, 1}},
+};
+
+/**
+ * Refer struct shared_ice_alg2_config
+ */
+static inline void __get_alg2_grp_params(unsigned int *val, int *c, int *t)
+{
+	*c = ((val[0] << 8) | val[1] | (1 << 31));
+	*t = ((val[2] << 24) | (val[3] << 16) | (val[4] << 8) | val[5]);
+}
+
+static inline void get_alg2_grp_params(unsigned int group, int *core, int *task)
+{
+	struct shared_ice_alg2_config *p = &alg2_config[group];
+
+	 __get_alg2_grp_params(p->val, core, task);
+}
+
+/**
+ * struct ufs_qcom_ber_hist - record the detail of each BER event.
+ * @pos: index of event.
+ * @uec_pa: PA error type.
+ * @err_code: error code, only needed for PA error.
+ * @gear: the gear info when PHY PA occurs.
+ * @tstamp: record timestamp.
+ * @run_time: valid running time since last event.
+ * @full_time: total time since last event.
+ * @cnt: total error count.
+ * @name: mode name.
+ */
+struct ufs_qcom_ber_hist {
+	#define UFS_QCOM_EVT_LEN    32
+	int pos;
+	u32 uec_pa[UFS_QCOM_EVT_LEN];
+	u32 err_code[UFS_QCOM_EVT_LEN];
+	u32 gear[UFS_QCOM_EVT_LEN];
+	ktime_t tstamp[UFS_QCOM_EVT_LEN];
+	s64 run_time[UFS_QCOM_EVT_LEN];
+	s64 full_time[UFS_QCOM_EVT_LEN];
+	u32 cnt;
+	char *name;
+};
+
+struct ufs_qcom_ber_table {
+	enum ufs_qcom_ber_mode mode;
+	u32 ber_threshold;
+};
+
+struct ufs_qcom_regs {
+	struct list_head list;
+	const char *prefix;
+	u32 *ptr;
+	size_t len;
+};
+
 struct ufs_qcom_host {
 	/*
 	 * Set this capability if host controller supports the QUniPro mode
@@ -382,6 +514,10 @@ struct ufs_qcom_host {
 	 */
 	#define UFS_QCOM_CAP_SVS2	0x8
 
+	/*
+	 * Set this capability if host controller supports shared ICE.
+	 */
+	#define UFS_QCOM_CAP_SHARED_ICE BIT(4)
 	u32 caps;
 
 	struct phy *generic_phy;
@@ -417,17 +553,20 @@ struct ufs_qcom_host {
 
 	struct gpio_desc *device_reset;
 
+	int max_hs_gear;
 	int limit_tx_hs_gear;
 	int limit_rx_hs_gear;
 	int limit_tx_pwm_gear;
 	int limit_rx_pwm_gear;
 	int limit_rate;
 	int limit_phy_submode;
-	int ufs_dev_types;
-	bool ufs_dev_revert;
 
 	bool disable_lpm;
 	struct qcom_bus_scale_data *qbsd;
+
+	bool vdd_hba_pc;
+	struct notifier_block vdd_hba_reg_nb;
+
 	struct ufs_vreg *vddp_ref_clk;
 	struct ufs_vreg *vccq_parent;
 	bool work_pending;
@@ -449,45 +588,30 @@ struct ufs_qcom_host {
 	atomic_t num_reqs_threshold;
 	bool cur_freq_vote;
 	struct delayed_work fwork;
-	struct workqueue_struct *fworkq;
-	struct mutex cpufreq_lock;
 	bool cpufreq_dis;
-	bool active;
 	unsigned int min_cpu_scale_freq;
 	unsigned int max_cpu_scale_freq;
 	int config_cpu;
 	void *ufs_ipc_log_ctx;
 	bool dbg_en;
-	struct nvmem_cell *nvmem_cell;
-
-	/* Multi level clk scaling Support */
-	bool ml_scale_sup;
-	bool is_turbo_enabled;
-	/* threshold count to scale down from turbo to NOM */
-	u32 turbo_down_thres_cnt;
-	/* turbo freq for UFS clocks read from DT */
-	u32 axi_turbo_clk_freq;
-	u32 axi_turbo_l1_clk_freq;
-	u32 ice_turbo_clk_freq;
-	u32 ice_turbo_l1_clk_freq;
-	u32 unipro_turbo_clk_freq;
-	u32 unipro_turbo_l1_clk_freq;
-	bool turbo_unipro_attr_applied;
-	/* some target need additional setting to support turbo mode*/
-	bool turbo_additional_conf_req;
-	/* current UFS clocks freq */
-	u32 curr_axi_freq;
-	u32 curr_ice_freq;
-	u32 curr_unipro_freq;
-	/* Indicates curr and next clk mode */
-	u32 clk_next_mode;
-	u32 clk_curr_mode;
-	bool is_clk_scale_enabled;
+	struct device_node *np;
+	int chosen_algo;
+	struct ufs_clk_info *ref_clki;
+	struct ufs_clk_info *core_unipro_clki;
 	atomic_t hi_pri_en;
 	atomic_t therm_mitigation;
 	cpumask_t perf_mask;
 	cpumask_t def_mask;
+	u32 vccq_lpm_uV;
+	bool disable_wb_support;
+	struct ufs_qcom_ber_hist ber_hist[UFS_QCOM_BER_MODE_MAX];
+	struct list_head regs_list_head;
+	bool ber_th_exceeded;
+	u32 valid_evt_cnt[UFS_EVT_CNT];
 	bool irq_affinity_support;
+	bool bypass_pbl_rst_wa;
+	struct notifier_block ufs_qcom_panic_nb;
+
 };
 
 static inline u32
@@ -502,6 +626,7 @@ ufs_qcom_get_debug_reg_offset(struct ufs_qcom_host *host, u32 reg)
 #define ufs_qcom_is_link_off(hba) ufshcd_is_link_off(hba)
 #define ufs_qcom_is_link_active(hba) ufshcd_is_link_active(hba)
 #define ufs_qcom_is_link_hibern8(hba) ufshcd_is_link_hibern8(hba)
+#define ufs_qcom_is_ufs_dev_active(hba) ufshcd_is_ufs_dev_active(hba)
 
 int ufs_qcom_testbus_config(struct ufs_qcom_host *host);
 void ufs_qcom_print_hw_debug_reg_all(struct ufs_hba *hba, void *priv,
@@ -524,6 +649,11 @@ static inline bool ufs_qcom_cap_qunipro_clk_gating(struct ufs_qcom_host *host)
 static inline bool ufs_qcom_cap_svs2(struct ufs_qcom_host *host)
 {
 	return !!(host->caps & UFS_QCOM_CAP_SVS2);
+}
+
+static inline bool is_shared_ice_supported(struct ufs_qcom_host *host)
+{
+	return !!(host->caps & UFS_QCOM_CAP_SHARED_ICE);
 }
 
 /**

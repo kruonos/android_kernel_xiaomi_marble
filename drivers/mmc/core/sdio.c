@@ -15,6 +15,8 @@
 #include <linux/mmc/sdio_func.h>
 #include <linux/mmc/sdio_ids.h>
 
+#include <trace/hooks/mmc.h>
+
 #include "core.h"
 #include "card.h"
 #include "host.h"
@@ -443,8 +445,6 @@ static unsigned mmc_sdio_get_max_clock(struct mmc_card *card)
 	if (card->type == MMC_TYPE_SD_COMBO)
 		max_dtr = min(max_dtr, mmc_sd_get_max_clock(card));
 
-	max_dtr = min_not_zero(max_dtr, card->quirk_max_rate);
-
 	return max_dtr;
 }
 
@@ -755,7 +755,7 @@ try_again:
 	 * Read CSD, before selecting the card
 	 */
 	if (!oldcard && card->type == MMC_TYPE_SD_COMBO) {
-		err = mmc_sd_get_csd(host, card);
+		err = mmc_sd_get_csd(card);
 		if (err)
 			goto remove;
 
@@ -929,11 +929,7 @@ static void mmc_sdio_remove(struct mmc_host *host)
  */
 static int mmc_sdio_alive(struct mmc_host *host)
 {
-	if (!mmc_host_is_spi(host))
-		return mmc_select_card(host->card);
-	else
-		return mmc_io_rw_direct(host->card, 0, 0, SDIO_CCCR_CCCR, 0,
-					NULL);
+	return mmc_select_card(host->card);
 }
 
 /*
@@ -945,11 +941,9 @@ static void mmc_sdio_detect(struct mmc_host *host)
 
 	/* Make sure card is powered before detecting it */
 	if (host->caps & MMC_CAP_POWER_OFF_CARD) {
-		err = pm_runtime_get_sync(&host->card->dev);
-		if (err < 0) {
-			pm_runtime_put_noidle(&host->card->dev);
+		err = pm_runtime_resume_and_get(&host->card->dev);
+		if (err < 0)
 			goto out;
-		}
 	}
 
 	mmc_claim_host(host);
@@ -1108,6 +1102,8 @@ out:
 	mmc_release_host(host);
 
 	host->pm_flags &= ~MMC_PM_KEEP_POWER;
+	trace_android_vh_mmc_sdio_pm_flag_set(host);
+
 	return err;
 }
 

@@ -2,7 +2,7 @@
 /*
  * SCMI Generic power domain support.
  *
- * Copyright (C) 2018-2020 ARM Ltd.
+ * Copyright (C) 2018-2021 ARM Ltd.
  */
 
 #include <linux/err.h>
@@ -54,7 +54,7 @@ static int scmi_pd_power_off(struct generic_pm_domain *domain)
 
 static int scmi_pm_domain_probe(struct scmi_device *sdev)
 {
-	int num_domains, i, ret;
+	int num_domains, i;
 	struct device *dev = &sdev->dev;
 	struct device_node *np = dev->of_node;
 	struct scmi_pm_domain *scmi_pd;
@@ -66,7 +66,7 @@ static int scmi_pm_domain_probe(struct scmi_device *sdev)
 	if (!handle)
 		return -ENODEV;
 
-	power_ops = handle->devm_get_protocol(sdev, SCMI_PROTOCOL_POWER, &ph);
+	power_ops = handle->devm_protocol_get(sdev, SCMI_PROTOCOL_POWER, &ph);
 	if (IS_ERR(power_ops))
 		return PTR_ERR(power_ops);
 
@@ -112,18 +112,9 @@ static int scmi_pm_domain_probe(struct scmi_device *sdev)
 	scmi_pd_data->domains = domains;
 	scmi_pd_data->num_domains = num_domains;
 
-	ret = of_genpd_add_provider_onecell(np, scmi_pd_data);
-	if (ret)
-		goto err_rm_genpds;
-
 	dev_set_drvdata(dev, scmi_pd_data);
 
-	return 0;
-err_rm_genpds:
-	for (i = num_domains - 1; i >= 0; i--)
-		pm_genpd_remove(domains[i]);
-
-	return ret;
+	return of_genpd_add_provider_onecell(np, scmi_pd_data);
 }
 
 static void scmi_pm_domain_remove(struct scmi_device *sdev)

@@ -2,7 +2,7 @@
 /*
  * Copyright(C) 2016 Linaro Limited. All rights reserved.
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/atomic.h>
@@ -27,6 +27,7 @@ struct etr_flat_buf {
 	dma_addr_t	daddr;
 	void		*vaddr;
 	size_t		size;
+	struct sg_table	*sgt;
 };
 
 /*
@@ -35,7 +36,6 @@ struct etr_flat_buf {
  * @etr_buf		- Actual buffer used by the ETR
  * @pid			- The PID this etr_perf_buffer belongs to.
  * @snaphost		- Perf session mode
- * @head		- handle->head at the beginning of the session.
  * @nr_pages		- Number of pages in the ring buffer.
  * @pages		- Array of Pages in the ring buffer.
  */
@@ -44,7 +44,6 @@ struct etr_perf_buffer {
 	struct etr_buf		*etr_buf;
 	pid_t			pid;
 	bool			snapshot;
-	unsigned long		head;
 	int			nr_pages;
 	void			**pages;
 };
@@ -55,9 +54,6 @@ struct etr_perf_buffer {
 
 /* Lower limit for ETR hardware buffer */
 #define TMC_ETR_PERF_MIN_BUF_SIZE	SZ_1M
-
-/* SW USB reserved memory size */
-#define TMC_ETR_SW_USB_BUF_SIZE SZ_64M
 
 /*
  * The TMC ETR SG has a page size of 4K. The SG table contains pointers
@@ -280,7 +276,6 @@ void tmc_free_sg_table(struct tmc_sg_table *sg_table)
 {
 	tmc_free_table_pages(sg_table);
 	tmc_free_data_pages(sg_table);
-	kfree(sg_table);
 }
 EXPORT_SYMBOL_GPL(tmc_free_sg_table);
 
@@ -395,6 +390,7 @@ struct tmc_sg_table *tmc_alloc_sg_table(struct device *dev,
 		rc = tmc_alloc_table_pages(sg_table);
 	if (rc) {
 		tmc_free_sg_table(sg_table);
+		kfree(sg_table);
 		return ERR_PTR(rc);
 	}
 
@@ -666,11 +662,21 @@ static int tmc_etr_alloc_flat_buf(struct tmc_drvdata *drvdata,
 	if (!flat_buf)
 		return -ENOMEM;
 
-	flat_buf->vaddr = dma_alloc_noncoherent(real_dev, etr_buf->size,
-						&flat_buf->daddr,
-						DMA_FROM_DEVICE, GFP_KERNEL);
-	if (!flat_buf->vaddr) {
+	flat_buf->sgt = dma_alloc_noncontiguous(real_dev, etr_buf->size,
+						DMA_FROM_DEVICE, GFP_KERNEL, 0);
+	if (!flat_buf->sgt) {
 		kfree(flat_buf);
+		return -ENOMEM;
+	}
+
+	flat_buf->daddr = sg_dma_address(flat_buf->sgt->sgl);
+	flat_buf->vaddr = dma_vmap_noncontiguous(real_dev, etr_buf->size,
+						flat_buf->sgt);
+	if (!flat_buf->vaddr) {
+		dma_free_noncontiguous(real_dev, etr_buf->size,
+					flat_buf->sgt,
+					DMA_FROM_DEVICE);
+		flat_buf->sgt = NULL;
 		return -ENOMEM;
 	}
 
@@ -689,9 +695,12 @@ static void tmc_etr_free_flat_buf(struct etr_buf *etr_buf)
 	if (flat_buf && flat_buf->daddr) {
 		struct device *real_dev = flat_buf->dev->parent;
 
-		dma_free_noncoherent(real_dev, etr_buf->size,
-				     flat_buf->vaddr, flat_buf->daddr,
+		dma_vunmap_noncontiguous(real_dev, flat_buf->vaddr);
+		dma_free_noncontiguous(real_dev, etr_buf->size,
+				     flat_buf->sgt,
 				     DMA_FROM_DEVICE);
+		flat_buf->vaddr = NULL;
+		flat_buf->sgt = NULL;
 	}
 	kfree(flat_buf);
 }
@@ -937,15 +946,16 @@ static struct etr_buf *tmc_alloc_etr_buf(struct tmc_drvdata *drvdata,
 	bool has_sg, has_catu;
 	struct etr_buf *etr_buf;
 	struct device *dev = &drvdata->csdev->dev;
-	int s1_bypass = 0;
+	int mapping_config = 0;
 	struct iommu_domain *domain;
 
 	has_etr_sg = tmc_etr_has_cap(drvdata, TMC_ETR_SG);
 	domain = iommu_get_domain_for_dev(dev->parent);
 	if (domain) {
-		iommu_domain_get_attr(domain, DOMAIN_ATTR_S1_BYPASS,
-			&s1_bypass);
-		if (s1_bypass)
+		mapping_config = qcom_iommu_get_mappings_configuration(domain);
+		if (mapping_config < 0)
+			return ERR_PTR(-ENOMEM);
+		if (mapping_config & QCOM_IOMMU_MAPPING_CONF_S1_BYPASS)
 			has_iommu = false;
 		else
 			has_iommu = true;
@@ -1056,7 +1066,7 @@ static void tmc_sync_etr_buf(struct tmc_drvdata *drvdata)
 		dev_dbg(&drvdata->csdev->dev,
 			"tmc memory error detected, truncating buffer\n");
 		etr_buf->len = 0;
-		etr_buf->full = 0;
+		etr_buf->full = false;
 		return;
 	}
 
@@ -1087,7 +1097,8 @@ static int  __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 
 	axictl = readl_relaxed(drvdata->base + TMC_AXICTL);
 	axictl &= ~TMC_AXICTL_CLEAR_MASK;
-	axictl |= (TMC_AXICTL_PROT_CTL_B1 | TMC_AXICTL_WR_BURST_16);
+	axictl |= TMC_AXICTL_PROT_CTL_B1;
+	axictl |= TMC_AXICTL_WR_BURST(drvdata->max_burst_size);
 	axictl |= TMC_AXICTL_AXCACHE_OS;
 
 	if (tmc_etr_has_cap(drvdata, TMC_ETR_AXI_ARCACHE)) {
@@ -1160,10 +1171,9 @@ static int tmc_etr_enable_hw(struct tmc_drvdata *drvdata,
 
 	drvdata->etr_buf = etr_buf;
 	rc = __tmc_etr_enable_hw(drvdata);
-	if (rc) {
-		drvdata->etr_buf = NULL;
+	if (rc)
 		coresight_disclaim_device(drvdata->csdev);
-	}
+
 	return rc;
 }
 
@@ -1339,13 +1349,16 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	atomic_inc(csdev->refcnt);
 
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
-	if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB) {
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB)
 		ret = tmc_usb_enable(drvdata->usb_data);
-		if (ret) {
-			atomic_dec(csdev->refcnt);
-			drvdata->mode = CS_MODE_DISABLED;
-		}
+	else if (drvdata->out_mode == TMC_ETR_OUT_MODE_ETH)
+		ret = tmc_eth_enable(drvdata->eth_data);
+
+	if (ret) {
+		atomic_dec(csdev->refcnt);
+		drvdata->mode = CS_MODE_DISABLED;
 	}
+
 	goto out;
 
 unlock_out:
@@ -1591,16 +1604,16 @@ free_etr_perf_buffer:
  * buffer to the perf ring buffer.
  */
 static void tmc_etr_sync_perf_buffer(struct etr_perf_buffer *etr_perf,
+				     unsigned long head,
 				     unsigned long src_offset,
 				     unsigned long to_copy)
 {
 	long bytes;
 	long pg_idx, pg_offset;
-	unsigned long head = etr_perf->head;
 	char **dst_pages, *src_buf;
 	struct etr_buf *etr_buf = etr_perf->etr_buf;
 
-	head = etr_perf->head;
+	head = PERF_IDX2OFF(head, etr_perf);
 	pg_idx = head >> PAGE_SHIFT;
 	pg_offset = head & (PAGE_SIZE - 1);
 	dst_pages = (char **)etr_perf->pages;
@@ -1707,13 +1720,12 @@ tmc_update_etr_buffer(struct coresight_device *csdev,
 	/* Insert barrier packets at the beginning, if there was an overflow */
 	if (lost)
 		tmc_etr_buf_insert_barrier_packet(etr_buf, offset);
-	tmc_etr_sync_perf_buffer(etr_perf, offset, size);
+	tmc_etr_sync_perf_buffer(etr_perf, handle->head, offset, size);
 
 	/*
 	 * In snapshot mode we simply increment the head by the number of byte
-	 * that were written.  User space function  cs_etm_find_snapshot() will
-	 * figure out how many bytes to get from the AUX buffer based on the
-	 * position of the head.
+	 * that were written.  User space will figure out how many bytes to get
+	 * from the AUX buffer based on the position of the head.
 	 */
 	if (etr_perf->snapshot)
 		handle->head += size;
@@ -1766,8 +1778,6 @@ static int tmc_enable_etr_sink_perf(struct coresight_device *csdev, void *data)
 		rc = -EBUSY;
 		goto unlock_out;
 	}
-
-	etr_perf->head = PERF_IDX2OFF(handle->head, etr_perf);
 
 	/*
 	 * No HW configuration is needed if the sink is already in
@@ -1836,17 +1846,22 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM ||
 		(drvdata->out_mode == TMC_ETR_OUT_MODE_USB &&
 			drvdata->usb_data->usb_mode == TMC_ETR_USB_SW)) {
+		tmc_etr_disable_hw(drvdata);
 		if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB) {
 			spin_unlock_irqrestore(&drvdata->spinlock, flags);
 			tmc_usb_disable(drvdata->usb_data);
+			tmc_etr_free_sysfs_buf(drvdata->sysfs_buf);
 			spin_lock_irqsave(&drvdata->spinlock, flags);
+			drvdata->sysfs_buf = NULL;
 		}
-		tmc_etr_disable_hw(drvdata);
-	} else {
+	} else if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB &&
+		drvdata->usb_data->usb_mode == TMC_ETR_USB_BAM_TO_BAM){
 		spin_unlock_irqrestore(&drvdata->spinlock, flags);
 		tmc_usb_disable(drvdata->usb_data);
 		spin_lock_irqsave(&drvdata->spinlock, flags);
-	}
+	} else if (drvdata->out_mode == TMC_ETR_OUT_MODE_ETH)
+		tmc_eth_disable(drvdata->eth_data);
+
 	/* Dissociate from monitored process. */
 	drvdata->pid = -1;
 	drvdata->mode = CS_MODE_DISABLED;
@@ -1876,16 +1891,33 @@ int tmc_etr_switch_mode(struct tmc_drvdata *drvdata, const char *out_mode)
 	enum tmc_etr_out_mode new_mode, old_mode;
 
 	mutex_lock(&drvdata->mem_lock);
-	if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_MEM]))
-		new_mode = TMC_ETR_OUT_MODE_MEM;
-	else if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_USB])) {
-		if (drvdata->usb_data->usb_mode == TMC_ETR_USB_NONE) {
+	if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_MEM])) {
+		if (drvdata->mode_support & BIT(TMC_ETR_OUT_MODE_MEM))
+			new_mode = TMC_ETR_OUT_MODE_MEM;
+		else {
+			dev_err(&drvdata->csdev->dev,
+					"Memory mode is not supported.\n");
+			mutex_unlock(&drvdata->mem_lock);
+			return -EINVAL;
+		}
+	} else if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_USB])) {
+		if (drvdata->mode_support & BIT(TMC_ETR_OUT_MODE_USB))
+			new_mode = TMC_ETR_OUT_MODE_USB;
+		else {
 			dev_err(&drvdata->csdev->dev,
 					"USB mode is not supported.\n");
 			mutex_unlock(&drvdata->mem_lock);
 			return -EINVAL;
 		}
-		new_mode = TMC_ETR_OUT_MODE_USB;
+	} else if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_ETH])) {
+		if (drvdata->mode_support & BIT(TMC_ETR_OUT_MODE_ETH))
+			new_mode = TMC_ETR_OUT_MODE_ETH;
+		else {
+			dev_err(&drvdata->csdev->dev,
+					"ETH mode is not supported.\n");
+			mutex_unlock(&drvdata->mem_lock);
+			return -EINVAL;
+		}
 	} else {
 		mutex_unlock(&drvdata->mem_lock);
 		return -EINVAL;

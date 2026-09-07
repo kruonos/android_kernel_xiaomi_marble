@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"tmecom: [%s][%d]:" fmt, __func__, __LINE__
@@ -212,8 +211,6 @@ static void tmecom_receive_message(struct mbox_client *client, void *message)
 {
 	struct tmecom *tdev = dev_get_drvdata(client->dev);
 	struct qmp_pkt *pkt = NULL;
-
-	pr_debug("%s entered\n", __func__);
 
 	if (!message) {
 		dev_err(tdev->dev, "spurious message received\n");

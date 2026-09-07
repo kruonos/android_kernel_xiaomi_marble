@@ -375,7 +375,6 @@ raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 
 extern long strncpy_from_user(char *dest, const char __user *src, long count);
 
-extern long __must_check strlen_user(const char __user *str);
 extern long __must_check strnlen_user(const char __user *str, long n);
 
 extern
@@ -468,7 +467,7 @@ unsigned long __must_check clear_user(void __user *to, unsigned long n)
 
 #define __get_kernel_nofault(dst, src, type, err_label)			\
 do {									\
-	long __kr_err = 0;						\
+	long __kr_err;							\
 									\
 	__get_user_nocheck(*((type *)(dst)), (type *)(src), __kr_err);	\
 	if (unlikely(__kr_err))						\
@@ -477,7 +476,7 @@ do {									\
 
 #define __put_kernel_nofault(dst, src, type, err_label)			\
 do {									\
-	long __kr_err = 0;						\
+	long __kr_err;							\
 									\
 	__put_user_nocheck(*((type *)(src)), (type *)(dst), __kr_err);	\
 	if (unlikely(__kr_err))						\

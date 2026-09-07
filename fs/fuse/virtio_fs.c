@@ -133,11 +133,6 @@ static inline struct virtio_fs_vq *vq_to_fsvq(struct virtqueue *vq)
 	return &fs->vqs[vq->index];
 }
 
-static inline struct fuse_pqueue *vq_to_fpq(struct virtqueue *vq)
-{
-	return &vq_to_fsvq(vq)->fud->pq;
-}
-
 /* Should be called with fsvq->lock held. */
 static inline void inc_in_flight_req(struct virtio_fs_vq *fsvq)
 {
@@ -315,16 +310,6 @@ static int virtio_fs_read_tag(struct virtio_device *vdev, struct virtio_fs *fs)
 		return -ENOMEM;
 	memcpy(fs->tag, tag_buf, len);
 	fs->tag[len] = '\0';
-
-	/* While the VIRTIO specification allows any character, newlines are
-	 * awkward on mount(8) command-lines and cause problems in the sysfs
-	 * "tag" attr and uevent TAG= properties. Forbid them.
-	 */
-	if (strchr(fs->tag, '\n')) {
-		dev_dbg(&vdev->dev, "refusing virtiofs tag with newline character\n");
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
@@ -1417,6 +1402,7 @@ static void virtio_kill_sb(struct super_block *sb)
 			virtio_fs_conn_destroy(fm);
 	}
 	kill_anon_super(sb);
+	fuse_mount_destroy(fm);
 }
 
 static int virtio_fs_test_super(struct super_block *sb,
@@ -1428,18 +1414,6 @@ static int virtio_fs_test_super(struct super_block *sb,
 	return fsc_fm->fc->iq.priv == sb_fm->fc->iq.priv;
 }
 
-static int virtio_fs_set_super(struct super_block *sb,
-			       struct fs_context *fsc)
-{
-	int err;
-
-	err = get_anon_bdev(&sb->s_dev);
-	if (!err)
-		fuse_mount_get(fsc->s_fs_info);
-
-	return err;
-}
-
 static int virtio_fs_get_tree(struct fs_context *fsc)
 {
 	struct virtio_fs *fs;
@@ -1448,9 +1422,6 @@ static int virtio_fs_get_tree(struct fs_context *fsc)
 	struct fuse_mount *fm;
 	unsigned int virtqueue_size;
 	int err = -EIO;
-
-	if (!fsc->source)
-		return invalf(fsc, "No source specified");
 
 	/* This gets a reference on virtio_fs object. This ptr gets installed
 	 * in fc->iq->priv. Once fuse_conn is going away, it calls ->put()
@@ -1479,22 +1450,22 @@ static int virtio_fs_get_tree(struct fs_context *fsc)
 	fc->release = fuse_free_conn;
 	fc->delete_stale = true;
 	fc->auto_submounts = true;
+	fc->sync_fs = true;
 
 	/* Tell FUSE to split requests that exceed the virtqueue's size */
 	fc->max_pages_limit = min_t(unsigned int, fc->max_pages_limit,
 				    virtqueue_size - FUSE_HEADER_OVERHEAD);
 
 	fsc->s_fs_info = fm;
-	sb = sget_fc(fsc, virtio_fs_test_super, virtio_fs_set_super);
-	fuse_mount_put(fm);
+	sb = sget_fc(fsc, virtio_fs_test_super, set_anon_super_fc);
+	if (fsc->s_fs_info)
+		fuse_mount_destroy(fm);
 	if (IS_ERR(sb))
 		return PTR_ERR(sb);
 
 	if (!sb->s_root) {
 		err = virtio_fs_fill_super(sb, fsc);
 		if (err) {
-			fuse_mount_put(fm);
-			sb->s_fs_info = NULL;
 			deactivate_locked_super(sb);
 			return err;
 		}
@@ -1523,6 +1494,9 @@ static const struct fs_context_operations virtio_fs_context_ops = {
 static int virtio_fs_init_fs_context(struct fs_context *fsc)
 {
 	struct fuse_fs_context *ctx;
+
+	if (fsc->purpose == FS_CONTEXT_FOR_SUBMOUNT)
+		return fuse_init_fs_context_submount(fsc);
 
 	ctx = kzalloc(sizeof(struct fuse_fs_context), GFP_KERNEL);
 	if (!ctx)

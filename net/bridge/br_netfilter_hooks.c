@@ -33,7 +33,6 @@
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/addrconf.h>
-#include <net/dst_metadata.h>
 #include <net/route.h>
 #include <net/netfilter/br_netfilter.h>
 #include <net/netns/generic.h>
@@ -754,10 +753,6 @@ static int br_nf_dev_queue_xmit(struct net *net, struct sock *sk, struct sk_buff
 		return br_dev_queue_push_xmit(net, sk, skb);
 	}
 
-	/* Fragmentation on metadata/template dst is not supported */
-	if (unlikely(!skb_valid_dst(skb)))
-		goto drop;
-
 	/* This is wrong! We should preserve the original fragment
 	 * boundaries by preserving frag_list rather than refragmenting.
 	 */
@@ -1020,7 +1015,7 @@ int br_nf_hook_thresh(unsigned int hook, struct net *net,
 	unsigned int i;
 	int ret;
 
-	e = rcu_dereference(net->nf.hooks_bridge[hook]);
+	e = rcu_dereference(get_nf_hooks_bridge(net)[hook]);
 	if (!e)
 		return okfn(net, sk, skb);
 

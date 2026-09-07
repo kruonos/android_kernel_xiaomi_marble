@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2013-2015, 2019-2020, Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2015, 2019-2021, Linux Foundation. All rights reserved.
  */
 
 #ifndef UFS_QCOM_PHY_I_H_
@@ -33,6 +33,12 @@ enum {
 
 enum {
 	OFFSET_SERDES_START     = 0x0,
+};
+
+enum ufs_qcom_phy_submode {
+	UFS_QCOM_PHY_SUBMODE_NON_G4,
+	UFS_QCOM_PHY_SUBMODE_G4,
+	UFS_QCOM_PHY_SUBMODE_G5,
 };
 
 struct ufs_qcom_phy_stored_attributes {
@@ -79,19 +85,21 @@ struct ufs_qcom_phy {
 	struct ufs_qcom_phy_vreg vdda_pll;
 	struct ufs_qcom_phy_vreg vdda_phy;
 	struct ufs_qcom_phy_vreg vddp_ref_clk;
+	struct ufs_qcom_phy_vreg vdd_phy_gdsc;
+	struct ufs_qcom_phy_vreg vdda_qref;
 
 	/* Number of lanes available (1 or 2) for Rx/Tx */
 	u32 lanes_per_direction;
 
 	unsigned int quirks;
 
-	/*
-	* If UFS link is put into Hibern8 and if UFS PHY analog hardware is
-	* power collapsed (by clearing UFS_PHY_POWER_DOWN_CONTROL), Hibern8
-	* exit might fail even after powering on UFS PHY analog hardware.
-	* Enabling this quirk will help to solve above issue by doing
-	* custom PHY settings just before PHY analog power collapse.
-	*/
+	/**
+	 * If UFS link is put into Hibern8 and if UFS PHY analog hardware is
+	 * power collapsed (by clearing UFS_PHY_POWER_DOWN_CONTROL), Hibern8
+	 * exit might fail even after powering on UFS PHY analog hardware.
+	 * Enabling this quirk will help to solve above issue by doing
+	 * custom PHY settings just before PHY analog power collapse.
+	 */
 	#define UFS_QCOM_PHY_QUIRK_HIBERN8_EXIT_AFTER_PHY_PWR_COLLAPSE	BIT(0)
 
 	u8 host_ctrl_rev_major;
@@ -106,6 +114,7 @@ struct ufs_qcom_phy {
 	enum phy_mode mode;
 	int submode;
 	struct reset_control *ufs_reset;
+	struct list_head regs_list_head;
 };
 
 /**
@@ -121,6 +130,7 @@ struct ufs_qcom_phy {
  * @ctrl_rx_linecfg: pointer to a function that controls the enable/disable of
  * Rx line config
  * @dbg_register_dump: pointer to a function that dumps phy registers for debug.
+ * @dbg_register_save: pointer to a function that save phy registers to memory.
  */
 struct ufs_qcom_phy_specific_ops {
 	int (*calibrate)(struct ufs_qcom_phy *ufs_qcom_phy, bool is_rate_B,
@@ -131,6 +141,7 @@ struct ufs_qcom_phy_specific_ops {
 	void (*power_control)(struct ufs_qcom_phy *phy, bool val);
 	void (*ctrl_rx_linecfg)(struct ufs_qcom_phy *phy, bool ctrl);
 	void (*dbg_register_dump)(struct ufs_qcom_phy *phy);
+	void (*dbg_register_save)(struct ufs_qcom_phy *phy);
 };
 
 struct ufs_qcom_phy *get_ufs_qcom_phy(struct phy *generic_phy);
@@ -153,5 +164,8 @@ void ufs_qcom_phy_write_tbl(struct ufs_qcom_phy *ufs_qcom_phy,
 			struct ufs_qcom_phy_calibration *tbl,
 			int tbl_size);
 int ufs_qcom_phy_dump_regs(struct ufs_qcom_phy *phy,
+			    int offset, int len, char *prefix);
+
+int ufs_qcom_phy_save_regs(struct ufs_qcom_phy *phy,
 			    int offset, int len, char *prefix);
 #endif

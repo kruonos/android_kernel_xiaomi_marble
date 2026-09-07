@@ -53,7 +53,7 @@ static int stm_gem_cma_dumb_create(struct drm_file *file,
 
 DEFINE_DRM_GEM_CMA_FOPS(drv_driver_fops);
 
-static struct drm_driver drv_driver = {
+static const struct drm_driver drv_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	.name = "stm",
 	.desc = "STMicroelectronics SoC DRM",
@@ -195,14 +195,12 @@ static int stm_drm_platform_probe(struct platform_device *pdev)
 
 	ret = drm_dev_register(ddev, 0);
 	if (ret)
-		goto err_unload;
+		goto err_put;
 
 	drm_fbdev_generic_setup(ddev, 16);
 
 	return 0;
 
-err_unload:
-	drv_unload(ddev);
 err_put:
 	drm_dev_put(ddev);
 

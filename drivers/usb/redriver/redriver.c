@@ -1,24 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * USB Super Speed (Plus) redriver core module
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "redriver-core: " fmt
 
-#include <linux/module.h>
 #include <linux/usb/redriver.h>
+#include <linux/module.h>
 
 static LIST_HEAD(usb_redriver_list);
 static DEFINE_SPINLOCK(usb_rediver_lock);
 
 /**
- * usb_add_redriver() - register a redriver from a specific chip driver.
- * @redriver: redriver allocated by specific chip driver.
+ * usb_add_redriver, register a redriver from a specific chip driver.
+ * @redriver, redriver allocated by specific chip driver.
  *
- * Return:
- *  -EINVAL - if of node not exist
- *  0 - if exist, add redriver to global list.
+ * if of node not exist, return -EINVAL,
+ * if exist, add redriver to global list.
  */
 int usb_add_redriver(struct usb_redriver *redriver)
 {
@@ -46,16 +45,12 @@ int usb_add_redriver(struct usb_redriver *redriver)
 EXPORT_SYMBOL(usb_add_redriver);
 
 /**
- * usb_remove_redriver() - remove a redriver from a specific chip driver.
- * @redriver: redriver allocated by specific chip driver.
+ * usb_remove_redriver, remove a redriver from a specific chip driver.
+ * @redriver, redriver allocated by specific chip driver.
  *
  * remove redriver from global list.
  * if redriver rmmod, it is better change to default state inside it's driver,
  * no unbind operation here.
- *
- * Return:
- *  -EINVAL - redriver still used by uppper layer.
- *  0 - redriver removed.
  */
 int usb_remove_redriver(struct usb_redriver *redriver)
 {
@@ -76,15 +71,14 @@ int usb_remove_redriver(struct usb_redriver *redriver)
 EXPORT_SYMBOL(usb_remove_redriver);
 
 /**
- * usb_get_redriver_by_phandle() - find redriver to be used.
- * @np: device node of device which use the redriver
- * @phandle_name: phandle name which refer to the redriver
- * @index: phandle index which refer to the redriver
+ * usb_get_redriver_by_phandle, find redriver to be used.
+ * @np, device node of device which use the redriver
+ * @phandle_name, phandle name which refer to the redriver
+ * @index, phandle index which refer to the redriver
  *
- * Return:
- *  NULL - if no phandle or redriver device tree status is disabled.
- *  ERR_PTR(-EPROBE_DEFER) - if redriver is not registered
- *  if redriver registered, return pointer of it.
+ * if no phandle or redriver device tree status is disabled, return NULL.
+ * if redriver is not registered, return -EPROBE_DEFER.
+ * if redriver registered, return it.
  */
 struct usb_redriver *usb_get_redriver_by_phandle(const struct device_node *np,
 		const char *phandle_name, int index)
@@ -123,8 +117,8 @@ struct usb_redriver *usb_get_redriver_by_phandle(const struct device_node *np,
 EXPORT_SYMBOL(usb_get_redriver_by_phandle);
 
 /**
- * usb_put_redriver() - redriver will not be used.
- * @redriver: redriver allocated by specific chip driver.
+ * usb_put_redriver, redriver will not be used.
+ * @redriver, redriver allocated by specific chip driver.
  *
  * when user module exit, unbind redriver.
  */
@@ -143,6 +137,7 @@ void usb_put_redriver(struct usb_redriver *redriver)
 		redriver->unbind(redriver);
 }
 EXPORT_SYMBOL(usb_put_redriver);
+
 
 /* note: following exported symbol can be inlined in header file,
  * export here to avoid unexpected CFI(Clang Control Flow Integrity) issue.
@@ -173,7 +168,7 @@ int usb_redriver_get_orientation(struct usb_redriver *ur)
 	if (ur && ur->has_orientation)
 		return ur->get_orientation(ur);
 
-	return -EOPNOTSUPP;
+	return -1;
 }
 EXPORT_SYMBOL(usb_redriver_get_orientation);
 
@@ -199,6 +194,20 @@ void usb_redriver_host_powercycle(struct usb_redriver *ur)
 		ur->host_powercycle(ur);
 }
 EXPORT_SYMBOL(usb_redriver_host_powercycle);
+
+
+static int __init usb_redriver_init(void)
+{
+	pr_debug("module init\n");
+	return 0;
+}
+module_init(usb_redriver_init);
+
+static void __exit usb_redriver_exit(void)
+{
+	pr_debug("module exit\n");
+}
+module_exit(usb_redriver_exit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("USB Super Speed (Plus) redriver core module");

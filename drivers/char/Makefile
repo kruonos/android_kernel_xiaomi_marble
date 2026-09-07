@@ -8,7 +8,6 @@ obj-$(CONFIG_TTY_PRINTK)	+= ttyprintk.o
 obj-y				+= misc.o
 obj-$(CONFIG_ATARI_DSP56K)	+= dsp56k.o
 obj-$(CONFIG_VIRTIO_CONSOLE)	+= virtio_console.o
-obj-$(CONFIG_RAW_DRIVER)	+= raw.o
 obj-$(CONFIG_MSPEC)		+= mspec.o
 obj-$(CONFIG_UV_MMTIMER)	+= uv_mmtimer.o
 obj-$(CONFIG_IBM_BSR)		+= bsr.o
@@ -44,13 +43,18 @@ obj-$(CONFIG_TCG_TPM)		+= tpm/
 
 obj-$(CONFIG_PS3_FLASH)		+= ps3flash.o
 
-obj-$(CONFIG_XILLYBUS)		+= xillybus/
+obj-$(CONFIG_XILLYBUS_CLASS)	+= xillybus/
 obj-$(CONFIG_POWERNV_OP_PANEL)	+= powernv-op-panel.o
 frpc-adsprpc-objs		+= adsprpc.o
+frpc-adsprpc-objs		+= adsprpc_rpmsg.o
 ifdef CONFIG_COMPAT
   frpc-adsprpc-objs		+= adsprpc_compat.o
 endif
 obj-$(CONFIG_MSM_ADSPRPC)	+= frpc-adsprpc.o
-obj-$(CONFIG_ADI)		+= adi.o
+frpc_trusted-adsprpc-objs	+= adsprpc.o
+frpc_trusted-adsprpc-objs	+= adsprpc_socket.o
+obj-$(CONFIG_MSM_ADSPRPC_TRUSTED)	+= frpc_trusted-adsprpc.o
 obj-$(CONFIG_MSM_RDBG)		+= rdbg.o
-obj-$(CONFIG_XLOGCHAR)		+= xlogchar.o
+obj-$(CONFIG_ADI)		+= adi.o
+obj-$(CONFIG_VIRTIO_FASTRPC) += virtio_fastrpc/
+obj-$(CONFIG_VIRTIO_EAVB)       += virtio_eavb/

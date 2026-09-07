@@ -13,6 +13,8 @@ extern struct synx_device *synx_dev;
 extern spinlock_t camera_tbl_lock;
 extern spinlock_t global_tbl_lock;
 
+extern void synx_external_callback(s32 sync_obj,
+	int status, void *data);
 extern void synx_fence_callback(struct dma_fence *fence,
 	struct dma_fence_cb *cb);
 

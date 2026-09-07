@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019, 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/io.h>
@@ -14,7 +15,6 @@
 #include "synx_util.h"
 
 #define MAX_DBG_BUF_SIZE (36 * SYNX_MAX_OBJS)
-#define BUF_SIZE 64
 
 struct dentry *my_direc;
 static const char delim[] = ",";
@@ -160,7 +160,7 @@ static ssize_t synx_table_write(struct file *file,
 		loff_t *ppos)
 {
 	char *ptr;
-	char *kbuffer = kzalloc(BUF_SIZE, GFP_KERNEL);
+	char *kbuffer = kzalloc(48, GFP_KERNEL);
 	int stat = -1;
 
 	if (!kbuffer)

@@ -105,8 +105,8 @@ INITFILE=$1
 shift;
 
 if [ ! -r "$INITFILE" ]; then
-	echo "The base file '$INITFILE' does not exist. Creating one..." >&2
-	touch "$INITFILE"
+	echo "The base file '$INITFILE' does not exist.  Exit." >&2
+	exit 1
 fi
 
 MERGE_LIST=$*
@@ -160,8 +160,6 @@ for ORIG_MERGE_FILE in $MERGE_LIST ; do
 			sed -i "/$CFG[ =]/d" $MERGE_FILE
 		fi
 	done
-	# In case the previous file lacks a new line at the end
-	echo >> $TMP_FILE
 	cat $MERGE_FILE >> $TMP_FILE
 done
 
@@ -189,7 +187,7 @@ fi
 # Use the merged file as the starting point for:
 # alldefconfig: Fills in any missing symbols with Kconfig default
 # allnoconfig: Fills in any missing symbols with # CONFIG_* is not set
-${MAKE_PATH}make $MAKE_ARGS KCONFIG_ALLCONFIG=$TMP_FILE $OUTPUT_ARG $ALLTARGET
+make KCONFIG_ALLCONFIG=$TMP_FILE $OUTPUT_ARG $ALLTARGET
 
 
 # Check all specified config values took (might have missed-dependency issues)

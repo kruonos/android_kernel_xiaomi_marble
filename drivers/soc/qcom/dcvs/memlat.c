@@ -35,12 +35,6 @@
 
 #define MAX_MEMLAT_GRPS	NUM_DCVS_HW_TYPES
 #define FP_NAME		"memlat_fp"
-#define MAX_SPM_WINDOW_SIZE 20U
-#define MAX_SPM_FREQ_MAP 2
-#define MISS_DELTA_PCT_THRES 30U
-#define SPM_FREQ_THRES 2000U
-#define L2MISS_RATIO_THRES 150U
-#define SPM_CPU_FREQ_IGN 200U
 
 enum common_ev_idx {
 	INST_IDX,
@@ -97,8 +91,6 @@ struct cpu_stats {
 	u32				be_stall_pct;
 	u32				ipm[MAX_MEMLAT_GRPS];
 	u32				wb_pct[MAX_MEMLAT_GRPS];
-	u32				spm[MAX_MEMLAT_GRPS];
-	u32				l2miss_ratio[MAX_MEMLAT_GRPS];
 };
 
 struct cpufreq_memfreq_map {
@@ -119,7 +111,8 @@ struct memlat_mon {
 	u32				fe_stall_floor;
 	u32				be_stall_floor;
 	u32				freq_scale_pct;
-	u32				freq_scale_limit_mhz;
+	u32				freq_scale_ceil_mhz;
+	u32				freq_scale_floor_mhz;
 	u32				wb_pct_thres;
 	u32				wb_filter_ipm;
 	u32				min_freq;
@@ -130,17 +123,6 @@ struct memlat_mon {
 	struct kobject			kobj;
 	bool				is_compute;
 	u32				index;
-	u32			enable_spm_voting;
-	u64			prev_max_miss;
-	u32			spm_thres;
-	u32			spm_drop_pct;
-	u32			spm_window_size;
-	u32			sampled_max_spm[MAX_SPM_WINDOW_SIZE];
-	u32			sampled_max_cpu_freq[MAX_SPM_WINDOW_SIZE];
-	u32			sampled_spm_idx;
-	u32			spm_vote_inc_steps;
-	u32			disable_spm_value;
-	struct	cpufreq_memfreq_map	spm_freq_map[MAX_SPM_FREQ_MAP];
 };
 
 struct memlat_group {
@@ -242,9 +224,9 @@ static ssize_t store_##name(struct kobject *kobj,			\
 	if (mon->type == CPUCP_MON && ops) {					\
 		ret = ops->name(memlat_data->ph, grp->hw_type,		\
 				mon->index, mon->name);			\
-		if (ret == 0) {							\
+		if (ret < 0) {						\
 			pr_err("failed to set mon tunable :%d\n", ret);	\
-			count = 0;					\
+			return ret;					\
 		}							\
 	}								\
 	return count;							\
@@ -266,12 +248,21 @@ static ssize_t store_##name(struct kobject *kobj,			\
 	int ret;							\
 	unsigned int val;						\
 	struct memlat_group *grp = to_memlat_grp(kobj);			\
+	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;	\
 	ret = kstrtouint(buf, 10, &val);				\
 	if (ret < 0)							\
 		return ret;						\
 	val = max(val, _min);						\
 	val = min(val, _max);						\
 	grp->name = val;						\
+	if (grp->cpucp_enabled && ops) {					\
+		ret = ops->name(memlat_data->ph, grp->hw_type,		\
+				0, grp->name);				\
+		if (ret < 0) {						\
+			pr_err("failed to set grp tunable :%d\n", ret);	\
+			return ret;					\
+		}							\
+	}								\
 	return count;							\
 }									\
 
@@ -297,7 +288,7 @@ static ssize_t store_min_freq(struct kobject *kobj,
 				    mon->index, mon->min_freq);
 		if (ret < 0) {
 			pr_err("failed to set min_freq :%d\n", ret);
-			count = 0;
+			return ret;
 		}
 	}
 
@@ -326,7 +317,7 @@ static ssize_t store_max_freq(struct kobject *kobj,
 				    mon->index, mon->max_freq);
 		if (ret < 0) {
 			pr_err("failed to set max_freq :%d\n", ret);
-			count = 0;
+			return ret;
 		}
 	}
 
@@ -347,22 +338,6 @@ static ssize_t show_freq_map(struct kobject *kobj,
 				map->cpufreq_mhz, map->memfreq_khz);
 		map++;
 	}
-	if (cnt < PAGE_SIZE)
-		cnt += scnprintf(buf + cnt, PAGE_SIZE - cnt, "\n");
-
-	return cnt;
-}
-
-static ssize_t show_spm_freq_map(struct kobject *kobj,
-			struct attribute *attr, char *buf)
-{
-	struct memlat_mon *mon = to_memlat_mon(kobj);
-	unsigned int cnt = 0, i;
-
-	cnt += scnprintf(buf, PAGE_SIZE, "CPU freq (MHz)\tMem freq (kHz)\n");
-	for (i = 0; i < MAX_SPM_FREQ_MAP && mon->spm_freq_map[i].cpufreq_mhz; i++)
-		cnt += scnprintf(buf + cnt, PAGE_SIZE - cnt, "%14u\t%14u\n",
-				mon->spm_freq_map[i].cpufreq_mhz, mon->spm_freq_map[i].memfreq_khz);
 	if (cnt < PAGE_SIZE)
 		cnt += scnprintf(buf + cnt, PAGE_SIZE - cnt, "\n");
 
@@ -424,7 +399,7 @@ static ssize_t store_cpucp_sample_ms(struct kobject *kobj,
 	ret = ops->sample_ms(memlat_data->ph, val);
 	if (ret < 0) {
 		pr_err("Failed to set cpucp sample ms :%d\n", ret);
-		return 0;
+		return ret;
 	}
 
 	memlat_data->cpucp_sample_ms = val;
@@ -464,123 +439,11 @@ static ssize_t store_cpucp_log_level(struct kobject *kobj,
 	ret = ops->set_log_level(memlat_data->ph, val);
 	if (ret < 0) {
 		pr_err("failed to configure log_level, ret = %d\n", ret);
-		return 0;
+		return ret;
 	}
 
 	memlat_data->cpucp_log_level = val;
 	return count;
-}
-
-#define MIN_SPM_WINDOW_SIZE 1U
-static ssize_t store_spm_window_size(struct kobject *kobj,
-			struct attribute *attr, const char *buf,
-			size_t count)
-{
-	int ret;
-	u32 spm_window_size;
-	struct memlat_mon *mon = to_memlat_mon(kobj);
-
-	ret = kstrtouint(buf, 10, &spm_window_size);
-	if (ret < 0)
-		return ret;
-	spm_window_size = max(spm_window_size, MIN_SPM_WINDOW_SIZE);
-	spm_window_size = min(spm_window_size, MAX_SPM_WINDOW_SIZE);
-	mon->spm_window_size = spm_window_size;
-	return count;
-}
-
-#define MIN_SPM_DROP_PCT 1U
-#define MAX_SPM_DROP_PCT 100U
-static ssize_t store_spm_drop_pct(struct kobject *kobj,
-			struct attribute *attr, const char *buf,
-			size_t count)
-{
-	int ret;
-	u32 spm_drop_pct;
-	struct memlat_mon *mon = to_memlat_mon(kobj);
-
-	ret = kstrtouint(buf, 10, &spm_drop_pct);
-	if (ret < 0)
-		return ret;
-	spm_drop_pct = max(spm_drop_pct, MIN_SPM_DROP_PCT);
-	spm_drop_pct = min(spm_drop_pct, MAX_SPM_DROP_PCT);
-	mon->spm_drop_pct = spm_drop_pct;
-	mon->disable_spm_value = mon->spm_thres -
-				mult_frac(mon->spm_thres, mon->spm_drop_pct, 100);
-
-	return count;
-}
-
-#define MIN_SPM_THRES 1U
-#define MAX_SPM_THRES 1000U
-static ssize_t store_spm_thres(struct kobject *kobj,
-			struct attribute *attr, const char *buf,
-			size_t count)
-{
-	int ret;
-	u32 spm_thres;
-	struct memlat_mon *mon = to_memlat_mon(kobj);
-
-	ret = kstrtouint(buf, 10, &spm_thres);
-	if (ret < 0)
-		return ret;
-	spm_thres = max(spm_thres, MIN_SPM_THRES);
-	spm_thres = min(spm_thres, MAX_SPM_THRES);
-	mon->spm_thres = spm_thres;
-	if (mon->spm_thres < MAX_SPM_THRES)
-		mon->enable_spm_voting = 1;
-	else
-		mon->enable_spm_voting = 0;
-	mon->disable_spm_value = mon->spm_thres -
-				mult_frac(mon->spm_thres, mon->spm_drop_pct, 100);
-	return count;
-}
-
-static ssize_t store_spm_freq_map(struct kobject *kobj,
-			struct attribute *attr, const char *buf,
-			size_t count)
-{
-	struct memlat_mon *mon  = to_memlat_mon(kobj);
-	int ret;
-	char  *sptr, *token, *str;
-	u32 val, i;
-
-	str = kstrdup(buf, GFP_KERNEL);
-	if (!str)
-		return -ENOMEM;
-	sptr = str;
-	for (i = 0; i < MAX_SPM_FREQ_MAP; i++) {
-		token = strsep(&sptr, ":");
-		if (!token) {
-			ret =  -EINVAL;
-			goto out;
-		}
-		ret = kstrtouint(token, 10, &val);
-		if (ret < 0) {
-			ret =  -EINVAL;
-			goto out;
-		}
-		val = max(val, 0U);
-		val = min(val, U32_MAX);
-		mon->spm_freq_map[i].cpufreq_mhz = val;
-		token = strsep(&sptr, " ");
-		if (!token) {
-			ret =  -EINVAL;
-			goto out;
-		}
-		ret = kstrtouint(token, 10, &val);
-		if (ret < 0) {
-			ret =  -EINVAL;
-			goto out;
-		}
-		val = max(val, mon->min_freq);
-		val = min(val, mon->mon_max_freq);
-		mon->spm_freq_map[i].memfreq_khz = val;
-	}
-	ret = count;
-out:
-	kfree(str);
-	return ret;
 }
 
 static ssize_t show_cpucp_log_level(struct kobject *kobj,
@@ -589,8 +452,98 @@ static ssize_t show_cpucp_log_level(struct kobject *kobj,
 	return scnprintf(buf, PAGE_SIZE, "%lu\n", memlat_data->cpucp_log_level);
 }
 
+static ssize_t store_flush_cpucp_log(struct kobject *kobj,
+				     struct attribute *attr, const char *buf,
+				     size_t count)
+{
+	int ret;
+	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
+
+	if (!ops)
+		return -ENODEV;
+
+	ret = ops->flush_cpucp_log(memlat_data->ph);
+	if (ret < 0) {
+		pr_err("failed to flush cpucp log, ret = %d\n", ret);
+		return ret;
+	}
+
+	return count;
+}
+
+static ssize_t show_flush_cpucp_log(struct kobject *kobj,
+				    struct attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "Echo here to flush cpucp logs\n");
+}
+
+static ssize_t show_hlos_cpucp_offset(struct kobject *kobj,
+				      struct attribute *attr, char *buf)
+{
+	int ret;
+	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
+	uint64_t cpucp_ts, hlos_ts;
+
+	if (!ops)
+		return -ENODEV;
+
+	ret = ops->get_timestamp(memlat_data->ph, &cpucp_ts);
+	if (ret < 0) {
+		pr_err("failed to get cpucp timestamp\n");
+		return ret;
+	}
+
+	hlos_ts = ktime_get()/1000;
+
+	return scnprintf(buf, PAGE_SIZE, "%ld\n", le64_to_cpu(cpucp_ts) - hlos_ts);
+}
+
+static ssize_t show_cur_freq(struct kobject *kobj,
+			     struct attribute *attr, char *buf)
+{
+	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
+	struct memlat_mon *mon = to_memlat_mon(kobj);
+	struct memlat_group *grp = mon->memlat_grp;
+	uint32_t cur_freq;
+	int ret;
+
+	if (mon->type != CPUCP_MON)
+		return scnprintf(buf, PAGE_SIZE, "%lu\n", mon->cur_freq);
+
+	if (!ops)
+		return -ENODEV;
+
+	ret = ops->get_cur_freq(memlat_data->ph, grp->hw_type, mon->index, &cur_freq);
+	if (ret < 0) {
+		pr_err("failed to get mon current frequency\n");
+		return ret;
+	}
+	return scnprintf(buf, PAGE_SIZE, "%lu\n", le32_to_cpu(cur_freq));
+}
+
+static ssize_t show_adaptive_cur_freq(struct kobject *kobj,
+				      struct attribute *attr, char *buf)
+{
+	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
+	uint32_t adaptive_cur_freq;
+	struct memlat_group *grp = to_memlat_grp(kobj);
+	int ret;
+
+	if (!grp->cpucp_enabled)
+		return scnprintf(buf, PAGE_SIZE, "%lu\n", grp->adaptive_cur_freq);
+
+	if (!ops)
+		return -ENODEV;
+
+	ret = ops->get_adaptive_cur_freq(memlat_data->ph, grp->hw_type, 0, &adaptive_cur_freq);
+	if (ret < 0) {
+		pr_err("failed to get grp adaptive current frequency\n");
+		return ret;
+	}
+	return scnprintf(buf, PAGE_SIZE, "%lu\n", le32_to_cpu(adaptive_cur_freq));
+}
+
 show_grp_attr(sampling_cur_freq);
-show_grp_attr(adaptive_cur_freq);
 show_grp_attr(adaptive_high_freq);
 store_grp_attr(adaptive_high_freq, 0U, 8000000U);
 show_grp_attr(adaptive_low_freq);
@@ -598,7 +551,6 @@ store_grp_attr(adaptive_low_freq, 0U, 8000000U);
 
 show_attr(min_freq);
 show_attr(max_freq);
-show_attr(cur_freq);
 show_attr(ipm_ceil);
 store_attr(ipm_ceil, 1U, 50000U);
 show_attr(fe_stall_floor);
@@ -611,15 +563,16 @@ show_attr(wb_pct_thres);
 store_attr(wb_pct_thres, 0U, 100U);
 show_attr(wb_filter_ipm);
 store_attr(wb_filter_ipm, 0U, 50000U);
-store_attr(freq_scale_limit_mhz, 0U, 5000U);
-show_attr(freq_scale_limit_mhz);
-show_attr(spm_drop_pct);
-show_attr(spm_thres);
-show_attr(spm_window_size);
+store_attr(freq_scale_ceil_mhz, 0U, 5000U);
+show_attr(freq_scale_ceil_mhz);
+store_attr(freq_scale_floor_mhz, 0U, 5000U);
+show_attr(freq_scale_floor_mhz);
 
 MEMLAT_ATTR_RW(sample_ms);
 MEMLAT_ATTR_RW(cpucp_sample_ms);
 MEMLAT_ATTR_RW(cpucp_log_level);
+MEMLAT_ATTR_RW(flush_cpucp_log);
+MEMLAT_ATTR_RO(hlos_cpucp_offset);
 
 MEMLAT_ATTR_RO(sampling_cur_freq);
 MEMLAT_ATTR_RO(adaptive_cur_freq);
@@ -636,16 +589,15 @@ MEMLAT_ATTR_RW(be_stall_floor);
 MEMLAT_ATTR_RW(freq_scale_pct);
 MEMLAT_ATTR_RW(wb_pct_thres);
 MEMLAT_ATTR_RW(wb_filter_ipm);
-MEMLAT_ATTR_RW(freq_scale_limit_mhz);
-MEMLAT_ATTR_RW(spm_thres);
-MEMLAT_ATTR_RW(spm_drop_pct);
-MEMLAT_ATTR_RW(spm_window_size);
-MEMLAT_ATTR_RW(spm_freq_map);
+MEMLAT_ATTR_RW(freq_scale_ceil_mhz);
+MEMLAT_ATTR_RW(freq_scale_floor_mhz);
 
 static struct attribute *memlat_settings_attr[] = {
 	&sample_ms.attr,
 	&cpucp_sample_ms.attr,
 	&cpucp_log_level.attr,
+	&flush_cpucp_log.attr,
+	&hlos_cpucp_offset.attr,
 	NULL,
 };
 
@@ -668,11 +620,8 @@ static struct attribute *memlat_mon_attr[] = {
 	&freq_scale_pct.attr,
 	&wb_pct_thres.attr,
 	&wb_filter_ipm.attr,
-	&freq_scale_limit_mhz.attr,
-	&spm_thres.attr,
-	&spm_drop_pct.attr,
-	&spm_window_size.attr,
-	&spm_freq_map.attr,
+	&freq_scale_ceil_mhz.attr,
+	&freq_scale_floor_mhz.attr,
 	NULL,
 };
 
@@ -835,20 +784,6 @@ static void calculate_sampling_stats(void)
 				stats->ipm[grp] /=
 					delta->grp_ctrs[grp][MISS_IDX];
 
-			if (delta->grp_ctrs[grp][MISS_IDX] > 0)
-				stats->l2miss_ratio[grp] = mult_frac(100,
-					delta->grp_ctrs[DCVS_L3][MISS_IDX],
-					delta->grp_ctrs[grp][MISS_IDX]);
-			else
-				stats->l2miss_ratio[grp] =
-				(delta->grp_ctrs[DCVS_L3][MISS_IDX] * 100);
-
-			stats->spm[grp] = delta->common_ctrs[BE_STALL_IDX];
-			if (delta->grp_ctrs[grp][MISS_IDX])
-				stats->spm[grp] /=
-					delta->grp_ctrs[grp][MISS_IDX];
-			else
-				stats->spm[grp] = 0;
 			if (!memlat_grp->grp_ev_ids[WB_IDX]
 					|| !memlat_grp->grp_ev_ids[ACC_IDX])
 				stats->wb_pct[grp] = 0;
@@ -908,25 +843,15 @@ static void calculate_mon_sampling_freq(struct memlat_mon *mon)
 {
 	struct cpu_stats *stats;
 	int cpu, max_cpu = cpumask_first(&mon->cpus);
-	u32 max_memfreq, max_cpufreq = 0, max_max_spm_cpufreq = 0, max_spm_cpufreq = 0;
-	u32 max_cpufreq_scaled = 0, ipm_diff, base_vote = 0;
+	u32 max_memfreq, max_cpufreq = 0;
+	u32 max_cpufreq_scaled = 0, ipm_diff;
 	u32 hw = mon->memlat_grp->hw_type;
-	u32 max_spm = 0, avg_spm = 0, min_l2miss_ratio = U32_MAX;
-	u64  max_miss = 0;
-	u32 miss_delta, miss_delta_pct;
-	u32 i, j, vote_idx, spm_max_vote_khz;
-	struct cpufreq_memfreq_map *map;
 
 	if (hw >= NUM_DCVS_HW_TYPES)
 		return;
 
 	for_each_cpu(cpu, &mon->cpus) {
 		stats = per_cpu(sampling_stats, cpu);
-		/* these are max of any CPU (for SPM algo) */
-		if (stats->l2miss_ratio[hw])
-			min_l2miss_ratio = min(stats->l2miss_ratio[hw], min_l2miss_ratio);
-		max_miss = max(stats->delta.grp_ctrs[hw][MISS_IDX], max_miss);
-		max_spm_cpufreq = max(max_spm_cpufreq, stats->freq_mhz);
 		if (mon->is_compute || (stats->wb_pct[hw] >= mon->wb_pct_thres
 		    && stats->ipm[hw] <= mon->wb_filter_ipm))
 			set_higher_freq(&max_cpu, cpu, &max_cpufreq,
@@ -934,82 +859,22 @@ static void calculate_mon_sampling_freq(struct memlat_mon *mon)
 		else if (stats->ipm[hw] <= mon->ipm_ceil) {
 			ipm_diff = mon->ipm_ceil - stats->ipm[hw];
 			max_cpufreq_scaled = stats->freq_mhz;
-
-			if (mon->enable_spm_voting && stats->freq_mhz >= SPM_CPU_FREQ_IGN)
-				max_spm = max(stats->spm[hw], max_spm);
-
-			if (mon->freq_scale_pct && stats->freq_mhz &&
-			    (stats->freq_mhz < mon->freq_scale_limit_mhz) &&
-			    (stats->be_stall_pct >= mon->be_stall_floor)) {
+			if (mon->freq_scale_pct &&
+			    (stats->freq_mhz > mon->freq_scale_floor_mhz &&
+			     stats->freq_mhz < mon->freq_scale_ceil_mhz) &&
+			    (stats->fe_stall_pct >= mon->fe_stall_floor ||
+			     stats->be_stall_pct >= mon->be_stall_floor)) {
 				max_cpufreq_scaled += (stats->freq_mhz * ipm_diff *
 					mon->freq_scale_pct) / (mon->ipm_ceil * 100);
-				max_cpufreq_scaled = min(mon->freq_scale_limit_mhz,
+				max_cpufreq_scaled = min(mon->freq_scale_ceil_mhz,
 							 max_cpufreq_scaled);
 			}
 			set_higher_freq(&max_cpu, cpu, &max_cpufreq,
 					max_cpufreq_scaled);
 		}
 	}
+
 	max_memfreq = cpufreq_to_memfreq(mon, max_cpufreq);
-
-	base_vote = max_memfreq;
-	if (mon->enable_spm_voting) {
-		mon->sampled_max_spm[mon->sampled_spm_idx] = max_spm;
-		mon->sampled_max_cpu_freq[mon->sampled_spm_idx] = max_spm_cpufreq;
-		mon->sampled_spm_idx = (mon->sampled_spm_idx + 1) % mon->spm_window_size;
-		for (i = 0; i < mon->spm_window_size; i++) {
-			avg_spm += mon->sampled_max_spm[i];
-			max_max_spm_cpufreq = max(max_max_spm_cpufreq,
-				mon->sampled_max_cpu_freq[i]);
-		}
-		avg_spm = avg_spm / mon->spm_window_size;
-		if (avg_spm >= mon->spm_thres && ((min_l2miss_ratio
-			< L2MISS_RATIO_THRES) || max_spm_cpufreq >= SPM_FREQ_THRES))
-			mon->spm_vote_inc_steps++;
-		else if (avg_spm < mon->disable_spm_value && mon->spm_vote_inc_steps >= 1)
-			mon->spm_vote_inc_steps--;
-
-		if (mon->spm_vote_inc_steps && max_miss < mon->prev_max_miss) {
-			miss_delta = mon->prev_max_miss - max_miss;
-			miss_delta_pct = mult_frac(100, miss_delta, mon->prev_max_miss);
-			if (miss_delta_pct >= MISS_DELTA_PCT_THRES)
-				mon->spm_vote_inc_steps = 0;
-		}
-		mon->prev_max_miss = max_miss;
-		if (max_spm_cpufreq < SPM_CPU_FREQ_IGN)
-			mon->spm_vote_inc_steps = 0;
-		if (mon->spm_vote_inc_steps) {
-			if (max_max_spm_cpufreq < mon->spm_freq_map[0].cpufreq_mhz)
-				spm_max_vote_khz = mon->spm_freq_map[0].memfreq_khz;
-			else if (max_max_spm_cpufreq < mon->spm_freq_map[1].cpufreq_mhz)
-				spm_max_vote_khz = mon->spm_freq_map[1].memfreq_khz;
-			else
-				spm_max_vote_khz = mon->max_freq;
-		}
-	} else
-		mon->spm_vote_inc_steps = 0;
-
-	map = mon->freq_map;
-	if (mon->spm_vote_inc_steps && max_memfreq < spm_max_vote_khz) {
-		for (i = 0; i < mon->freq_map_len && map[i].cpufreq_mhz; i++) {
-			if (map[i].memfreq_khz >= max_memfreq)
-				break;
-		}
-		for (j = i; j < mon->freq_map_len && map[j].cpufreq_mhz; j++) {
-			if (map[j].memfreq_khz >= spm_max_vote_khz)
-				break;
-		}
-		if (i != mon->freq_map_len && j != mon->freq_map_len) {
-			vote_idx = i + mon->spm_vote_inc_steps;
-			vote_idx = min(vote_idx, j);
-			if (i + mon->spm_vote_inc_steps > j)
-				mon->spm_vote_inc_steps = j - i;
-			if (vote_idx < mon->freq_map_len && mon->freq_map[vote_idx].memfreq_khz)
-				max_memfreq = min(mon->freq_map[vote_idx].memfreq_khz,
-								spm_max_vote_khz);
-		}
-	}
-
 	max_memfreq = max(max_memfreq, mon->min_freq);
 	max_memfreq = min(max_memfreq, mon->max_freq);
 
@@ -1019,12 +884,6 @@ static void calculate_mon_sampling_freq(struct memlat_mon *mon)
 				stats->delta.common_ctrs[INST_IDX],
 				stats->delta.grp_ctrs[hw][MISS_IDX],
 				max_cpufreq, max_memfreq);
-
-		if (mon->enable_spm_voting)
-			trace_memlat_spm_update(dev_name(mon->dev),
-				max_spm_cpufreq, max_max_spm_cpufreq, base_vote,
-				max_memfreq, mon->spm_vote_inc_steps,
-				spm_max_vote_khz, avg_spm, min_l2miss_ratio);
 	}
 
 	mon->cur_freq = max_memfreq;
@@ -1402,21 +1261,13 @@ static inline bool should_enable_memlat_fp(void)
 	return false;
 }
 
-static int configure_cpucp_grp(struct memlat_group *grp)
+static int configure_cpucp_common_events(void)
 {
 	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
 	int ret = 0, i, j = 0;
-	struct device_node *of_node = grp->dev->of_node;
-	u8 ev_map[MAX_EV_CNTRS];
+	u8 ev_map[NUM_COMMON_EVS];
 
-	ret = ops->set_mem_grp(memlat_data->ph, *cpumask_bits(cpu_possible_mask),
-			       grp->hw_type);
-	if (ret < 0) {
-		pr_err("Failed to configure mem grp %s\n", of_node->name);
-		return ret;
-	}
-
-	memset(ev_map, 0xFF, MAX_EV_CNTRS);
+	memset(ev_map, 0xFF, NUM_COMMON_EVS);
 	for (i = 0; i < NUM_COMMON_EVS; i++, j++) {
 		if (!memlat_data->common_ev_ids[i])
 			continue;
@@ -1426,6 +1277,25 @@ static int configure_cpucp_grp(struct memlat_group *grp)
 			ev_map[j] = ret;
 	}
 
+	ret = ops->set_common_ev_map(memlat_data->ph, ev_map, NUM_COMMON_EVS);
+	return ret;
+}
+
+static int configure_cpucp_grp(struct memlat_group *grp)
+{
+	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
+	int ret = 0, i, j = 0;
+	struct device_node *of_node = grp->dev->of_node;
+	u8 ev_map[NUM_GRP_EVS];
+
+	ret = ops->set_mem_grp(memlat_data->ph, *cpumask_bits(cpu_possible_mask),
+			       grp->hw_type);
+	if (ret < 0) {
+		pr_err("Failed to configure mem grp %s\n", of_node->name);
+		return ret;
+	}
+
+	memset(ev_map, 0xFF, NUM_GRP_EVS);
 	for (i = 0; i < NUM_GRP_EVS; i++, j++) {
 		if (!grp->grp_ev_ids[i])
 			continue;
@@ -1435,10 +1305,24 @@ static int configure_cpucp_grp(struct memlat_group *grp)
 			ev_map[j] = ret;
 	}
 
-	ret = ops->set_ev_map(memlat_data->ph, grp->hw_type, ev_map);
-	if (ret < 0)
+	ret = ops->set_grp_ev_map(memlat_data->ph, grp->hw_type, ev_map, NUM_GRP_EVS);
+	if (ret < 0) {
 		pr_err("Failed to configure event map for mem grp %s\n",
 							of_node->name);
+		return ret;
+	}
+
+	ret = ops->adaptive_low_freq(memlat_data->ph, grp->hw_type, 0, grp->adaptive_low_freq);
+	if (ret < 0) {
+		pr_err("Failed to configure grp adaptive low freq for mem grp %s\n",
+								of_node->name);
+		return ret;
+	}
+
+	ret = ops->adaptive_high_freq(memlat_data->ph, grp->hw_type, 0, grp->adaptive_high_freq);
+	if (ret < 0)
+		pr_err("Failed to configure grp adaptive high freq for mem grp %s\n",
+									of_node->name);
 	return ret;
 }
 
@@ -1448,9 +1332,10 @@ static int configure_cpucp_mon(struct memlat_mon *mon)
 	const struct scmi_memlat_vendor_ops *ops = memlat_data->memlat_ops;
 	struct device_node *of_node = mon->dev->of_node;
 	int ret;
+	const char c = ':';
 
 	ret = ops->set_mon(memlat_data->ph, mon->cpus_mpidr, grp->hw_type,
-			   mon->is_compute, mon->index);
+			   mon->is_compute, mon->index, (strrchr(dev_name(mon->dev), c) + 1));
 	if (ret < 0) {
 		pr_err("failed to configure monitor %s\n", of_node->name);
 		return ret;
@@ -1477,12 +1362,6 @@ static int configure_cpucp_mon(struct memlat_mon *mon)
 		return ret;
 	}
 
-	ret = ops->sample_ms(memlat_data->ph, memlat_data->cpucp_sample_ms);
-	if (ret < 0) {
-		pr_err("failed to set cpucp sample_ms for %s\n", of_node->name);
-		return ret;
-	}
-
 	ret = ops->wb_pct_thres(memlat_data->ph, grp->hw_type, mon->index,
 				mon->wb_pct_thres);
 	if (ret < 0) {
@@ -1504,10 +1383,17 @@ static int configure_cpucp_mon(struct memlat_mon *mon)
 		return ret;
 	}
 
-	ret = ops->freq_scale_limit_mhz(memlat_data->ph, grp->hw_type, mon->index,
-					mon->freq_scale_limit_mhz);
+	ret = ops->freq_scale_ceil_mhz(memlat_data->ph, grp->hw_type, mon->index,
+					mon->freq_scale_ceil_mhz);
 	if (ret < 0) {
-		pr_err("failed to set wb filter ipm for %s\n", of_node->name);
+		pr_err("failed to set freq_scale_ceil for %s\n", of_node->name);
+		return ret;
+	}
+
+	ret = ops->freq_scale_floor_mhz(memlat_data->ph, grp->hw_type, mon->index,
+					mon->freq_scale_floor_mhz);
+	if (ret < 0) {
+		pr_err("failed to set freq_scale_floor on %s\n", of_node->name);
 		return ret;
 	}
 
@@ -1541,13 +1427,13 @@ int cpucp_memlat_init(struct scmi_device *sdev)
 	struct memlat_group *grp;
 	bool start_cpucp_timer = false;
 
-	if (!memlat_data->inited)
+	if (!memlat_data || !memlat_data->inited)
 		return -EPROBE_DEFER;
 
 	if (!sdev || !sdev->handle)
 		return -EINVAL;
 
-	ops = sdev->handle->devm_get_protocol(sdev, SCMI_PROTOCOL_MEMLAT, &ph);
+	ops = sdev->handle->devm_protocol_get(sdev, SCMI_PROTOCOL_MEMLAT, &ph);
 	if (IS_ERR(ops))
 		return PTR_ERR(ops);
 
@@ -1555,15 +1441,21 @@ int cpucp_memlat_init(struct scmi_device *sdev)
 	memlat_data->ph = ph;
 	memlat_data->memlat_ops = ops;
 
-	/* Configure group and common parameters */
+	/* Configure common events */
+	ret = configure_cpucp_common_events();
+	if (ret < 0) {
+		pr_err("Failed to configure common events: %d\n", ret);
+		goto memlat_unlock;
+	}
+
+	/* Configure group/mon parameters */
 	for (i = 0; i < MAX_MEMLAT_GRPS; i++) {
 		grp = memlat_data->groups[i];
-		if (!grp->cpucp_enabled)
+		if (!grp || !grp->cpucp_enabled)
 			continue;
 		ret = configure_cpucp_grp(grp);
 		if (ret < 0) {
 			pr_err("Failed to configure mem group: %d\n", ret);
-			ops = NULL;
 			goto memlat_unlock;
 		}
 
@@ -1575,7 +1467,6 @@ int cpucp_memlat_init(struct scmi_device *sdev)
 			ret = configure_cpucp_mon(&grp->mons[j]);
 			if (ret < 0) {
 				pr_err("failed to configure mon: %d\n", ret);
-				ops = NULL;
 				goto mons_unlock;
 			}
 			start_cpucp_timer = true;
@@ -1583,19 +1474,25 @@ int cpucp_memlat_init(struct scmi_device *sdev)
 		mutex_unlock(&grp->mons_lock);
 	}
 
-	/* Start sampling and voting timer */
-	if (!start_cpucp_timer)
+	ret = ops->sample_ms(memlat_data->ph, memlat_data->cpucp_sample_ms);
+	if (ret < 0) {
+		pr_err("failed to set cpucp sample_ms\n");
 		goto memlat_unlock;
+	}
 
-	ret = ops->start_timer(memlat_data->ph);
-	if (ret < 0)
-		pr_err("Error in starting the mem group timer %d\n", ret);
-
+	/* Start sampling and voting timer */
+	if (start_cpucp_timer) {
+		ret = ops->start_timer(memlat_data->ph);
+		if (ret < 0)
+			pr_err("Error in starting the mem group timer %d\n", ret);
+	}
 	goto memlat_unlock;
 
 mons_unlock:
 	mutex_unlock(&grp->mons_lock);
 memlat_unlock:
+	if (ret < 0)
+		memlat_data->memlat_ops = NULL;
 	mutex_unlock(&memlat_lock);
 	return ret;
 }
@@ -1661,13 +1558,10 @@ static int memlat_dev_probe(struct platform_device *pdev)
 			ret = qcom_pmu_event_supported(event_id, cpu);
 			if (!ret)
 				continue;
-			if (ret != -EPROBE_DEFER) {
+			if (ret != -EPROBE_DEFER)
 				dev_err(dev, "ev=%lu not found on cpu%d: %d\n",
 						event_id, cpu, ret);
-				if (event_id == INST_EV || event_id == CYC_EV)
-					return ret;
-			} else
-				return ret;
+			return ret;
 		}
 	}
 
@@ -1902,14 +1796,8 @@ static int memlat_mon_probe(struct platform_device *pdev)
 	mon->freq_scale_pct = 0;
 	mon->wb_pct_thres = 100;
 	mon->wb_filter_ipm = 25000;
-	mon->freq_scale_limit_mhz = 5000;
-	mon->spm_thres = MAX_SPM_THRES;
-	mon->spm_drop_pct = 20;
-	mon->spm_window_size = 10;
-	mon->spm_freq_map[0].cpufreq_mhz = 1200;
-	mon->spm_freq_map[1].cpufreq_mhz = 2100;
-	mon->spm_freq_map[0].memfreq_khz = 1708000;
-	mon->spm_freq_map[1].memfreq_khz = 2092000;
+	mon->freq_scale_ceil_mhz = 5000;
+	mon->freq_scale_floor_mhz = 5000;
 
 	if (of_parse_phandle(of_node, COREDEV_TBL_PROP, 0))
 		of_node = of_parse_phandle(of_node, COREDEV_TBL_PROP, 0);

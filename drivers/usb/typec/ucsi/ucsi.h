@@ -10,7 +10,6 @@
 #include <linux/usb/typec.h>
 #include <linux/usb/pd.h>
 #include <linux/usb/role.h>
-#include <linux/usb/pd.h>
 
 /* -------------------------------------------------------------------------- */
 
@@ -221,12 +220,12 @@ struct ucsi_cable_property {
 #define UCSI_CABLE_PROP_FLAG_VBUS_IN_CABLE	BIT(0)
 #define UCSI_CABLE_PROP_FLAG_ACTIVE_CABLE	BIT(1)
 #define UCSI_CABLE_PROP_FLAG_DIRECTIONALITY	BIT(2)
-#define UCSI_CABLE_PROP_FLAG_PLUG_TYPE(_f_)	(((_f_) & GENMASK(4, 3)) >> 3)
+#define UCSI_CABLE_PROP_FLAG_PLUG_TYPE(_f_)	((_f_) & GENMASK(3, 0))
 #define   UCSI_CABLE_PROPERTY_PLUG_TYPE_A	0
 #define   UCSI_CABLE_PROPERTY_PLUG_TYPE_B	1
 #define   UCSI_CABLE_PROPERTY_PLUG_TYPE_C	2
 #define   UCSI_CABLE_PROPERTY_PLUG_OTHER	3
-#define UCSI_CABLE_PROP_FLAG_MODE_SUPPORT	BIT(5)
+#define UCSI_CABLE_PROP_MODE_SUPPORT		BIT(5)
 	u8 latency;
 } __packed;
 
@@ -329,10 +328,9 @@ struct ucsi_android {
 #define UCSI_MAX_SVID		5
 #define UCSI_MAX_ALTMODES	(UCSI_MAX_SVID * 6)
 
-#define UCSI_TYPEC_VSAFE5V		5000
-#define UCSI_TYPEC_DEFAULT_CURRENT	 100
-#define UCSI_TYPEC_1_5_CURRENT		1500
-#define UCSI_TYPEC_3_0_CURRENT		3000
+#define UCSI_TYPEC_VSAFE5V	5000
+#define UCSI_TYPEC_1_5_CURRENT	1500
+#define UCSI_TYPEC_3_0_CURRENT	3000
 
 struct ucsi_connector {
 	int num;
@@ -392,7 +390,7 @@ ucsi_register_displayport(struct ucsi_connector *con,
 			  bool override, int offset,
 			  struct typec_altmode_desc *desc)
 {
-	return typec_port_register_altmode(con->port, desc);
+	return NULL;
 }
 
 static inline void

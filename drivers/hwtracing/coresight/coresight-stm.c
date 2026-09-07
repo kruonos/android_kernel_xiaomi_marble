@@ -98,7 +98,7 @@ module_param_named(
 	boot_nr_channel, boot_nr_channel, int, S_IRUGO
 );
 
-/**
+/*
  * struct channel_space - central management entity for extended ports
  * @base:		memory mapped base address where channels start.
  * @phys:		physical base address of channel region.
@@ -927,7 +927,6 @@ static int stm_probe(struct amba_device *adev, const struct amba_id *id)
 		dev_info(dev,
 			 "%s : stm_register_device failed, probing deferred\n",
 			 desc.name);
-		pm_runtime_put(&adev->dev);
 		return -EPROBE_DEFER;
 	}
 
@@ -992,16 +991,53 @@ static int stm_runtime_resume(struct device *dev)
 }
 #endif
 
+#ifdef CONFIG_DEEPSLEEP
+static int stm_suspend(struct device *dev)
+{
+	struct stm_drvdata *drvdata = dev_get_drvdata(dev);
+	struct stm_device	*stm_dev;
+	struct list_head	*head, *p;
+
+	if (pm_suspend_via_firmware()) {
+		coresight_disable(drvdata->csdev);
+
+		stm_dev = drvdata->stm.stm;
+		if (stm_dev) {
+			head = &stm_dev->link_list;
+			list_for_each(p, head)
+				pm_runtime_put_autosuspend(&stm_dev->dev);
+		}
+	}
+
+	return 0;
+}
+
+static int stm_resume(struct device *dev)
+{
+	struct stm_drvdata *drvdata = dev_get_drvdata(dev);
+	struct stm_device	*stm_dev;
+	struct list_head	*head, *p;
+
+	if (pm_suspend_via_firmware()) {
+		stm_dev = drvdata->stm.stm;
+		if (stm_dev) {
+			head = &stm_dev->link_list;
+			list_for_each(p, head)
+				pm_runtime_get(&stm_dev->dev);
+		}
+	}
+
+	return 0;
+}
+#endif
+
 #ifdef CONFIG_HIBERNATION
 static int stm_freeze(struct device *dev)
 {
 	struct stm_drvdata *drvdata = dev_get_drvdata(dev);
-	struct coresight_device *csdev = drvdata->csdev;
-
 	struct stm_device	*stm_dev;
 	struct list_head	*head, *p;
 
-	atomic_set(csdev->refcnt, 1);
 	coresight_disable(drvdata->csdev);
 
 	stm_dev = drvdata->stm.stm;
@@ -1014,12 +1050,33 @@ static int stm_freeze(struct device *dev)
 	return 0;
 }
 
+static int stm_restore(struct device *dev)
+{
+	struct stm_drvdata *drvdata = dev_get_drvdata(dev);
+	struct stm_device	*stm_dev;
+	struct list_head	*head, *p;
+
+	stm_dev = drvdata->stm.stm;
+	if (stm_dev) {
+		head = &stm_dev->link_list;
+		list_for_each(p, head)
+			pm_runtime_get(&stm_dev->dev);
+	}
+
+	return 0;
+}
+
 #endif
 
 static const struct dev_pm_ops stm_dev_pm_ops = {
 	SET_RUNTIME_PM_OPS(stm_runtime_suspend, stm_runtime_resume, NULL)
+#ifdef CONFIG_DEEPSLEEP
+	.suspend = stm_suspend,
+	.resume  = stm_resume,
+#endif
 #ifdef CONFIG_HIBERNATION
 	.freeze  = stm_freeze,
+	.restore = stm_restore,
 #endif
 };
 

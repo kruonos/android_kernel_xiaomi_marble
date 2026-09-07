@@ -18,6 +18,7 @@
 #include <trace/events/block.h>
 
 #include "dm.h"
+#include "dm-ima.h"
 
 #define DM_RESERVED_MAX_IOS		1024
 #define DM_MAX_TARGETS			1048576
@@ -66,6 +67,8 @@ struct mapped_device {
 	struct gendisk *disk;
 	struct dax_device *dax_dev;
 
+	unsigned long __percpu *pending_io;
+
 	/*
 	 * A list of ios that arrived while we were suspended.
 	 */
@@ -105,8 +108,6 @@ struct mapped_device {
 	/* kobject and completion */
 	struct dm_kobject_holder kobj_holder;
 
-	struct block_device *bdev;
-
 	int swap_bios;
 	struct semaphore swap_bios_semaphore;
 	struct mutex swap_bios_lock;
@@ -118,6 +119,15 @@ struct mapped_device {
 	bool init_tio_pdu:1;
 
 	struct srcu_struct io_barrier;
+
+#ifdef CONFIG_BLK_DEV_ZONED
+	unsigned int nr_zones;
+	unsigned int *zwp_offset;
+#endif
+
+#ifdef CONFIG_IMA
+	struct dm_ima_measurements ima;
+#endif
 };
 
 /*
@@ -132,6 +142,7 @@ struct mapped_device {
 #define DMF_DEFERRED_REMOVE 6
 #define DMF_SUSPENDED_INTERNALLY 7
 #define DMF_POST_SUSPENDING 8
+#define DMF_EMULATE_ZONE_APPEND 9
 
 void disable_discard(struct mapped_device *md);
 void disable_write_same(struct mapped_device *md);
@@ -145,6 +156,13 @@ static inline sector_t dm_get_size(struct mapped_device *md)
 static inline struct dm_stats *dm_get_stats(struct mapped_device *md)
 {
 	return &md->stats;
+}
+
+static inline bool dm_emulate_zone_append(struct mapped_device *md)
+{
+	if (blk_queue_is_zoned(md->queue))
+		return test_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
+	return false;
 }
 
 #define DM_TABLE_MAX_DEPTH 16

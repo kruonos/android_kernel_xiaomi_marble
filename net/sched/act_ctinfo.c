@@ -44,9 +44,9 @@ static void tcf_ctinfo_dscp_set(struct nf_conn *ct, struct tcf_ctinfo *ca,
 				ipv4_change_dsfield(ip_hdr(skb),
 						    INET_ECN_MASK,
 						    newdscp);
-				atomic64_inc(&ca->stats_dscp_set);
+				ca->stats_dscp_set++;
 			} else {
-				atomic64_inc(&ca->stats_dscp_error);
+				ca->stats_dscp_error++;
 			}
 		}
 		break;
@@ -57,9 +57,9 @@ static void tcf_ctinfo_dscp_set(struct nf_conn *ct, struct tcf_ctinfo *ca,
 				ipv6_change_dsfield(ipv6_hdr(skb),
 						    INET_ECN_MASK,
 						    newdscp);
-				atomic64_inc(&ca->stats_dscp_set);
+				ca->stats_dscp_set++;
 			} else {
-				atomic64_inc(&ca->stats_dscp_error);
+				ca->stats_dscp_error++;
 			}
 		}
 		break;
@@ -72,7 +72,7 @@ static void tcf_ctinfo_cpmark_set(struct nf_conn *ct, struct tcf_ctinfo *ca,
 				  struct tcf_ctinfo_params *cp,
 				  struct sk_buff *skb)
 {
-	atomic64_inc(&ca->stats_cpmark_set);
+	ca->stats_cpmark_set++;
 	skb->mark = READ_ONCE(ct->mark) & cp->cpmarkmask;
 }
 
@@ -154,11 +154,11 @@ static const struct nla_policy ctinfo_policy[TCA_CTINFO_MAX + 1] = {
 
 static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 			   struct nlattr *est, struct tc_action **a,
-			   int ovr, int bind, bool rtnl_held,
 			   struct tcf_proto *tp, u32 flags,
 			   struct netlink_ext_ack *extack)
 {
 	struct tc_action_net *tn = net_generic(net, ctinfo_net_id);
+	bool bind = flags & TCA_ACT_FLAGS_BIND;
 	u32 dscpmask = 0, dscpstatemask, index;
 	struct nlattr *tb[TCA_CTINFO_MAX + 1];
 	struct tcf_ctinfo_params *cp_new;
@@ -221,7 +221,7 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 	} else if (err > 0) {
 		if (bind) /* don't override defaults */
 			return 0;
-		if (!ovr) {
+		if (!(flags & TCA_ACT_FLAGS_REPLACE)) {
 			tcf_idr_release(*a, bind);
 			return -EEXIST;
 		}
@@ -322,18 +322,15 @@ static int tcf_ctinfo_dump(struct sk_buff *skb, struct tc_action *a,
 	}
 
 	if (nla_put_u64_64bit(skb, TCA_CTINFO_STATS_DSCP_SET,
-			      atomic64_read(&ci->stats_dscp_set),
-			      TCA_CTINFO_PAD))
+			      ci->stats_dscp_set, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
 	if (nla_put_u64_64bit(skb, TCA_CTINFO_STATS_DSCP_ERROR,
-			      atomic64_read(&ci->stats_dscp_error),
-			      TCA_CTINFO_PAD))
+			      ci->stats_dscp_error, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
 	if (nla_put_u64_64bit(skb, TCA_CTINFO_STATS_CPMARK_SET,
-			      atomic64_read(&ci->stats_cpmark_set),
-			      TCA_CTINFO_PAD))
+			      ci->stats_cpmark_set, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
 	spin_unlock_bh(&ci->tcf_lock);

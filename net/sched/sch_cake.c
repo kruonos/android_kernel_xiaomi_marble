@@ -643,63 +643,6 @@ static bool cake_ddst(int flow_mode)
 	return (flow_mode & CAKE_FLOW_DUAL_DST) == CAKE_FLOW_DUAL_DST;
 }
 
-static void cake_dec_srchost_bulk_flow_count(struct cake_tin_data *q,
-					     struct cake_flow *flow,
-					     int flow_mode)
-{
-	if (likely(cake_dsrc(flow_mode) &&
-		   q->hosts[flow->srchost].srchost_bulk_flow_count))
-		q->hosts[flow->srchost].srchost_bulk_flow_count--;
-}
-
-static void cake_inc_srchost_bulk_flow_count(struct cake_tin_data *q,
-					     struct cake_flow *flow,
-					     int flow_mode)
-{
-	if (likely(cake_dsrc(flow_mode) &&
-		   q->hosts[flow->srchost].srchost_bulk_flow_count < CAKE_QUEUES))
-		q->hosts[flow->srchost].srchost_bulk_flow_count++;
-}
-
-static void cake_dec_dsthost_bulk_flow_count(struct cake_tin_data *q,
-					     struct cake_flow *flow,
-					     int flow_mode)
-{
-	if (likely(cake_ddst(flow_mode) &&
-		   q->hosts[flow->dsthost].dsthost_bulk_flow_count))
-		q->hosts[flow->dsthost].dsthost_bulk_flow_count--;
-}
-
-static void cake_inc_dsthost_bulk_flow_count(struct cake_tin_data *q,
-					     struct cake_flow *flow,
-					     int flow_mode)
-{
-	if (likely(cake_ddst(flow_mode) &&
-		   q->hosts[flow->dsthost].dsthost_bulk_flow_count < CAKE_QUEUES))
-		q->hosts[flow->dsthost].dsthost_bulk_flow_count++;
-}
-
-static u16 cake_get_flow_quantum(struct cake_tin_data *q,
-				 struct cake_flow *flow,
-				 int flow_mode)
-{
-	u16 host_load = 1;
-
-	if (cake_dsrc(flow_mode))
-		host_load = max(host_load,
-				q->hosts[flow->srchost].srchost_bulk_flow_count);
-
-	if (cake_ddst(flow_mode))
-		host_load = max(host_load,
-				q->hosts[flow->dsthost].dsthost_bulk_flow_count);
-
-	/* The shifted prandom_u32() is a way to apply dithering to avoid
-	 * accumulating roundoff errors
-	 */
-	return (q->flow_quantum * quantum_div[host_load] +
-		(prandom_u32() >> 16)) >> 16;
-}
-
 static u32 cake_hash(struct cake_tin_data *q, const struct sk_buff *skb,
 		     int flow_mode, u16 flow_override, u16 host_override)
 {
@@ -842,13 +785,12 @@ skip_hash:
 		 * queue, accept the collision, update the host tags.
 		 */
 		q->way_collisions++;
+		if (q->flows[outer_hash + k].set == CAKE_SET_BULK) {
+			q->hosts[q->flows[reduced_hash].srchost].srchost_bulk_flow_count--;
+			q->hosts[q->flows[reduced_hash].dsthost].dsthost_bulk_flow_count--;
+		}
 		allocate_src = cake_dsrc(flow_mode);
 		allocate_dst = cake_ddst(flow_mode);
-
-		if (q->flows[outer_hash + k].set == CAKE_SET_BULK) {
-			cake_dec_srchost_bulk_flow_count(q, &q->flows[outer_hash + k], flow_mode);
-			cake_dec_dsthost_bulk_flow_count(q, &q->flows[outer_hash + k], flow_mode);
-		}
 found:
 		/* reserve queue for future packets in same flow */
 		reduced_hash = outer_hash + k;
@@ -872,10 +814,9 @@ found:
 			q->hosts[outer_hash + k].srchost_tag = srchost_hash;
 found_src:
 			srchost_idx = outer_hash + k;
-			q->flows[reduced_hash].srchost = srchost_idx;
-
 			if (q->flows[reduced_hash].set == CAKE_SET_BULK)
-				cake_inc_srchost_bulk_flow_count(q, &q->flows[reduced_hash], flow_mode);
+				q->hosts[srchost_idx].srchost_bulk_flow_count++;
+			q->flows[reduced_hash].srchost = srchost_idx;
 		}
 
 		if (allocate_dst) {
@@ -896,10 +837,9 @@ found_src:
 			q->hosts[outer_hash + k].dsthost_tag = dsthost_hash;
 found_dst:
 			dsthost_idx = outer_hash + k;
-			q->flows[reduced_hash].dsthost = dsthost_idx;
-
 			if (q->flows[reduced_hash].set == CAKE_SET_BULK)
-				cake_inc_dsthost_bulk_flow_count(q, &q->flows[reduced_hash], flow_mode);
+				q->hosts[dsthost_idx].dsthost_bulk_flow_count++;
+			q->flows[reduced_hash].dsthost = dsthost_idx;
 		}
 	}
 
@@ -1598,6 +1538,7 @@ static unsigned int cake_drop(struct Qdisc *sch, struct sk_buff **to_free)
 	b->backlogs[idx]    -= len;
 	b->tin_backlog      -= len;
 	sch->qstats.backlog -= len;
+	qdisc_tree_reduce_backlog(sch, 1, len);
 
 	flow->dropped++;
 	b->tin_dropped++;
@@ -1724,7 +1665,7 @@ static u32 cake_classify(struct Qdisc *sch, struct cake_tin_data **t,
 		goto hash;
 
 	*qerr = NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
-	result = tcf_classify(skb, filter, &res, false);
+	result = tcf_classify(skb, NULL, filter, &res, false);
 
 	if (result >= 0) {
 #ifdef CONFIG_NET_CLS_ACT
@@ -1753,14 +1694,14 @@ static void cake_reconfigure(struct Qdisc *sch);
 static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			struct sk_buff **to_free)
 {
-	u32 idx, tin, prev_qlen, prev_backlog, drop_id;
 	struct cake_sched_data *q = qdisc_priv(sch);
-	int len = qdisc_pkt_len(skb), ret;
+	int len = qdisc_pkt_len(skb);
+	int ret;
 	struct sk_buff *ack = NULL;
 	ktime_t now = ktime_get();
 	struct cake_tin_data *b;
 	struct cake_flow *flow;
-	bool same_flow = false;
+	u32 idx;
 
 	/* choose flow to insert into */
 	idx = cake_classify(sch, &b, skb, q->flow_mode, &ret);
@@ -1770,7 +1711,6 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		__qdisc_drop(skb, to_free);
 		return ret;
 	}
-	tin = (u32)(b - q->tins);
 	idx--;
 	flow = &b->flows[idx];
 
@@ -1833,8 +1773,6 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		consume_skb(skb);
 	} else {
 		/* not splitting */
-		int ack_pkt_len = 0;
-
 		cobalt_set_enqueue_time(skb, now);
 		get_cobalt_cb(skb)->adjusted_len = cake_overhead(q, skb);
 		flow_queue_add(flow, skb);
@@ -1845,13 +1783,13 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		if (ack) {
 			b->ack_drops++;
 			sch->qstats.drops++;
-			ack_pkt_len = qdisc_pkt_len(ack);
-			b->bytes += ack_pkt_len;
+			b->bytes += qdisc_pkt_len(ack);
+			len -= qdisc_pkt_len(ack);
 			q->buffer_used += skb->truesize - ack->truesize;
 			if (q->rate_flags & CAKE_FLAG_INGRESS)
 				cake_advance_shaper(q, b, ack, now, true);
 
-			qdisc_tree_reduce_backlog(sch, 1, ack_pkt_len);
+			qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(ack));
 			consume_skb(ack);
 		} else {
 			sch->q.qlen++;
@@ -1860,11 +1798,11 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 		/* stats */
 		b->packets++;
-		b->bytes	    += len - ack_pkt_len;
-		b->backlogs[idx]    += len - ack_pkt_len;
-		b->tin_backlog      += len - ack_pkt_len;
-		sch->qstats.backlog += len - ack_pkt_len;
-		q->avg_window_bytes += len - ack_pkt_len;
+		b->bytes	    += len;
+		b->backlogs[idx]    += len;
+		b->tin_backlog      += len;
+		sch->qstats.backlog += len;
+		q->avg_window_bytes += len;
 	}
 
 	if (q->overflow_timeout)
@@ -1914,6 +1852,10 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 	/* flowchain */
 	if (!flow->set || flow->set == CAKE_SET_DECAYING) {
+		struct cake_host *srchost = &b->hosts[flow->srchost];
+		struct cake_host *dsthost = &b->hosts[flow->dsthost];
+		u16 host_load = 1;
+
 		if (!flow->set) {
 			list_add_tail(&flow->flowchain, &b->new_flows);
 		} else {
@@ -1923,8 +1865,18 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		flow->set = CAKE_SET_SPARSE;
 		b->sparse_flow_count++;
 
-		flow->deficit = cake_get_flow_quantum(b, flow, q->flow_mode);
+		if (cake_dsrc(q->flow_mode))
+			host_load = max(host_load, srchost->srchost_bulk_flow_count);
+
+		if (cake_ddst(q->flow_mode))
+			host_load = max(host_load, dsthost->dsthost_bulk_flow_count);
+
+		flow->deficit = (b->flow_quantum *
+				 quantum_div[host_load]) >> 16;
 	} else if (flow->set == CAKE_SET_SPARSE_WAIT) {
+		struct cake_host *srchost = &b->hosts[flow->srchost];
+		struct cake_host *dsthost = &b->hosts[flow->dsthost];
+
 		/* this flow was empty, accounted as a sparse flow, but actually
 		 * in the bulk rotation.
 		 */
@@ -1932,36 +1884,26 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		b->sparse_flow_count--;
 		b->bulk_flow_count++;
 
-		cake_inc_srchost_bulk_flow_count(b, flow, q->flow_mode);
-		cake_inc_dsthost_bulk_flow_count(b, flow, q->flow_mode);
+		if (cake_dsrc(q->flow_mode))
+			srchost->srchost_bulk_flow_count++;
+
+		if (cake_ddst(q->flow_mode))
+			dsthost->dsthost_bulk_flow_count++;
+
 	}
 
 	if (q->buffer_used > q->buffer_max_used)
 		q->buffer_max_used = q->buffer_used;
 
-	if (q->buffer_used <= q->buffer_limit)
-		return NET_XMIT_SUCCESS;
+	if (q->buffer_used > q->buffer_limit) {
+		u32 dropped = 0;
 
-	prev_qlen = sch->q.qlen;
-	prev_backlog = sch->qstats.backlog;
-
-	while (q->buffer_used > q->buffer_limit) {
-		drop_id = cake_drop(sch, to_free);
-		if ((drop_id >> 16) == tin &&
-		    (drop_id & 0xFFFF) == idx)
-			same_flow = true;
+		while (q->buffer_used > q->buffer_limit) {
+			dropped++;
+			cake_drop(sch, to_free);
+		}
+		b->drop_overlimit += dropped;
 	}
-
-	prev_qlen -= sch->q.qlen;
-	prev_backlog -= sch->qstats.backlog;
-	b->drop_overlimit += prev_qlen;
-
-	if (same_flow) {
-		qdisc_tree_reduce_backlog(sch, prev_qlen - 1,
-					  prev_backlog - len);
-		return NET_XMIT_CN;
-	}
-	qdisc_tree_reduce_backlog(sch, prev_qlen, prev_backlog);
 	return NET_XMIT_SUCCESS;
 }
 
@@ -2004,11 +1946,13 @@ static struct sk_buff *cake_dequeue(struct Qdisc *sch)
 {
 	struct cake_sched_data *q = qdisc_priv(sch);
 	struct cake_tin_data *b = &q->tins[q->cur_tin];
+	struct cake_host *srchost, *dsthost;
 	ktime_t now = ktime_get();
 	struct cake_flow *flow;
 	struct list_head *head;
 	bool first_flow = true;
 	struct sk_buff *skb;
+	u16 host_load;
 	u64 delay;
 	u32 len;
 
@@ -2108,6 +2052,11 @@ retry:
 	q->cur_flow = flow - b->flows;
 	first_flow = false;
 
+	/* triple isolation (modified DRR++) */
+	srchost = &b->hosts[flow->srchost];
+	dsthost = &b->hosts[flow->dsthost];
+	host_load = 1;
+
 	/* flow isolation (DRR++) */
 	if (flow->deficit <= 0) {
 		/* Keep all flows with deficits out of the sparse and decaying
@@ -2119,8 +2068,11 @@ retry:
 				b->sparse_flow_count--;
 				b->bulk_flow_count++;
 
-				cake_inc_srchost_bulk_flow_count(b, flow, q->flow_mode);
-				cake_inc_dsthost_bulk_flow_count(b, flow, q->flow_mode);
+				if (cake_dsrc(q->flow_mode))
+					srchost->srchost_bulk_flow_count++;
+
+				if (cake_ddst(q->flow_mode))
+					dsthost->dsthost_bulk_flow_count++;
 
 				flow->set = CAKE_SET_BULK;
 			} else {
@@ -2132,7 +2084,19 @@ retry:
 			}
 		}
 
-		flow->deficit += cake_get_flow_quantum(b, flow, q->flow_mode);
+		if (cake_dsrc(q->flow_mode))
+			host_load = max(host_load, srchost->srchost_bulk_flow_count);
+
+		if (cake_ddst(q->flow_mode))
+			host_load = max(host_load, dsthost->dsthost_bulk_flow_count);
+
+		WARN_ON(host_load > CAKE_QUEUES);
+
+		/* The shifted prandom_u32() is a way to apply dithering to
+		 * avoid accumulating roundoff errors
+		 */
+		flow->deficit += (b->flow_quantum * quantum_div[host_load] +
+				  (prandom_u32() >> 16)) >> 16;
 		list_move_tail(&flow->flowchain, &b->old_flows);
 
 		goto retry;
@@ -2156,8 +2120,11 @@ retry:
 				if (flow->set == CAKE_SET_BULK) {
 					b->bulk_flow_count--;
 
-					cake_dec_srchost_bulk_flow_count(b, flow, q->flow_mode);
-					cake_dec_dsthost_bulk_flow_count(b, flow, q->flow_mode);
+					if (cake_dsrc(q->flow_mode))
+						srchost->srchost_bulk_flow_count--;
+
+					if (cake_ddst(q->flow_mode))
+						dsthost->dsthost_bulk_flow_count--;
 
 					b->decaying_flow_count++;
 				} else if (flow->set == CAKE_SET_SPARSE ||
@@ -2175,8 +2142,12 @@ retry:
 				else if (flow->set == CAKE_SET_BULK) {
 					b->bulk_flow_count--;
 
-					cake_dec_srchost_bulk_flow_count(b, flow, q->flow_mode);
-					cake_dec_dsthost_bulk_flow_count(b, flow, q->flow_mode);
+					if (cake_dsrc(q->flow_mode))
+						srchost->srchost_bulk_flow_count--;
+
+					if (cake_ddst(q->flow_mode))
+						dsthost->dsthost_bulk_flow_count--;
+
 				} else
 					b->decaying_flow_count--;
 
@@ -2375,7 +2346,7 @@ static int cake_config_precedence(struct Qdisc *sch)
 
 /*	List of known Diffserv codepoints:
  *
- *	Least Effort (CS1)
+ *	Least Effort (CS1, LE)
  *	Best Effort (CS0)
  *	Max Reliability & LLT "Lo" (TOS1)
  *	Max Throughput (TOS2)
@@ -2397,7 +2368,7 @@ static int cake_config_precedence(struct Qdisc *sch)
  *	Total 25 codepoints.
  */
 
-/*	List of traffic classes in RFC 4594:
+/*	List of traffic classes in RFC 4594, updated by RFC 8622:
  *		(roughly descending order of contended priority)
  *		(roughly ascending order of uncontended throughput)
  *
@@ -2412,7 +2383,7 @@ static int cake_config_precedence(struct Qdisc *sch)
  *	Ops, Admin, Management (CS2,TOS1) - eg. ssh
  *	Standard Service (CS0 & unrecognised codepoints)
  *	High Throughput Data (AF1x,TOS2)  - eg. web traffic
- *	Low Priority Data (CS1)           - eg. BitTorrent
+ *	Low Priority Data (CS1,LE)        - eg. BitTorrent
 
  *	Total 12 traffic classes.
  */
@@ -2428,7 +2399,7 @@ static int cake_config_diffserv8(struct Qdisc *sch)
  *		Video Streaming          (AF4x, AF3x, CS3)
  *		Bog Standard             (CS0 etc.)
  *		High Throughput          (AF1x, TOS2)
- *		Background Traffic       (CS1)
+ *		Background Traffic       (CS1, LE)
  *
  *		Total 8 traffic classes.
  */
@@ -2472,7 +2443,7 @@ static int cake_config_diffserv4(struct Qdisc *sch)
  *	    Latency Sensitive  (CS7, CS6, EF, VA, CS5, CS4)
  *	    Streaming Media    (AF4x, AF3x, CS3, AF2x, TOS4, CS2, TOS1)
  *	    Best Effort        (CS0, AF1x, TOS2, and those not specified)
- *	    Background Traffic (CS1)
+ *	    Background Traffic (CS1, LE)
  *
  *		Total 4 traffic classes.
  */
@@ -2510,7 +2481,7 @@ static int cake_config_diffserv4(struct Qdisc *sch)
 static int cake_config_diffserv3(struct Qdisc *sch)
 {
 /*  Simplified Diffserv structure with 3 tins.
- *		Low Priority		(CS1)
+ *		Low Priority		(CS1, LE)
  *		Best Effort
  *		Latency Sensitive	(TOS4, VA, EF, CS6, CS7)
  */

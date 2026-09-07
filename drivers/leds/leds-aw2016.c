@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017, 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -264,7 +255,7 @@ static void aw2016_set_brightness(struct led_classdev *cdev,
 	schedule_work(&led->brightness_work);
 }
 
-static ssize_t aw2016_breath_show(struct device *dev,
+static ssize_t breath_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
@@ -273,7 +264,7 @@ static ssize_t aw2016_breath_show(struct device *dev,
 	return led->blinking;
 }
 
-static ssize_t aw2016_breath_store(struct device *dev,
+static ssize_t breath_store(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t len)
 {
@@ -299,7 +290,7 @@ static ssize_t led_time_show(struct device *dev,
 	struct aw2016_led *led =
 		container_of(led_cdev, struct aw2016_led, cdev);
 
-	return snprintf(buf, PAGE_SIZE, "%d %d %d %d\n",
+	return scnprintf(buf, PAGE_SIZE, "%d %d %d %d\n",
 			led->pdata->rise_time_ms, led->pdata->hold_time_ms,
 			led->pdata->fall_time_ms, led->pdata->off_time_ms);
 }
@@ -350,7 +341,7 @@ static ssize_t reg_show(struct device *dev,
 		if (!(aw2016_reg_access[i] & REG_RD_ACCESS))
 			continue;
 		aw2016_read(led, i, &reg_val);
-		len += snprintf(buf + len, PAGE_SIZE - len,
+		len += scnprintf(buf + len, PAGE_SIZE - len,
 				"reg:0x%02x=0x%02x\n", i, reg_val);
 	}
 
@@ -375,7 +366,7 @@ static ssize_t reg_store(struct device *dev,
 	return len;
 }
 
-static DEVICE_ATTR(breath, 0644, aw2016_breath_show, aw2016_breath_store);
+static DEVICE_ATTR_RW(breath);
 static DEVICE_ATTR_RW(led_time);
 static DEVICE_ATTR_RW(reg);
 
@@ -396,7 +387,7 @@ static int aw2016_check_chipid(struct aw2016_led *led)
 
 	for (cnt = 5; cnt > 0; cnt--) {
 		aw2016_read(led, AW2016_REG_RESET, &val);
-		dev_notice(&led->client->dev, "aw2016 chip id %0x", val);
+		dev_notice(&led->client->dev, "aw2016 chip id %0x\n", val);
 		if (val == AW2016_CHIPID)
 			return 0;
 	}
@@ -417,7 +408,6 @@ static int aw2016_led_err_handle(struct aw2016_led *led_array, int parsed_leds)
 		led_classdev_unregister(&led_array[i].cdev);
 		cancel_work_sync(&led_array[i].brightness_work);
 		cancel_work_sync(&led_array[i].blink_work);
-		devm_kfree(&led_array->client->dev, led_array[i].pdata);
 		led_array[i].pdata = NULL;
 	}
 	return i;
@@ -548,13 +538,11 @@ free_class:
 	led_classdev_unregister(&led_array[parsed_leds].cdev);
 	cancel_work_sync(&led_array[parsed_leds].brightness_work);
 	cancel_work_sync(&led_array[parsed_leds].blink_work);
-	devm_kfree(&led->client->dev, led_array[parsed_leds].pdata);
 	led_array[parsed_leds].pdata = NULL;
 	return rc;
 
 free_pdata:
 	aw2016_led_err_handle(led_array, parsed_leds);
-	devm_kfree(&led->client->dev, led_array[parsed_leds].pdata);
 	return rc;
 
 free_err:
@@ -612,7 +600,6 @@ fail_parsed_node:
 	aw2016_led_err_handle(led_array, num_leds);
 free_led_arry:
 	mutex_destroy(&led_array->lock);
-	devm_kfree(&client->dev, led_array);
 	led_array = NULL;
 	return ret;
 }
@@ -628,11 +615,9 @@ static int aw2016_led_remove(struct i2c_client *client)
 		led_classdev_unregister(&led_array[i].cdev);
 		cancel_work_sync(&led_array[i].brightness_work);
 		cancel_work_sync(&led_array[i].blink_work);
-		devm_kfree(&client->dev, led_array[i].pdata);
 		led_array[i].pdata = NULL;
 	}
 	mutex_destroy(&led_array->lock);
-	devm_kfree(&client->dev, led_array);
 	led_array = NULL;
 	return 0;
 }
@@ -664,7 +649,6 @@ static struct i2c_driver aw2016_led_driver = {
 	.shutdown = aw2016_led_shutdown,
 	.driver = {
 		.name = "aw2016_led",
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(aw2016_match_table),
 	},
 	.id_table = aw2016_led_id,

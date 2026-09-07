@@ -66,13 +66,12 @@
 #include <linux/ioctl.h>
 #include <linux/ipc_logging.h>
 #include <linux/pm.h>
+#include <linux/string.h>
 
 #define SPCOM_LOG_PAGE_CNT 10
 
-#define spcom_ipc_log_string(_x...) do {				\
-	if (spcom_ipc_log_context)					\
-		ipc_log_string(spcom_ipc_log_context, _x);		\
-	} while (0)
+#define spcom_ipc_log_string(_x...)	\
+	ipc_log_string(spcom_ipc_log_context, _x)
 
 #define spcom_pr_err(_fmt, ...) do {					\
 	pr_err(_fmt, ##__VA_ARGS__);					\
@@ -115,7 +114,7 @@
 #define DEVICE_NAME	"spcom"
 
 /* maximum clients that can register over a single channel */
-#define SPCOM_MAX_CHANNEL_CLIENTS 2
+#define SPCOM_MAX_CHANNEL_CLIENTS 5
 
 /* maximum shared DMA_buf buffers should be >= SPCOM_MAX_CHANNELS  */
 #define SPCOM_MAX_DMA_BUF_PER_CH (SPCOM_MAX_CHANNELS + 4)
@@ -440,7 +439,7 @@ static int spcom_init_channel(struct spcom_channel *ch,
 		return -EINVAL;
 	}
 
-	strlcpy(ch->name, name, SPCOM_CHANNEL_NAME_SIZE);
+	strscpy(ch->name, name, SPCOM_CHANNEL_NAME_SIZE);
 
 	init_completion(&ch->rx_done);
 	init_completion(&ch->connect);
@@ -634,7 +633,7 @@ static int spcom_get_next_request_size(struct spcom_channel *ch)
 	}
 
 exit_ready:
-	/* actual_rx_size not exeeds SPCOM_RX_BUF_SIZE*/
+	/* actual_rx_size not ecxeeds SPCOM_RX_BUF_SIZE*/
 	size = (int)ch->actual_rx_size;
 	if (size > sizeof(struct spcom_msg_hdr)) {
 		size -= sizeof(struct spcom_msg_hdr);
@@ -1655,7 +1654,7 @@ static int spcom_device_open(struct inode *inode, struct file *filp)
 			ch->is_busy = false;
 		/* pid array has pid of all the registered client.
 		 * If we reach here, the is_busy flag check above guarantees
-		 * that we have atleast one non-zero pid index
+		 * that we have at least one non-zero pid index
 		 */
 		for (i = 0; i < SPCOM_MAX_CHANNEL_CLIENTS; i++) {
 			if (ch->pid[i] == 0) {
@@ -2280,6 +2279,9 @@ static int spcom_send_message(void *arg, void *buffer, bool is_modified)
 		return -ENOMEM;
 	hdr = tx_buf;
 
+	if (ch->is_sharable)
+		mutex_lock(&ch->shared_sync_lock);
+
 	mutex_lock(&ch->lock);
 
 	/* For SPCOM server, get next request size must be called before sending a response
@@ -2295,11 +2297,10 @@ static int spcom_send_message(void *arg, void *buffer, bool is_modified)
 	if (ch->is_sharable) {
 
 		if (ch->is_server) {
+			mutex_unlock(&ch->shared_sync_lock);
 			spcom_pr_err("server spcom channel cannot be shared\n");
 			goto send_message_err;
 		}
-
-		mutex_lock(&ch->shared_sync_lock);
 		ch->active_pid = current_pid();
 	}
 
@@ -2507,7 +2508,7 @@ static int spcom_create_channel(const char *ch_name, bool is_sharable)
 		/* Channel is already created as sharable */
 		if (spcom_dev->channels[i].is_sharable) {
 			spcom_pr_err("already created channel as sharable\n");
-			return -EALREADY;
+			return 0;
 		}
 
 		/* Cannot create sharable channel if channel already created */
@@ -3553,7 +3554,7 @@ static int spcom_parse_dt(struct device_node *np)
 			spcom_pr_err("failed to read DT ch#%d name\n", i);
 			return -EFAULT;
 		}
-		strlcpy(spcom_dev->predefined_ch_name[i],
+		strscpy(spcom_dev->predefined_ch_name[i],
 			name,
 			sizeof(spcom_dev->predefined_ch_name[i]));
 

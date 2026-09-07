@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
@@ -119,7 +120,7 @@ static int userspace_device_probe(struct platform_device *pdev)
 		}
 
 		cdev_instances[idx].np = subsys_np;
-		strlcpy(cdev_instances[idx].cdev_name, subsys_np->name,
+		strscpy(cdev_instances[idx].cdev_name, subsys_np->name,
 				THERMAL_NAME_LENGTH);
 
 		cdev_instances[idx].cdev = thermal_of_cooling_device_register(

@@ -9,6 +9,7 @@
 enum scmi_c1dcvs_protocol_cmd {
 	SET_PMU_MAP = 11,
 	SET_ENABLE_TRACE,
+	SET_ENABLE_CACHING,
 };
 
 struct pmu_map_msg {
@@ -69,19 +70,22 @@ static int scmi_set_enable_trace(const struct scmi_protocol_handle *ph, void *bu
 	return scmi_send_tunable_pmu(ph, buf, SET_ENABLE_TRACE);
 }
 
+static int scmi_set_caching_enable(const struct scmi_protocol_handle *ph, void *buf)
+{
+	return scmi_send_tunable_pmu(ph, buf, SET_ENABLE_CACHING);
+}
+
 static struct scmi_pmu_vendor_ops pmu_config_ops = {
 	.set_pmu_map		= scmi_pmu_map,
 	.set_enable_trace	= scmi_set_enable_trace,
+	.set_cache_enable	= scmi_set_caching_enable,
 };
 
 static int scmi_pmu_protocol_init(const struct scmi_protocol_handle *ph)
 {
 	u32 version;
-	int ret;
 
-	ret = ph->xops->version_get(ph, &version);
-	if (ret)
-		return ret;
+	ph->xops->version_get(ph, &version);
 
 	dev_dbg(ph->dev, "version %d.%d\n",
 		PROTOCOL_REV_MAJOR(version), PROTOCOL_REV_MINOR(version));
@@ -92,7 +96,7 @@ static int scmi_pmu_protocol_init(const struct scmi_protocol_handle *ph)
 static const struct scmi_protocol scmi_pmu = {
 	.id = SCMI_PMU_PROTOCOL,
 	.owner = THIS_MODULE,
-	.init_instance = &scmi_pmu_protocol_init,
+	.instance_init = &scmi_pmu_protocol_init,
 	.ops = &pmu_config_ops,
 };
 module_scmi_protocol(scmi_pmu);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
@@ -15,6 +16,7 @@
 #include <linux/mutex.h>
 #include <linux/power_supply.h>
 #include <linux/thermal.h>
+#include "thermal_zone_internal.h"
 
 #define BCL_DRIVER_NAME       "bcl_soc_peripheral"
 
@@ -22,8 +24,7 @@ struct bcl_device {
 	struct device				*dev;
 	struct notifier_block			psy_nb;
 	struct work_struct			soc_eval_work;
-	int					trip_temp;
-	int					clear_temp;
+	long					trip_temp;
 	int					trip_val;
 	struct mutex				state_trans_lock;
 	bool					irq_enabled;
@@ -33,17 +34,55 @@ struct bcl_device {
 
 static struct bcl_device *bcl_perph;
 
+static int bcl_soc_tz_change_mode(void *data, enum thermal_device_mode mode)
+{
+	struct bcl_device *bcl_perph = data;
+
+	return qti_tz_change_mode(bcl_perph->tz_dev, mode);
+}
+
+static int bcl_soc_get_trend(void *data, int trip,
+				    enum thermal_trend *trend)
+{
+	struct bcl_device *bcl_perph = data;
+	struct thermal_zone_device *tz = bcl_perph->tz_dev;
+	int trip_temp = 0, trip_hyst = 0, temp, ret;
+
+	if (!tz)
+		return -EINVAL;
+
+	ret = tz->ops->get_trip_temp(tz, trip, &trip_temp);
+	if (ret)
+		return ret;
+
+	if (tz->ops->get_trip_hyst) {
+		ret = tz->ops->get_trip_hyst(tz, trip, &trip_hyst);
+		if (ret)
+			return ret;
+	}
+	temp = READ_ONCE(tz->temperature);
+
+	if (temp >= trip_temp)
+		*trend = THERMAL_TREND_RAISING;
+	else if (!trip_hyst && temp < trip_temp)
+		*trend = THERMAL_TREND_DROPPING;
+	else if (temp <= (trip_temp - trip_hyst))
+		*trend = THERMAL_TREND_DROPPING;
+	else
+		*trend = THERMAL_TREND_STABLE;
+
+	return 0;
+}
+
 static int bcl_set_soc(void *data, int low, int high)
 {
-	if (high == bcl_perph->trip_temp &&
-		low == bcl_perph->clear_temp)
+	if (high == bcl_perph->trip_temp)
 		return 0;
 
 	mutex_lock(&bcl_perph->state_trans_lock);
-	pr_debug("socd threshold high:%d low:%d\n", high, low);
+	pr_debug("socd threshold:%d\n", high);
 	bcl_perph->trip_temp = high;
-	bcl_perph->clear_temp = low;
-	if (high == INT_MAX && low == -INT_MAX) {
+	if (high == INT_MAX) {
 		bcl_perph->irq_enabled = false;
 		goto unlock_and_exit;
 	}
@@ -92,15 +131,15 @@ static void bcl_evaluate_soc(struct work_struct *work)
 	mutex_lock(&bcl_perph->state_trans_lock);
 	if (!bcl_perph->irq_enabled)
 		goto eval_exit;
-	if ((battery_depletion >= bcl_perph->trip_temp) ||
-		  (battery_depletion <= bcl_perph->clear_temp)) {
-		bcl_perph->trip_val = battery_depletion;
-		mutex_unlock(&bcl_perph->state_trans_lock);
-		thermal_zone_device_update(bcl_perph->tz_dev,
-					THERMAL_TRIP_VIOLATED);
-		return;
-	}
+	if (battery_depletion < bcl_perph->trip_temp)
+		goto eval_exit;
 
+	bcl_perph->trip_val = battery_depletion;
+	mutex_unlock(&bcl_perph->state_trans_lock);
+	thermal_zone_device_update(bcl_perph->tz_dev,
+				THERMAL_TRIP_VIOLATED);
+
+	return;
 eval_exit:
 	mutex_unlock(&bcl_perph->state_trans_lock);
 }
@@ -138,10 +177,10 @@ static int bcl_soc_probe(struct platform_device *pdev)
 
 	mutex_init(&bcl_perph->state_trans_lock);
 	bcl_perph->dev = &pdev->dev;
-	bcl_perph->trip_temp = INT_MAX;
-	bcl_perph->clear_temp = -INT_MAX;
 	bcl_perph->ops.get_temp = bcl_read_soc;
 	bcl_perph->ops.set_trips = bcl_set_soc;
+	bcl_perph->ops.get_trend = bcl_soc_get_trend;
+	bcl_perph->ops.change_mode = bcl_soc_tz_change_mode;
 	INIT_WORK(&bcl_perph->soc_eval_work, bcl_evaluate_soc);
 	bcl_perph->psy_nb.notifier_call = battery_supply_callback;
 	ret = power_supply_reg_notifier(&bcl_perph->psy_nb);

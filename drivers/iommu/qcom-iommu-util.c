@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include <linux/dma-mapping-fast.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/qcom-iommu-util.h>
 #include <linux/qcom-io-pgtable.h>
-#include <linux/dma-mapping-fast.h>
 #include "qcom-dma-iommu-generic.h"
+#include "qcom-io-pgtable-alloc.h"
 
 struct qcom_iommu_range_prop_cb_data {
 	int (*range_prop_entry_cb_fn)(const __be32 *p, int naddr, int nsize, void *arg);
@@ -347,6 +349,17 @@ int qcom_iommu_get_msi_size(struct device *dev, u32 *msi_size)
 	return of_property_read_u32(np, "qcom,iommu-msi-size", msi_size);
 }
 
+int qcom_iommu_get_context_bank_nr(struct iommu_domain *domain)
+{
+	struct qcom_iommu_ops *ops = to_qcom_iommu_ops(domain->ops);
+
+	if (unlikely(ops->get_context_bank_nr == NULL))
+		return -EINVAL;
+
+	return ops->get_context_bank_nr(domain);
+}
+EXPORT_SYMBOL(qcom_iommu_get_context_bank_nr);
+
 int qcom_iommu_get_asid_nr(struct iommu_domain *domain)
 {
 	struct qcom_iommu_ops *ops = to_qcom_iommu_ops(domain->ops);
@@ -357,6 +370,55 @@ int qcom_iommu_get_asid_nr(struct iommu_domain *domain)
 	return ops->get_asid_nr(domain);
 }
 EXPORT_SYMBOL(qcom_iommu_get_asid_nr);
+
+int qcom_iommu_set_secure_vmid(struct iommu_domain *domain, enum vmid vmid)
+{
+	struct qcom_iommu_ops *ops = to_qcom_iommu_ops(domain->ops);
+
+	if (unlikely(ops->set_secure_vmid == NULL))
+		return -EINVAL;
+
+	return ops->set_secure_vmid(domain, vmid);
+}
+EXPORT_SYMBOL(qcom_iommu_set_secure_vmid);
+
+int qcom_iommu_set_fault_model(struct iommu_domain *domain, int fault_model)
+{
+	struct qcom_iommu_ops *ops = to_qcom_iommu_ops(domain->ops);
+
+	if (unlikely(ops->set_fault_model == NULL))
+		return -EINVAL;
+	else if (fault_model & ~(QCOM_IOMMU_FAULT_MODEL_NON_FATAL |
+				 QCOM_IOMMU_FAULT_MODEL_NO_CFRE |
+				 QCOM_IOMMU_FAULT_MODEL_NO_STALL |
+				 QCOM_IOMMU_FAULT_MODEL_HUPCF))
+		return -EINVAL;
+
+	return ops->set_fault_model(domain, fault_model);
+}
+EXPORT_SYMBOL(qcom_iommu_set_fault_model);
+
+int qcom_iommu_enable_s1_translation(struct iommu_domain *domain)
+{
+	struct qcom_iommu_ops *ops = to_qcom_iommu_ops(domain->ops);
+
+	if (unlikely(ops->enable_s1_translation == NULL))
+		return -EINVAL;
+
+	return ops->enable_s1_translation(domain);
+}
+EXPORT_SYMBOL(qcom_iommu_enable_s1_translation);
+
+int qcom_iommu_get_mappings_configuration(struct iommu_domain *domain)
+{
+	struct qcom_iommu_ops *ops = to_qcom_iommu_ops(domain->ops);
+
+	if (unlikely(ops->get_mappings_configuration == NULL))
+		return -EINVAL;
+
+	return ops->get_mappings_configuration(domain);
+}
+EXPORT_SYMBOL(qcom_iommu_get_mappings_configuration);
 
 struct io_pgtable_ops *qcom_alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
 				struct qcom_io_pgtable_info *pgtbl_info,
@@ -424,32 +486,6 @@ void qcom_free_io_pgtable_ops(struct io_pgtable_ops *ops)
 }
 EXPORT_SYMBOL(qcom_free_io_pgtable_ops);
 
-void *qcom_io_pgtable_alloc_pages(const struct qcom_iommu_pgtable_ops *ops,
-				  struct io_pgtable_cfg *cfg,
-				  void *cookie, gfp_t gfp, int order)
-{
-	struct device *dev;
-	struct page *p;
-
-	if (ops)
-		return ops->alloc(cookie, gfp, order);
-
-	dev = cfg->iommu_dev;
-	p = alloc_pages_node(dev ? dev_to_node(dev) : NUMA_NO_NODE, gfp, order);
-
-	return p ? page_address(p) : NULL;
-}
-
-void qcom_io_pgtable_free_pages(const struct qcom_iommu_pgtable_ops *ops,
-				void *cookie, void *virt, int order,
-				bool deferred_free)
-{
-	if (ops)
-		ops->free(cookie, virt, order, deferred_free);
-	else
-		free_pages((unsigned long)virt, order);
-}
-
 /*
  * These tables must have the same length.
  * It is allowed to have a NULL exitcall corresponding to a non-NULL initcall.
@@ -458,13 +494,15 @@ static initcall_t init_table[] __initdata = {
 	dma_mapping_fast_init,
 	qcom_dma_iommu_generic_driver_init,
 	qcom_arm_lpae_do_selftests,
+	qcom_io_pgtable_alloc_init,
 	NULL
 };
 
 static exitcall_t exit_table[] = {
-	NULL, /* dma_mapping_fast */
+	NULL, /* dma_mapping_fast_exit */
 	qcom_dma_iommu_generic_driver_exit,
-	NULL, /* lpae_do_selftests */
+	NULL, /*qcom_arm_lpae_do_selftests */
+	qcom_io_pgtable_alloc_exit,
 	NULL,
 };
 
@@ -498,19 +536,10 @@ out_undo:
 	}
 	return ret;
 }
+#if IS_MODULE(CONFIG_QCOM_IOMMU_UTIL)
 module_init(qcom_iommu_util_init);
-
-static void qcom_iommu_util_exit(void)
-{
-	exitcall_t *exit_fn;
-
-	exit_fn = exit_table + ARRAY_SIZE(exit_table) - 2;
-	for (; exit_fn >= exit_table; exit_fn--) {
-		if (!*exit_fn)
-			continue;
-		(**exit_fn)();
-	}
-}
-module_exit(qcom_iommu_util_exit);
+#else
+arch_initcall_sync(qcom_iommu_util_init);
+#endif
 
 MODULE_LICENSE("GPL v2");

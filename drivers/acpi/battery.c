@@ -8,7 +8,7 @@
  *  Copyright (C) 2001, 2002 Paul Diefenbaugh <paul.s.diefenbaugh@intel.com>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) "ACPI: battery: " fmt
 
 #include <linux/async.h>
 #include <linux/delay.h>
@@ -29,8 +29,6 @@
 
 #include <acpi/battery.h>
 
-#define PREFIX "ACPI: "
-
 #define ACPI_BATTERY_VALUE_UNKNOWN 0xFFFFFFFF
 #define ACPI_BATTERY_CAPACITY_VALID(capacity) \
 	((capacity) != 0 && (capacity) != ACPI_BATTERY_VALUE_UNKNOWN)
@@ -43,10 +41,6 @@
 #define ACPI_BATTERY_STATE_DISCHARGING	0x1
 #define ACPI_BATTERY_STATE_CHARGING	0x2
 #define ACPI_BATTERY_STATE_CRITICAL	0x4
-
-#define _COMPONENT		ACPI_BATTERY_COMPONENT
-
-ACPI_MODULE_NAME("battery");
 
 MODULE_AUTHOR("Paul Diefenbaugh");
 MODULE_AUTHOR("Alexey Starikovskiy <astarikovskiy@suse.de>");
@@ -85,16 +79,17 @@ enum {
 	ACPI_BATTERY_XINFO_PRESENT,
 	ACPI_BATTERY_QUIRK_PERCENTAGE_CAPACITY,
 	/* On Lenovo Thinkpad models from 2010 and 2011, the power unit
-	   switches between mWh and mAh depending on whether the system
-	   is running on battery or not.  When mAh is the unit, most
-	   reported values are incorrect and need to be adjusted by
-	   10000/design_voltage.  Verified on x201, t410, t410s, and x220.
-	   Pre-2010 and 2012 models appear to always report in mWh and
-	   are thus unaffected (tested with t42, t61, t500, x200, x300,
-	   and x230).  Also, in mid-2012 Lenovo issued a BIOS update for
-	   the 2011 models that fixes the issue (tested on x220 with a
-	   post-1.29 BIOS), but as of Nov. 2012, no such update is
-	   available for the 2010 models.  */
+	 * switches between mWh and mAh depending on whether the system
+	 * is running on battery or not.  When mAh is the unit, most
+	 * reported values are incorrect and need to be adjusted by
+	 * 10000/design_voltage.  Verified on x201, t410, t410s, and x220.
+	 * Pre-2010 and 2012 models appear to always report in mWh and
+	 * are thus unaffected (tested with t42, t61, t500, x200, x300,
+	 * and x230).  Also, in mid-2012 Lenovo issued a BIOS update for
+	 *  the 2011 models that fixes the issue (tested on x220 with a
+	 * post-1.29 BIOS), but as of Nov. 2012, no such update is
+	 * available for the 2010 models.
+	 */
 	ACPI_BATTERY_QUIRK_THINKPAD_MAH,
 	/* for batteries reporting current capacity with design capacity
 	 * on a full charge, but showing degradation in full charge cap.
@@ -384,9 +379,7 @@ static enum power_supply_property energy_battery_full_cap_broken_props[] = {
 	POWER_SUPPLY_PROP_SERIAL_NUMBER,
 };
 
-/* --------------------------------------------------------------------------
-                               Battery Management
-   -------------------------------------------------------------------------- */
+/* Battery Management */
 struct acpi_offsets {
 	size_t offset;		/* offset inside struct acpi_sbs_battery */
 	u8 mode;		/* int or string? */
@@ -444,6 +437,7 @@ static int extract_package(struct acpi_battery *battery,
 {
 	int i;
 	union acpi_object *element;
+
 	if (package->type != ACPI_TYPE_PACKAGE)
 		return -EFAULT;
 	for (i = 0; i < num; ++i) {
@@ -452,6 +446,7 @@ static int extract_package(struct acpi_battery *battery,
 		element = &package->package.elements[i];
 		if (offsets[i].mode) {
 			u8 *ptr = (u8 *)battery + offsets[i].offset;
+
 			if (element->type == ACPI_TYPE_STRING ||
 			    element->type == ACPI_TYPE_BUFFER)
 				strscpy(ptr, element->string.pointer, 32);
@@ -473,7 +468,8 @@ static int extract_package(struct acpi_battery *battery,
 static int acpi_battery_get_status(struct acpi_battery *battery)
 {
 	if (acpi_bus_get_status(battery->device)) {
-		ACPI_EXCEPTION((AE_INFO, AE_ERROR, "Evaluating _STA"));
+		acpi_handle_info(battery->device->handle,
+				 "_STA evaluation failed\n");
 		return -ENODEV;
 	}
 	return 0;
@@ -509,10 +505,12 @@ static int extract_battery_info(const int use_bix,
 		    battery->design_capacity_warning *
 		    10000 / battery->design_voltage;
 		/* Curiously, design_capacity_low, unlike the rest of them,
-		   is correct.  */
+		 *  is correct.
+		 */
 		/* capacity_granularity_* equal 1 on the systems tested, so
-		   it's impossible to tell if they would need an adjustment
-		   or not if their values were higher.  */
+		 * it's impossible to tell if they would need an adjustment
+		 * or not if their values were higher.
+		 */
 	}
 	if (test_bit(ACPI_BATTERY_QUIRK_DEGRADED_FULL_CHARGE, &battery->flags) &&
 	    battery->capacity_now > battery->full_charge_capacity)
@@ -542,8 +540,10 @@ static int acpi_battery_get_info(struct acpi_battery *battery)
 		mutex_unlock(&battery->lock);
 
 		if (ACPI_FAILURE(status)) {
-			ACPI_EXCEPTION((AE_INFO, status, "Evaluating %s",
-					use_bix ? "_BIX":"_BIF"));
+			acpi_handle_info(battery->device->handle,
+					 "%s evaluation failed: %s\n",
+					 use_bix ? "_BIX":"_BIF",
+					 acpi_format_exception(status));
 		} else {
 			result = extract_battery_info(use_bix,
 						      battery,
@@ -580,7 +580,9 @@ static int acpi_battery_get_state(struct acpi_battery *battery)
 	mutex_unlock(&battery->lock);
 
 	if (ACPI_FAILURE(status)) {
-		ACPI_EXCEPTION((AE_INFO, status, "Evaluating _BST"));
+		acpi_handle_info(battery->device->handle,
+				 "_BST evaluation failed: %s",
+				 acpi_format_exception(status));
 		return -ENODEV;
 	}
 
@@ -597,7 +599,7 @@ static int acpi_battery_get_state(struct acpi_battery *battery)
 		battery->rate_now != ACPI_BATTERY_VALUE_UNKNOWN &&
 		(s16)(battery->rate_now) < 0) {
 		battery->rate_now = abs((s16)battery->rate_now);
-		pr_warn_once(FW_BUG "battery: (dis)charge rate invalid.\n");
+		pr_warn_once(FW_BUG "(dis)charge rate invalid.\n");
 	}
 
 	if (test_bit(ACPI_BATTERY_QUIRK_PERCENTAGE_CAPACITY, &battery->flags)
@@ -632,7 +634,9 @@ static int acpi_battery_set_alarm(struct acpi_battery *battery)
 	if (ACPI_FAILURE(status))
 		return -ENODEV;
 
-	ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Alarm set to %d\n", battery->alarm));
+	acpi_handle_debug(battery->device->handle, "Alarm set to %d\n",
+			  battery->alarm);
+
 	return 0;
 }
 
@@ -654,6 +658,7 @@ static ssize_t acpi_battery_alarm_show(struct device *dev,
 					char *buf)
 {
 	struct acpi_battery *battery = to_acpi_battery(dev_get_drvdata(dev));
+
 	return sprintf(buf, "%d\n", battery->alarm * 1000);
 }
 
@@ -663,6 +668,7 @@ static ssize_t acpi_battery_alarm_store(struct device *dev,
 {
 	unsigned long x;
 	struct acpi_battery *battery = to_acpi_battery(dev_get_drvdata(dev));
+
 	if (sscanf(buf, "%lu\n", &x) == 1)
 		battery->alarm = x/1000;
 	if (acpi_battery_present(battery))
@@ -670,17 +676,11 @@ static ssize_t acpi_battery_alarm_store(struct device *dev,
 	return count;
 }
 
-static struct device_attribute alarm_attr = {
+static const struct device_attribute alarm_attr = {
 	.attr = {.name = "alarm", .mode = 0644},
 	.show = acpi_battery_alarm_show,
 	.store = acpi_battery_alarm_store,
 };
-
-static struct attribute *acpi_battery_attrs[] = {
-	&alarm_attr.attr,
-	NULL
-};
-ATTRIBUTE_GROUPS(acpi_battery);
 
 /*
  * The Battery Hooking API
@@ -695,34 +695,27 @@ static LIST_HEAD(acpi_battery_list);
 static LIST_HEAD(battery_hook_list);
 static DEFINE_MUTEX(hook_mutex);
 
-static void battery_hook_unregister_unlocked(struct acpi_battery_hook *hook)
+static void __battery_hook_unregister(struct acpi_battery_hook *hook, int lock)
 {
 	struct acpi_battery *battery;
-
 	/*
 	 * In order to remove a hook, we first need to
 	 * de-register all the batteries that are registered.
 	 */
+	if (lock)
+		mutex_lock(&hook_mutex);
 	list_for_each_entry(battery, &acpi_battery_list, list) {
 		hook->remove_battery(battery->bat);
 	}
-	list_del_init(&hook->list);
-
+	list_del(&hook->list);
+	if (lock)
+		mutex_unlock(&hook_mutex);
 	pr_info("extension unregistered: %s\n", hook->name);
 }
 
 void battery_hook_unregister(struct acpi_battery_hook *hook)
 {
-	mutex_lock(&hook_mutex);
-	/*
-	 * Ignore already unregistered battery hooks. This might happen
-	 * if a battery hook was previously unloaded due to an error when
-	 * adding a new battery.
-	 */
-	if (!list_empty(&hook->list))
-		battery_hook_unregister_unlocked(hook);
-
-	mutex_unlock(&hook_mutex);
+	__battery_hook_unregister(hook, 1);
 }
 EXPORT_SYMBOL_GPL(battery_hook_unregister);
 
@@ -731,6 +724,7 @@ void battery_hook_register(struct acpi_battery_hook *hook)
 	struct acpi_battery *battery;
 
 	mutex_lock(&hook_mutex);
+	INIT_LIST_HEAD(&hook->list);
 	list_add(&hook->list, &battery_hook_list);
 	/*
 	 * Now that the driver is registered, we need
@@ -747,7 +741,7 @@ void battery_hook_register(struct acpi_battery_hook *hook)
 			 * hooks.
 			 */
 			pr_err("extension failed to load: %s", hook->name);
-			battery_hook_unregister_unlocked(hook);
+			__battery_hook_unregister(hook, 0);
 			goto end;
 		}
 	}
@@ -761,7 +755,7 @@ EXPORT_SYMBOL_GPL(battery_hook_register);
  * This function gets called right after the battery sysfs
  * attributes have been added, so that the drivers that
  * define custom sysfs attributes can add their own.
-*/
+ */
 static void battery_hook_add_battery(struct acpi_battery *battery)
 {
 	struct acpi_battery_hook *hook_node, *tmp;
@@ -784,7 +778,7 @@ static void battery_hook_add_battery(struct acpi_battery *battery)
 			 */
 			pr_err("error in extension, unloading: %s",
 					hook_node->name);
-			battery_hook_unregister_unlocked(hook_node);
+			__battery_hook_unregister(hook_node, 0);
 		}
 	}
 	mutex_unlock(&hook_mutex);
@@ -817,17 +811,14 @@ static void __exit battery_hook_exit(void)
 	 * need to remove the hooks.
 	 */
 	list_for_each_entry_safe(hook, ptr, &battery_hook_list, list) {
-		battery_hook_unregister(hook);
+		__battery_hook_unregister(hook, 1);
 	}
 	mutex_destroy(&hook_mutex);
 }
 
 static int sysfs_add_battery(struct acpi_battery *battery)
 {
-	struct power_supply_config psy_cfg = {
-		.drv_data = battery,
-		.attr_grp = acpi_battery_groups,
-	};
+	struct power_supply_config psy_cfg = { .drv_data = battery, };
 	bool full_cap_broken = false;
 
 	if (!ACPI_BATTERY_CAPACITY_VALID(battery->full_charge_capacity) &&
@@ -872,7 +863,7 @@ static int sysfs_add_battery(struct acpi_battery *battery)
 		return result;
 	}
 	battery_hook_add_battery(battery);
-	return 0;
+	return device_create_file(&battery->bat->dev, &alarm_attr);
 }
 
 static void sysfs_remove_battery(struct acpi_battery *battery)
@@ -883,6 +874,7 @@ static void sysfs_remove_battery(struct acpi_battery *battery)
 		return;
 	}
 	battery_hook_remove_battery(battery);
+	device_remove_file(&battery->bat->dev, &alarm_attr);
 	power_supply_unregister(battery->bat);
 	battery->bat = NULL;
 	mutex_unlock(&battery->sysfs_lock);
@@ -892,10 +884,12 @@ static void find_battery(const struct dmi_header *dm, void *private)
 {
 	struct acpi_battery *battery = (struct acpi_battery *)private;
 	/* Note: the hardcoded offsets below have been extracted from
-	   the source code of dmidecode.  */
+	 * the source code of dmidecode.
+	 */
 	if (dm->type == DMI_ENTRY_PORTABLE_BATTERY && dm->length >= 8) {
 		const u8 *dmi_data = (const u8 *)(dm + 1);
 		int dmi_capacity = get_unaligned((const u16 *)(dmi_data + 6));
+
 		if (dm->length >= 18)
 			dmi_capacity *= dmi_data[17];
 		if (battery->design_capacity * battery->design_voltage / 1000
@@ -937,6 +931,7 @@ static void acpi_battery_quirks(struct acpi_battery *battery)
 
 	if (battery->power_unit && dmi_name_in_vendors("LENOVO")) {
 		const char *s;
+
 		s = dmi_get_system_info(DMI_PRODUCT_VERSION);
 		if (s && !strncasecmp(s, "ThinkPad", 8)) {
 			dmi_walk(find_battery, battery);
@@ -1033,10 +1028,7 @@ static void acpi_battery_refresh(struct acpi_battery *battery)
 	sysfs_add_battery(battery);
 }
 
-/* --------------------------------------------------------------------------
-                                 Driver Interface
-   -------------------------------------------------------------------------- */
-
+/* Driver Interface */
 static void acpi_battery_notify(struct acpi_device *device, u32 event)
 {
 	struct acpi_battery *battery = acpi_driver_data(device);
@@ -1046,11 +1038,11 @@ static void acpi_battery_notify(struct acpi_device *device, u32 event)
 		return;
 	old = battery->bat;
 	/*
-	* On Acer Aspire V5-573G notifications are sometimes triggered too
-	* early. For example, when AC is unplugged and notification is
-	* triggered, battery state is still reported as "Full", and changes to
-	* "Discharging" only after short delay, without any notification.
-	*/
+	 * On Acer Aspire V5-573G notifications are sometimes triggered too
+	 * early. For example, when AC is unplugged and notification is
+	 * triggered, battery state is still reported as "Full", and changes to
+	 * "Discharging" only after short delay, without any notification.
+	 */
 	if (battery_notification_delay_ms > 0)
 		msleep(battery_notification_delay_ms);
 	if (event == ACPI_BATTERY_NOTIFY_INFO)
@@ -1249,8 +1241,7 @@ static int acpi_battery_add(struct acpi_device *device)
 	if (result)
 		goto fail;
 
-	pr_info(PREFIX "%s Slot [%s] (battery %s)\n",
-		ACPI_BATTERY_DEVICE_NAME, acpi_device_bid(device),
+	pr_info("Slot [%s] (battery %s)\n", acpi_device_bid(device),
 		device->status.battery_present ? "present" : "absent");
 
 	battery->pm_nb.notifier_call = battery_notify;
@@ -1330,8 +1321,7 @@ static void __init acpi_battery_init_async(void *unused, async_cookie_t cookie)
 	if (battery_check_pmic) {
 		for (i = 0; i < ARRAY_SIZE(acpi_battery_blacklist); i++)
 			if (acpi_dev_present(acpi_battery_blacklist[i], "1", -1)) {
-				pr_info(PREFIX ACPI_BATTERY_DEVICE_NAME
-					": found native %s PMIC, not loading\n",
+				pr_info("found native %s PMIC, not loading\n",
 					acpi_battery_blacklist[i]);
 				return;
 			}

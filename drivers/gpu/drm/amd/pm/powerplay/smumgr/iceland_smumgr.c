@@ -2028,7 +2028,7 @@ static int iceland_init_smc_table(struct pp_hwmgr *hwmgr)
 	table->VoltageResponseTime  = 0;
 	table->PhaseResponseTime  = 0;
 	table->MemoryThermThrottleEnable  = 1;
-	table->PCIeBootLinkLevel = (uint8_t) (data->dpm_table.pcie_speed_table.count);
+	table->PCIeBootLinkLevel = 0;
 	table->PCIeGenInterval = 1;
 
 	result = iceland_populate_smc_svi2_config(hwmgr, table);
@@ -2082,7 +2082,7 @@ static int iceland_init_smc_table(struct pp_hwmgr *hwmgr)
 	return 0;
 }
 
-int iceland_thermal_setup_fan_table(struct pp_hwmgr *hwmgr)
+static int iceland_thermal_setup_fan_table(struct pp_hwmgr *hwmgr)
 {
 	struct smu7_smumgr *smu7_data = (struct smu7_smumgr *)(hwmgr->smu_backend);
 	SMU71_Discrete_FanTable fan_table = { FDO_MODE_HARDWARE };
@@ -2156,7 +2156,7 @@ int iceland_thermal_setup_fan_table(struct pp_hwmgr *hwmgr)
 
 	res = smu7_copy_bytes_to_smc(hwmgr, smu7_data->fan_table_start, (uint8_t *)&fan_table, (uint32_t)sizeof(fan_table), SMC_RAM_END);
 
-	return 0;
+	return res;
 }
 
 

@@ -663,7 +663,6 @@ static int ccid_bulk_open(struct inode *inode, struct file *fp)
 	struct f_ccid *ccid_dev = bulk_dev_to_ccid(bulk_dev);
 	unsigned long flags;
 
-	pr_debug("%s\n", __func__);
 	if (!atomic_read(&ccid_dev->online)) {
 		pr_debug("%s: USB cable not connected\n", __func__);
 		return -ENODEV;
@@ -688,7 +687,6 @@ static int ccid_bulk_release(struct inode *ip, struct file *fp)
 	struct f_ccid *ccid_dev =  fp->private_data;
 	struct ccid_bulk_dev *bulk_dev = &ccid_dev->bulk_dev;
 
-	pr_debug("%s\n", __func__);
 	atomic_set(&bulk_dev->opened, 0);
 	return 0;
 }
@@ -1032,14 +1030,10 @@ static void ccid_cdev_free(struct cdev *cdev)
 }
 
 static void ccid_free_func(struct usb_function *f)
-{
-	pr_debug("%s\n", __func__);
-}
+{ }
 
 static int ccid_bind_config(struct f_ccid *ccid_dev)
 {
-	pr_debug("%s\n", __func__);
-
 	ccid_dev->function.name = FUNCTION_NAME;
 	ccid_dev->function.bind = ccid_function_bind;
 	ccid_dev->function.unbind = ccid_function_unbind;

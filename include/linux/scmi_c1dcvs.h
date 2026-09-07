@@ -2,7 +2,7 @@
 /*
  * scmi c1dcvs protocols header
  *
- * copyright (c) 2021, the linux foundation. all rights reserved.
+ * Copyright (c) 2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _scmi_c1dcvs_h
@@ -34,6 +34,8 @@ struct scmi_c1dcvs_vendor_ops {
 	int (*get_efreq_thresh)(const struct scmi_protocol_handle *ph, void *buf);
 	int (*set_hysteresis)(const struct scmi_protocol_handle *ph, void *buf);
 	int (*get_hysteresis)(const struct scmi_protocol_handle *ph, void *buf);
+	int (*set_c1dcvs_opt_mode)(const struct scmi_protocol_handle *ph, void *buf);
+	int (*get_c1dcvs_opt_mode)(const struct scmi_protocol_handle *ph, void *buf);
 };
 
 #if IS_ENABLED(CONFIG_QTI_C1DCVS_SCMI_CLIENT)

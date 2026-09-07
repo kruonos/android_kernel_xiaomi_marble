@@ -63,6 +63,7 @@ STATIC void
 xfs_icreate_item_release(
 	struct xfs_log_item	*lip)
 {
+	kmem_free(ICR_ITEM(lip)->ic_item.li_lv_shadow);
 	kmem_cache_free(xfs_icreate_zone, ICR_ITEM(lip));
 }
 
@@ -201,7 +202,7 @@ xlog_recover_icreate_commit_pass2(
 	if (length != igeo->ialloc_blks &&
 	    length != igeo->ialloc_min_blks) {
 		xfs_warn(log->l_mp,
-			 "%s: unsupported chunk length", __FUNCTION__);
+			 "%s: unsupported chunk length", __func__);
 		return -EINVAL;
 	}
 
@@ -209,7 +210,7 @@ xlog_recover_icreate_commit_pass2(
 	if ((count >> mp->m_sb.sb_inopblog) != length) {
 		xfs_warn(log->l_mp,
 			 "%s: inconsistent inode count and chunk length",
-			 __FUNCTION__);
+			 __func__);
 		return -EINVAL;
 	}
 

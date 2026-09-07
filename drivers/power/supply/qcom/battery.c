@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QCOM-BATT: %s: " fmt, __func__
@@ -148,24 +149,26 @@ enum {
 	PARALLEL_OUTPUT_MODE,
 };
 
+/* CP Channels */
 static const char * const bat_cp_ext_iio_chan[] = {
-	[BAT_CP_PARALLEL_MODE] = "parallel_mode",
-	[BAT_CP_PARALLEL_OUTPUT_MODE] = "parallel_output_mode",
-	[BAT_CP_MIN_ICL] = "min_icl",
+	[BAT_CP_PARALLEL_MODE] = "cp_parallel_mode",
+	[BAT_CP_PARALLEL_OUTPUT_MODE] = "cp_parallel_output_mode",
+	[BAT_CP_MIN_ICL] = "cp_min_icl",
 	[BAT_CP_SWITCHER_EN] = "cp_switcher_en",
 };
 
+/* SMB1355 Channels */
 static const char * const bat_smb_parallel_ext_iio_chan[] = {
-	[BAT_SMB_PARALLEL_INPUT_SUSPEND] = "input_suspend",
-	[BAT_SMB_PARALLEL_MODE] = "parallel_mode",
-	[BAT_SMB_PARALLEL_BATFET_MODE] = "parallel_batfet_mode",
-	[BAT_SMB_PARALLEL_MIN_ICL] = "min_icl",
-	[BAT_SMB_PARALLEL_FCC_MAX] = "parallel_fcc_max",
-	[BAT_SMB_PARALLEL_CURRENT_MAX] = "current_max",
+	[BAT_SMB_PARALLEL_INPUT_SUSPEND] = "pl_input_suspend",
+	[BAT_SMB_PARALLEL_MODE] = "pl_mode",
+	[BAT_SMB_PARALLEL_BATFET_MODE] = "pl_batfet_mode",
+	[BAT_SMB_PARALLEL_MIN_ICL] = "pl_min_icl",
+	[BAT_SMB_PARALLEL_FCC_MAX] = "pl_fcc_max",
+	[BAT_SMB_PARALLEL_CURRENT_MAX] = "pl_current_max",
 	[BAT_SMB_PARALLEL_CONSTANT_CHARGE_CURRENT_MAX] =
-			"constant_charge_current_max",
-	[BAT_SMB_PARALLEL_VOLTAGE_MAX] = "voltage_max",
-	[BAT_SMB_PARALLEL_CHARGE_TYPE] = "charge_type",
+			"pl_constant_charge_current_max",
+	[BAT_SMB_PARALLEL_VOLTAGE_MAX] = "pl_voltage_max",
+	[BAT_SMB_PARALLEL_CHARGE_TYPE] = "pl_charge_type",
 };
 
 /*********
@@ -711,9 +714,9 @@ static void get_fcc_split(struct pl_data *chip, int total_ua,
 	if (rc < 0) {
 		pr_err("Couldn't get fcc_delta rc=%d\n", rc);
 		hw_cc_delta_ua = 0;
-	}
-	else
+	} else {
 		hw_cc_delta_ua = val;
+	}
 
 	bcl_ua = INT_MAX;
 	if (chip->pl_mode == QTI_POWER_SUPPLY_PL_USBMID_USBMID) {
@@ -1167,7 +1170,8 @@ static void fcc_stepper_work(struct work_struct *work)
 		chip->main_step_fcc_count--;
 		reschedule_ms = chip->chg_param->fcc_step_delay_ms;
 	} else if (chip->main_step_fcc_residual) {
-		main_fcc += chip->main_step_fcc_residual;
+		main_fcc += chip->main_step_fcc_residual
+					* chip->main_step_fcc_dir;
 		chip->main_step_fcc_residual = 0;
 	}
 
@@ -2044,7 +2048,6 @@ static void pl_config_init(struct pl_data *chip, int smb_version)
 
 static void qcom_batt_create_debugfs(struct pl_data *chip)
 {
-	struct dentry *entry;
 
 	chip->dfs_root = debugfs_create_dir("battery", NULL);
 	if (IS_ERR_OR_NULL(chip->dfs_root)) {
@@ -2053,11 +2056,8 @@ static void qcom_batt_create_debugfs(struct pl_data *chip)
 		return;
 	}
 
-	entry = debugfs_create_u32("debug_mask", 0600, chip->dfs_root,
+	debugfs_create_u32("debug_mask", 0600, chip->dfs_root,
 			&debug_mask);
-	if (IS_ERR_OR_NULL(entry))
-		pr_err("Couldn't create force_dc_psy_update file rc=%ld\n",
-			(long)entry);
 }
 
 #define DEFAULT_RESTRICTED_CURRENT_UA	1000000

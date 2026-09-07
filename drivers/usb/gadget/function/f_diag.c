@@ -239,7 +239,7 @@ static void diag_update_pid_and_serial_num(struct diag_context *ctxt)
 
 		for (s = (*table)->strings; s && s->s; s++) {
 			if (s->id == cdev->desc.iSerialNumber) {
-				strlcpy(local_diag_dload.serial_number, s->s,
+				strscpy(local_diag_dload.serial_number, s->s,
 					SERIAL_NUMBER_LENGTH);
 				goto update_dload;
 			}
@@ -637,8 +637,6 @@ static void diag_function_disable(struct usb_function *f)
 	struct diag_context  *dev = func_to_diag(f);
 	unsigned long flags;
 
-	DBG(dev->cdev, "%s\n", __func__);
-
 	spin_lock_irqsave(&dev->lock, flags);
 	dev->configured = 0;
 	spin_unlock_irqrestore(&dev->lock, flags);
@@ -805,7 +803,7 @@ static struct diag_context *diag_context_init(const char *name)
 	int found = 0;
 	unsigned long flags;
 
-	pr_debug("%s\n", __func__);
+	pr_debug("%s called for channel:%s\n", __func__, name);
 
 	list_for_each_entry(_ch, &usb_diag_ch_list, list) {
 		if (!strcmp(name, _ch->name)) {
@@ -1030,7 +1028,7 @@ static ssize_t diag_serial_store(struct config_item *item, const char *page,
 		return 0;
 	}
 
-	strlcpy(serial_number, page, SERIAL_NUMBER_LENGTH);
+	strscpy(serial_number, page, SERIAL_NUMBER_LENGTH);
 	p = strnchr(serial_number, SERIAL_NUMBER_LENGTH, '\n');
 	if (p)
 		*p = '\0';

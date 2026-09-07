@@ -20,8 +20,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/bits.h>
-#include <linux/dmi.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -42,7 +40,6 @@
 #define VAL		0x2f
 
 /* Logical device Numbers LDN */
-#define EC		0x04
 #define GPIO		0x07
 
 /* Configuration Registers and Functions */
@@ -73,12 +70,6 @@
 #define IT8783_ID	0x8783
 #define IT8784_ID	0x8784
 #define IT8786_ID	0x8786
-
-/* Environment Controller Configuration Registers LDN=0x04 */
-#define SCR1		0xfa
-
-/* Environment Controller Bits SCR1 */
-#define WDT_PWRGD	0x20
 
 /* GPIO Configuration Registers LDN=0x07 */
 #define WDTCTRL		0x71
@@ -161,14 +152,6 @@ static inline int superio_inw(int reg)
 	return val;
 }
 
-static inline void superio_outw(int val, int reg)
-{
-	outb(reg++, REG);
-	outb(val >> 8, VAL);
-	outb(reg, REG);
-	outb(val, VAL);
-}
-
 /* Internal function, should be called after superio_select(GPIO) */
 static void _wdt_update_timeout(unsigned int t)
 {
@@ -189,12 +172,6 @@ static void _wdt_update_timeout(unsigned int t)
 	superio_outb(t, WDTVALLSB);
 	if (max_units > 255)
 		superio_outb(t >> 8, WDTVALMSB);
-}
-
-/* Internal function, should be called after superio_select(GPIO) */
-static bool _wdt_running(void)
-{
-	return superio_inb(WDTVALLSB) || (max_units > 255 && superio_inb(WDTVALMSB));
 }
 
 static int wdt_update_timeout(unsigned int t)
@@ -256,21 +233,6 @@ static int wdt_set_timeout(struct watchdog_device *wdd, unsigned int t)
 	return ret;
 }
 
-enum {
-	IT87_WDT_OUTPUT_THROUGH_PWRGD	= BIT(0),
-};
-
-static const struct dmi_system_id it87_quirks[] = {
-	{
-		/* Qotom Q30900P (IT8786) */
-		.matches = {
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "QCML04"),
-		},
-		.driver_data = (void *)IT87_WDT_OUTPUT_THROUGH_PWRGD,
-	},
-	{}
-};
-
 static const struct watchdog_info ident = {
 	.options = WDIOF_SETTIMEOUT | WDIOF_MAGICCLOSE | WDIOF_KEEPALIVEPING,
 	.firmware_version = 1,
@@ -292,10 +254,8 @@ static struct watchdog_device wdt_dev = {
 
 static int __init it87_wdt_init(void)
 {
-	const struct dmi_system_id *dmi_id;
 	u8  chip_rev;
 	u8 ctrl;
-	int quirks = 0;
 	int rc;
 
 	rc = superio_enter();
@@ -305,10 +265,6 @@ static int __init it87_wdt_init(void)
 	chip_type = superio_inw(CHIPID);
 	chip_rev  = superio_inb(CHIPREV) & 0x0f;
 	superio_exit();
-
-	dmi_id = dmi_first_match(it87_quirks);
-	if (dmi_id)
-		quirks = (long)dmi_id->driver_data;
 
 	switch (chip_type) {
 	case IT8702_ID:
@@ -368,21 +324,6 @@ static int __init it87_wdt_init(void)
 		break;
 	default:
 		superio_outb(0x00, WDTCTRL);
-	}
-
-	if (quirks & IT87_WDT_OUTPUT_THROUGH_PWRGD) {
-		superio_select(EC);
-		ctrl = superio_inb(SCR1);
-		if (!(ctrl & WDT_PWRGD)) {
-			ctrl |= WDT_PWRGD;
-			superio_outb(ctrl, SCR1);
-		}
-	}
-
-	/* wdt already left running by firmware? */
-	if (_wdt_running()) {
-		pr_info("Left running by firmware.\n");
-		set_bit(WDOG_HW_RUNNING, &wdt_dev.status);
 	}
 
 	superio_exit();

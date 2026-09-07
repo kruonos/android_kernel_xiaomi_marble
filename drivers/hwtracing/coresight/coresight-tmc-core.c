@@ -423,7 +423,7 @@ static ssize_t out_mode_store(struct device *dev,
 
 	if (strlen(buf) >= 10)
 		return -EINVAL;
-	if (sscanf(buf, "%10s", str) != 1)
+	if (sscanf(buf, "%s", str) != 1)
 		return -EINVAL;
 
 	ret = tmc_etr_switch_mode(drvdata, str);
@@ -449,20 +449,18 @@ static ssize_t stop_on_flush_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t size)
 {
-
-	static int ret;
 	unsigned long val;
 	struct tmc_drvdata *drvdata = dev_get_drvdata(dev->parent);
 
-	ret = kstrtoul(buf, 10, &val);
-	if (ret)
-		return ret;
+	if ((kstrtoul(buf, 0, &val)) || (val & ~1UL))
+		return -EINVAL;
+
 	if (val)
 		drvdata->stop_on_flush = true;
 	else
 		drvdata->stop_on_flush = false;
 
-	return drvdata->stop_on_flush;
+	return size;
 }
 static DEVICE_ATTR_RW(stop_on_flush);
 
@@ -510,6 +508,11 @@ static const struct attribute_group *coresight_tmc_etf_groups[] = {
 static inline bool tmc_etr_can_use_sg(struct device *dev)
 {
 	return fwnode_property_present(dev->fwnode, "arm,scatter-gather");
+}
+
+static bool tmc_etr_support_mem_mode(struct device *dev)
+{
+	return fwnode_property_present(dev->fwnode, "qcom,mem_support");
 }
 
 static inline bool tmc_etr_has_non_secure_access(struct tmc_drvdata *drvdata)
@@ -571,6 +574,21 @@ static u32 tmc_etr_get_default_buffer_size(struct device *dev)
 	return size;
 }
 
+static u32 tmc_etr_get_max_burst_size(struct device *dev)
+{
+	u32 burst_size;
+
+	if (fwnode_property_read_u32(dev->fwnode, "arm,max-burst-size",
+				     &burst_size))
+		return TMC_AXICTL_WR_BURST_16;
+
+	/* Only permissible values are 0 to 15 */
+	if (burst_size > 0xF)
+		burst_size = TMC_AXICTL_WR_BURST_16;
+
+	return burst_size;
+}
+
 static int tmc_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	int ret = 0;
@@ -610,10 +628,11 @@ static int tmc_probe(struct amba_device *adev, const struct amba_id *id)
 	drvdata->pid = -1;
 
 	if (drvdata->config_type == TMC_CONFIG_TYPE_ETR) {
-		drvdata->out_mode = TMC_ETR_OUT_MODE_MEM;
 		drvdata->size = tmc_etr_get_default_buffer_size(dev);
-	} else
+		drvdata->max_burst_size = tmc_etr_get_max_burst_size(dev);
+	} else {
 		drvdata->size = readl_relaxed(drvdata->base + TMC_RSZ) * 4;
+	}
 
 	ret = of_get_coresight_csr_name(adev->dev.of_node, &drvdata->csr_name);
 	if (ret)
@@ -657,9 +676,25 @@ static int tmc_probe(struct amba_device *adev, const struct amba_id *id)
 
 		drvdata->byte_cntr = byte_cntr_init(adev, drvdata);
 
+		if (tmc_etr_support_mem_mode(dev))
+			drvdata->mode_support |= BIT(TMC_ETR_OUT_MODE_MEM);
+
 		ret = tmc_etr_usb_init(adev, drvdata);
 		if (ret)
 			goto out;
+
+		ret = tmc_etr_eth_init(adev, drvdata);
+		if (ret)
+			goto out;
+
+		if (drvdata->mode_support & BIT(TMC_ETR_OUT_MODE_MEM))
+			drvdata->out_mode = TMC_ETR_OUT_MODE_MEM;
+		else if (drvdata->mode_support & BIT(TMC_ETR_OUT_MODE_USB))
+			drvdata->out_mode = TMC_ETR_OUT_MODE_USB;
+		else if (drvdata->mode_support & BIT(TMC_ETR_OUT_MODE_ETH))
+			drvdata->out_mode = TMC_ETR_OUT_MODE_ETH;
+		else
+			drvdata->out_mode = TMC_ETR_OUT_MODE_NONE;
 
 		break;
 	case TMC_CONFIG_TYPE_ETF:

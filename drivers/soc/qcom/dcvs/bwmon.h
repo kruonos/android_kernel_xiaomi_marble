@@ -10,7 +10,7 @@
 #include <linux/notifier.h>
 #include <soc/qcom/dcvs.h>
 
-#define NUM_MBPS_ZONES		10
+#define NUM_MBPS_ZONES		11
 #define UP_WAKE			1
 #define DOWN_WAKE		2
 #define MBYTE			(1ULL << 20)
@@ -108,6 +108,7 @@ struct hwmon_node {
 	unsigned int		hist_memory;
 	unsigned int		hyst_trigger_count;
 	unsigned int		hyst_length;
+	unsigned int		idle_length;
 	unsigned int		idle_mbps;
 	unsigned int		ab_scale;
 	unsigned int		mbps_zones[NUM_MBPS_ZONES];
@@ -120,6 +121,7 @@ struct hwmon_node {
 	unsigned long		hyst_mbps;
 	unsigned long		hyst_trig_win;
 	unsigned long		hyst_en;
+	unsigned long		idle_en;
 	unsigned long		prev_req;
 	unsigned int		wake;
 	unsigned int		down_cnt;

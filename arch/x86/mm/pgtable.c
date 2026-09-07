@@ -107,7 +107,7 @@ static inline void pgd_list_del(pgd_t *pgd)
 #define UNSHARED_PTRS_PER_PGD				\
 	(SHARED_KERNEL_PMD ? KERNEL_PGD_BOUNDARY : PTRS_PER_PGD)
 #define MAX_UNSHARED_PTRS_PER_PGD			\
-	MAX_T(size_t, KERNEL_PGD_BOUNDARY, PTRS_PER_PGD)
+	max_t(size_t, KERNEL_PGD_BOUNDARY, PTRS_PER_PGD)
 
 
 static void pgd_set_mm(pgd_t *pgd, struct mm_struct *mm)
@@ -611,6 +611,16 @@ int pmdp_clear_flush_young(struct vm_area_struct *vma,
 
 	return young;
 }
+
+pmd_t pmdp_invalidate_ad(struct vm_area_struct *vma, unsigned long address,
+			 pmd_t *pmdp)
+{
+	/*
+	 * No flush is necessary. Once an invalid PTE is established, the PTE's
+	 * access and dirty bits cannot be updated.
+	 */
+	return pmdp_establish(vma, address, pmdp, pmd_mkinvalid(*pmdp));
+}
 #endif
 
 /**
@@ -783,14 +793,6 @@ int pmd_clear_huge(pmd_t *pmd)
 	return 0;
 }
 
-/*
- * Until we support 512GB pages, skip them in the vmap area.
- */
-int p4d_free_pud_page(p4d_t *p4d, unsigned long addr)
-{
-	return 0;
-}
-
 #ifdef CONFIG_X86_64
 /**
  * pud_free_pmd_page - Clear pud entry and free pmd page.
@@ -863,11 +865,6 @@ int pmd_free_pte_page(pmd_t *pmd, unsigned long addr)
 }
 
 #else /* !CONFIG_X86_64 */
-
-int pud_free_pmd_page(pud_t *pud, unsigned long addr)
-{
-	return pud_none(*pud);
-}
 
 /*
  * Disable free page handling on x86-PAE. This assures that ioremap()

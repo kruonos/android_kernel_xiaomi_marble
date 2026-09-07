@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/cache.h>
@@ -26,6 +27,7 @@
 #include <linux/sched/task.h>
 #include <linux/suspend.h>
 #include <linux/vmalloc.h>
+#include <linux/panic_notifier.h>
 #include <linux/android_debug_symbols.h>
 #ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 #include <linux/math64.h>
@@ -42,6 +44,7 @@
 #include <asm/memory.h>
 
 #include "../../../kernel/sched/sched.h"
+#include <linux/sched/walt.h>
 
 #include <linux/kdebug.h>
 #include <linux/thread_info.h>
@@ -104,9 +107,14 @@ static bool minidump_ftrace_dump = true;
 
 #ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
 /* Rnqueue information */
+#ifndef CONFIG_MINIDUMP_ALL_TASK_INFO
 #define MD_RUNQUEUE_PAGES	8
+#else
+#define MD_RUNQUEUE_PAGES	150
+#endif
 
 static bool md_in_oops_handler;
+static atomic_t md_handle_done;
 static struct seq_buf *md_runq_seq_buf;
 static int md_align_offset;
 
@@ -148,6 +156,10 @@ char *md_dma_buf_procs_addr;
 #define MD_MODULE_PAGES	  8
 static struct seq_buf *md_mod_info_seq_buf;
 static DEFINE_SPINLOCK(md_modules_lock);
+
+static int n_modump;
+static char *key_modules[10];
+module_param_array(key_modules, charp, &n_modump, 0644);
 #endif	/* CONFIG_MODULES */
 #endif
 
@@ -167,7 +179,7 @@ static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 
 	entry = msm_minidump_add_region(ksp_entry);
 	if (entry < 0)
-		pr_err("Failed to add stack of entry %s in Minidump\n",
+		printk_deferred("Failed to add stack of entry %s in Minidump\n",
 				ksp_entry->name);
 	return entry;
 }
@@ -188,7 +200,7 @@ static void register_kernel_sections(void)
 	base = android_debug_symbol(ADS_PER_CPU_START);
 	static_size = (size_t)(android_debug_symbol(ADS_PER_CPU_END) - base);
 
-	strlcpy(ksec_entry.name, data_name, sizeof(ksec_entry.name));
+	strscpy(ksec_entry.name, data_name, sizeof(ksec_entry.name));
 	ksec_entry.virt_addr = (u64)_sdata;
 	ksec_entry.phys_addr = virt_to_phys(_sdata);
 	ksec_entry.size = roundup((__bss_stop - _sdata), 4);
@@ -197,7 +209,7 @@ static void register_kernel_sections(void)
 
 	start_ro = android_debug_symbol(ADS_START_RO_AFTER_INIT);
 	end_ro = android_debug_symbol(ADS_END_RO_AFTER_INIT);
-	strlcpy(ksec_entry.name, rodata_name, sizeof(ksec_entry.name));
+	strscpy(ksec_entry.name, rodata_name, sizeof(ksec_entry.name));
 	ksec_entry.virt_addr = (uintptr_t)start_ro;
 	ksec_entry.phys_addr = virt_to_phys(start_ro);
 	ksec_entry.size = roundup((end_ro - start_ro), 4);
@@ -309,8 +321,7 @@ static void update_stack_entry(struct md_region *ksp_entry, u64 sp,
 		ksp_entry->phys_addr = virt_to_phys((uintptr_t *)sp);
 	}
 	if (msm_minidump_update_region(mdno, ksp_entry) < 0) {
-		pr_err_ratelimited(
-			"Failed to update stack entry %s in minidump\n",
+		printk_deferred("Failed to update stack entry %s in minidump\n",
 			ksp_entry->name);
 	}
 }
@@ -548,7 +559,7 @@ static void register_suspend_context(void)
 #endif
 
 #ifdef CONFIG_ARM64
-void register_irq_stack(void)
+static void register_irq_stack(void)
 {
 	int cpu;
 	unsigned int i;
@@ -565,18 +576,18 @@ void register_irq_stack(void)
 			sp = irq_stack_base & ~(PAGE_SIZE - 1);
 			for (i = 0; i < irq_stack_pages_count; i++) {
 				scnprintf(irq_sp_entry.name,
-					  sizeof(irq_sp_entry.name),
-					  "KISTACK%d_%d", cpu, i);
+				sizeof(irq_sp_entry.name),
+					"KISTK%d_%d", cpu, i);
 				register_stack_entry(&irq_sp_entry, sp,
-						     PAGE_SIZE);
+					PAGE_SIZE);
 				sp += PAGE_SIZE;
 			}
 		} else {
 			sp = irq_stack_base;
 			scnprintf(irq_sp_entry.name, sizeof(irq_sp_entry.name),
-				  "KISTACK%d", cpu);
+				"KISTK%d", cpu);
 			register_stack_entry(&irq_sp_entry, sp, IRQ_STACK_SIZE);
-		}
+			}
 	}
 }
 #else
@@ -654,7 +665,7 @@ static void md_register_trace_buf(void)
 	if (!buffer_start)
 		return;
 
-	strlcpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
+	strscpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
 	md_entry.virt_addr = (uintptr_t)buffer_start;
 	md_entry.phys_addr = virt_to_phys(buffer_start);
 	md_entry.size = MD_FTRACE_BUF_SIZE;
@@ -703,31 +714,15 @@ static void md_dump_task_info(struct task_struct *task, char *status,
 	se = &task->se;
 	if (task == curr) {
 		seq_buf_printf(md_runq_seq_buf,
-			       "[status: curr] pid: %d comm: %s preempt: %#x\n",
-			       task_pid_nr(task), task->comm,
+			       "[status: curr] pid: %d preempt: %#x\n",
+			       task_pid_nr(task),
 			       task->thread_info.preempt_count);
 		return;
 	}
 
 	seq_buf_printf(md_runq_seq_buf,
-		       "[status: %s] pid: %d tsk: %#lx comm: %s stack: %#lx",
-		       status, task_pid_nr(task),
-		       (unsigned long)task,
-		       task->comm,
-		       (unsigned long)task->stack);
-	seq_buf_printf(md_runq_seq_buf,
-		       " prio: %d aff: %*pb",
-		       task->prio, cpumask_pr_args(&task->cpus_mask));
-#ifdef CONFIG_SCHED_WALT
-	seq_buf_printf(md_runq_seq_buf, " enq: %lu wake: %lu sleep: %lu",
-		       task->wts.last_enqueued_ts, task->wts.last_wake_ts,
-		       task->wts.last_sleep_ts);
-#endif
-	seq_buf_printf(md_runq_seq_buf,
-		       " vrun: %lu arr: %lu sum_ex: %lu\n",
-		       (unsigned long)se->vruntime,
-		       (unsigned long)se->exec_start,
-		       (unsigned long)se->sum_exec_runtime);
+		       "[status: %s] pid: %d\n",
+		       status, task_pid_nr(task));
 }
 
 static void md_dump_cfs_rq(struct cfs_rq *cfs, struct task_struct *curr);
@@ -823,12 +818,46 @@ static void md_dump_rt_rq(struct rt_rq  *rt_rq, struct task_struct *curr)
 	}
 }
 
+static const char * const task_state_array[] = {
+	"R", /* 0x00 */
+	"S", /* 0x01 */
+	"D", /* 0x02 */
+	"T", /* 0x04 */
+	"t", /* 0x08 */
+	"X", /* 0x10 */
+	"Z", /* 0x20 */
+	"P", /* 0x40 */
+	"I", /* 0x80 */
+};
+
+/* In line with task_state_index from fs/proc/array.c */
+static inline unsigned int md_task_state_index(struct task_struct *tsk)
+{
+	unsigned int tsk_state = READ_ONCE(tsk->__state);
+	unsigned int state = (tsk_state | tsk->exit_state) & TASK_REPORT;
+
+	if (tsk_state == TASK_IDLE)
+		state = TASK_REPORT_IDLE;
+
+	return fls(state);
+}
+
+/* In line with get_task_state from fs/proc/array.c */
+static inline const char *md_get_task_state(struct task_struct *tsk)
+{
+	return task_state_array[md_task_state_index(tsk)];
+}
+
 static void md_dump_runqueues(void)
 {
 	int cpu;
 	struct rq *rq;
 	struct rt_rq  *rt;
 	struct cfs_rq *cfs;
+	struct task_struct *p, *t;
+#if IS_ENABLED(CONFIG_SCHED_WALT)
+	struct walt_task_struct *wts;
+#endif
 
 	if (!md_runq_seq_buf)
 		return;
@@ -838,17 +867,53 @@ static void md_dump_runqueues(void)
 		rt = &rq->rt;
 		cfs = &rq->cfs;
 		seq_buf_printf(md_runq_seq_buf,
-			       "CPU%d %d process is running\n",
-			       cpu, rq->nr_running);
-		md_dump_task_info(cpu_curr(cpu), "curr", NULL);
+			       "CPU%d has %d process, current is pid %d\n",
+			       cpu, rq->nr_running, cpu_curr(cpu)->pid);
 		seq_buf_printf(md_runq_seq_buf,
-			       "CFS %d process is pending\n",
+			       "CFS has %d process\n",
 			       cfs->nr_running);
 		md_dump_cfs_rq(cfs, cpu_curr(cpu));
 		seq_buf_printf(md_runq_seq_buf,
-			       "RT %d process is pending\n",
+			       "RT has %d process\n",
 			       rt->rt_nr_running);
 		md_dump_rt_rq(rt, cpu_curr(cpu));
+		seq_buf_printf(md_runq_seq_buf, "\n");
+	}
+
+	seq_buf_printf(md_runq_seq_buf, "%-15s", "Task name");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 6, "PID");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 16, "Exec_started_at");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 16, "Last_queued_at");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 16, "Total_wait_time");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 12, "Exec_times");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 4, "CPU");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 5, "Prio");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 6, "State");
+#if IS_ENABLED(CONFIG_SCHED_WALT)
+	seq_buf_printf(md_runq_seq_buf, "%*s", 17, "Last_enqueued_ts");
+	seq_buf_printf(md_runq_seq_buf, "%*s", 16, "Last_sleep_ts");
+#endif
+	seq_buf_printf(md_runq_seq_buf, "\n");
+
+	for_each_process_thread(p, t) {
+#ifndef CONFIG_MINIDUMP_ALL_TASK_INFO
+		if (READ_ONCE(t->__state))
+			continue;
+#endif
+		seq_buf_printf(md_runq_seq_buf, "%-15s", t->comm);
+		seq_buf_printf(md_runq_seq_buf, "%6d", t->pid);
+		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_arrival);
+		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_queued);
+		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.run_delay);
+		seq_buf_printf(md_runq_seq_buf, "%12ld", t->sched_info.pcount);
+		seq_buf_printf(md_runq_seq_buf, "%4d", t->on_cpu);
+		seq_buf_printf(md_runq_seq_buf, "%5d", t->prio);
+		seq_buf_printf(md_runq_seq_buf, "%*s", 6, md_get_task_state(t));
+#if IS_ENABLED(CONFIG_SCHED_WALT)
+		wts = (struct walt_task_struct *) t->android_vendor_data1;
+		seq_buf_printf(md_runq_seq_buf, "%17ld", wts->last_enqueued_ts);
+		seq_buf_printf(md_runq_seq_buf, "%16ld", wts->last_sleep_ts);
+#endif
 		seq_buf_printf(md_runq_seq_buf, "\n");
 	}
 }
@@ -903,15 +968,12 @@ static void md_dump_data(unsigned long addr, int nbytes, const char *name)
 
 static void md_reg_context_data(struct pt_regs *regs)
 {
-	mm_segment_t fs;
 	unsigned int i;
 	int nbytes = 128;
 
 	if (user_mode(regs) ||  !regs->pc)
 		return;
 
-	fs = get_fs();
-	set_fs(KERNEL_DS);
 	md_dump_data(regs->pc - nbytes, nbytes * 2, "PC");
 	md_dump_data(regs->regs[30] - nbytes, nbytes * 2, "LR");
 	md_dump_data(regs->sp - nbytes, nbytes * 2, "SP");
@@ -921,7 +983,6 @@ static void md_reg_context_data(struct pt_regs *regs)
 		snprintf(name, sizeof(name), "X%u", i);
 		md_dump_data(regs->regs[i] - nbytes, nbytes * 2, name);
 	}
-	set_fs(fs);
 }
 
 static inline void md_dump_panic_regs(void)
@@ -1015,11 +1076,12 @@ static void md_ipi_stop(void *unused, struct pt_regs *regs)
 }
 #endif
 
-static int md_panic_handler(struct notifier_block *this,
-			    unsigned long event, void *ptr)
+void md_dump_process(void)
 {
 	if (md_in_oops_handler)
-		return NOTIFY_DONE;
+		return;
+	if (!atomic_add_unless(&md_handle_done, 1, 1))
+		return;
 	md_in_oops_handler = true;
 #ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
 	if (!md_cntxt_seq_buf)
@@ -1052,6 +1114,13 @@ dump_rq:
 	if (md_dma_buf_procs_addr)
 		md_dma_buf_procs(md_dma_buf_procs_addr, md_dma_buf_procs_size);
 	md_in_oops_handler = false;
+}
+EXPORT_SYMBOL(md_dump_process);
+
+static int md_panic_handler(struct notifier_block *this,
+			    unsigned long event, void *ptr)
+{
+	md_dump_process();
 	return NOTIFY_DONE;
 }
 
@@ -1066,7 +1135,7 @@ static int md_register_minidump_entry(char *name, u64 virt_addr,
 	struct md_region md_entry;
 	int ret;
 
-	strlcpy(md_entry.name, name, sizeof(md_entry.name));
+	strscpy(md_entry.name, name, sizeof(md_entry.name));
 	md_entry.virt_addr = virt_addr;
 	md_entry.phys_addr = phys_addr;
 	md_entry.size = size;
@@ -1144,21 +1213,93 @@ static void md_register_panic_data(void)
 		md_debugfs_slabowner(minidump_dir);
 	}
 #endif
-	md_register_memory_dump(md_dma_buf_info_size, "DMABUF_INFO");
+	md_register_memory_dump(md_dma_buf_info_size, "DMA_INFO");
 	md_debugfs_dmabufinfo(minidump_dir);
-	md_register_memory_dump(md_dma_buf_procs_size, "DMABUF_PROCS");
+	md_register_memory_dump(md_dma_buf_procs_size, "DMA_PROC");
 	md_debugfs_dmabufprocs(minidump_dir);
 }
-#endif
 
-static int print_module(const char *name, void *mod_addr, void *data)
+static int register_vmap_mem(const char *name, void *virual_addr, size_t dump_len)
 {
-	if (!md_mod_info_seq_buf) {
-		pr_err("md_mod_info_seq_buf is NULL\n");
-		return -EINVAL;
+	int to_dump;
+	u64 phys_addr;
+	char entry_name[12];
+	void *dump_addr = virual_addr;
+	int i = 0;
+
+	while (dump_len) {
+		to_dump = min(dump_len, PAGE_SIZE - offset_in_page(dump_addr));
+		phys_addr = page_to_phys(vmalloc_to_page((const void *)dump_addr));
+		snprintf(entry_name, sizeof(entry_name), "%d_%s", i, name);
+		md_register_minidump_entry(entry_name, (u64)dump_addr, phys_addr, to_dump);
+		dump_addr += to_dump;
+		dump_len -= to_dump;
+		i++;
 	}
 
-	seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %#lx\n", name, mod_addr);
+	return 0;
+}
+
+struct module_sect_attr {
+	struct bin_attribute battr;
+	unsigned long address;
+};
+
+struct module_sect_attrs {
+	struct attribute_group grp;
+	unsigned int nsections;
+	struct module_sect_attr attrs[];
+};
+
+static int md_module_process(struct module *mod)
+{
+	int i;
+	bool is_key_module = false;
+	unsigned long sec_addr, base_addr;
+	unsigned long dump_start, dump_end;
+
+	for (i = 0; i < n_modump; i++) {
+		if (strcmp(key_modules[i], mod->name) == 0)
+			is_key_module = true;
+	}
+
+	if (md_mod_info_seq_buf) {
+		base_addr = (unsigned long)mod->core_layout.base;
+		seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %lx",
+				mod->name, base_addr);
+		if (is_key_module) {
+			dump_start = base_addr +
+					mod->core_layout.ro_after_init_size;
+			dump_end = base_addr + mod->core_layout.size;
+			if (((dump_end - dump_start) / PAGE_SIZE) <
+				msm_minidump_get_available_region()) {
+				for (i = 0; i < mod->sect_attrs->nsections ; i++) {
+					sec_addr = mod->sect_attrs->attrs[i].address;
+					if (sec_addr >= dump_start && sec_addr < dump_end) {
+						seq_buf_printf(md_mod_info_seq_buf, ", %s: %lx",
+							mod->sect_attrs->attrs[i].battr.attr.name,
+									sec_addr);
+					}
+				}
+				register_vmap_mem(mod->name, (void *)dump_start,
+						(dump_end - dump_start));
+			} else
+				pr_err("Failed to dump module %s\n", mod->name);
+		}
+		seq_buf_printf(md_mod_info_seq_buf, "\n");
+	}
+
+	return 0;
+}
+
+static int md_get_present_module(const char *mod_name,
+				void *mod_addr, void *data)
+{
+	struct module *mod = container_of(mod_name,
+				struct module, name[0]);
+
+	if (mod != THIS_MODULE)
+		md_module_process(mod);
 	return 0;
 }
 
@@ -1168,16 +1309,8 @@ static int md_module_notify(struct notifier_block *self,
 	struct module *mod = data;
 
 	spin_lock(&md_modules_lock);
-	switch (mod->state) {
-	case MODULE_STATE_LIVE:
-		print_module(mod->name, mod->core_layout.base, data);
-		break;
-	case MODULE_STATE_GOING:
-		print_module(mod->name, mod->core_layout.base, data);
-		break;
-	default:
-		break;
-	}
+	if (mod->state == MODULE_STATE_LIVE)
+		md_module_process(mod);
 	spin_unlock(&md_modules_lock);
 	return 0;
 }
@@ -1204,8 +1337,9 @@ static void md_register_module_data(void)
 		return;
 	}
 
-	android_debug_for_each_module(print_module, NULL);
+	android_debug_for_each_module(md_get_present_module, NULL);
 }
+#endif
 
 #ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 static void register_pstore_info(void)
@@ -1242,7 +1376,7 @@ static void register_pstore_info(void)
 
 	ret = of_property_read_u32(node, "record-size", &size);
 	if (!ret && size > 0) {
-		strlcpy(md_entry.name, "KDMESG", sizeof(md_entry.name));
+		strscpy(md_entry.name, "KDMESG", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
 		md_entry.size = size;
@@ -1255,7 +1389,7 @@ static void register_pstore_info(void)
 
 	ret = of_property_read_u32(node, "console-size", &size);
 	if (!ret && size > 0) {
-		strlcpy(md_entry.name, "KCONSOLE", sizeof(md_entry.name));
+		strscpy(md_entry.name, "KCONSOLE", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
 		md_entry.size = size;
@@ -1268,7 +1402,7 @@ static void register_pstore_info(void)
 
 	ret = of_property_read_u32(node, "ftrace-size", &size);
 	if (!ret && size > 0) {
-		strlcpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
+		strscpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
 		md_entry.size = size;
@@ -1281,7 +1415,7 @@ static void register_pstore_info(void)
 
 	ret = of_property_read_u32(node, "pmsg-size", &size);
 	if (!ret && size > 0) {
-		strlcpy(md_entry.name, "KPMSG", sizeof(md_entry.name));
+		strscpy(md_entry.name, "KPMSG", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
 		md_entry.size = size;
@@ -1294,10 +1428,15 @@ static void register_pstore_info(void)
 }
 #endif
 
+#if !IS_MODULE(CONFIG_QCOM_MINIDUMP)
+static int __init msm_minidump_log_init(void)
+#else
 int msm_minidump_log_init(void)
+#endif
 {
 	register_kernel_sections();
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
+	register_irq_stack();
 #ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
 	register_current_stack();
 	register_suspend_context();
@@ -1308,8 +1447,8 @@ int msm_minidump_log_init(void)
 #ifdef CONFIG_QCOM_MINIDUMP_FTRACE
 	md_register_trace_buf();
 #endif
-	md_register_module_data();
 #ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
+	md_register_module_data();
 	md_register_panic_data();
 	atomic_notifier_chain_register(&panic_notifier_list, &md_panic_blk);
 #ifdef CONFIG_QCOM_MINIDUMP_PANIC_CPU_CONTEXT
@@ -1318,3 +1457,7 @@ int msm_minidump_log_init(void)
 #endif
 	return 0;
 }
+
+#if !IS_MODULE(CONFIG_QCOM_MINIDUMP)
+late_initcall(msm_minidump_log_init)
+#endif

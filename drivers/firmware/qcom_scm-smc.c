@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2015,2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/io.h>
@@ -12,21 +13,12 @@
 #include <linux/arm-smccc.h>
 #include <linux/dma-mapping.h>
 #include <linux/qtee_shmbridge.h>
-#include <linux/wait.h>
+#include <linux/qcom_scm_hab.h>
 
 #include "qcom_scm.h"
+#include <soc/qcom/qseecom_scm.h>
 
-//Mi-Security Add
-DECLARE_WAIT_QUEUE_HEAD(tzdbg_log_wq);
-EXPORT_SYMBOL(tzdbg_log_wq);
-
-/**
- * struct arm_smccc_args
- * @args:	The array of values used in registers in smc instruction
- */
-struct arm_smccc_args {
-	unsigned long args[8];
-};
+static bool hab_calling_convention;
 
 static DEFINE_MUTEX(qcom_scm_lock);
 
@@ -42,20 +34,26 @@ static DEFINE_MUTEX(qcom_scm_lock);
 static void __scm_smc_do_quirk(const struct arm_smccc_args *smc,
 			       struct arm_smccc_res *res)
 {
+
 	unsigned long a0 = smc->args[0];
 	struct arm_smccc_quirk quirk = { .id = ARM_SMCCC_QUIRK_QCOM_A6 };
+	bool atomic = ARM_SMCCC_IS_FAST_CALL(smc->args[0]) ? true : false;
 
 	quirk.state.a6 = 0;
 
-	do {
-		arm_smccc_smc_quirk(a0, smc->args[1], smc->args[2],
-				    smc->args[3], smc->args[4], smc->args[5],
-				    quirk.state.a6, smc->args[7], res, &quirk);
+	if (hab_calling_convention) {
+		scm_call_qcpe(smc, res, atomic);
+	} else {
+		do {
+			arm_smccc_smc_quirk(a0, smc->args[1], smc->args[2],
+					smc->args[3], smc->args[4],
+					smc->args[5], quirk.state.a6,
+					smc->args[7], res, &quirk);
+			if (res->a0 == QCOM_SCM_INTERRUPTED)
+				a0 = res->a0;
+		} while (res->a0 == QCOM_SCM_INTERRUPTED);
+	}
 
-		if (res->a0 == QCOM_SCM_INTERRUPTED)
-			a0 = res->a0;
-
-	} while (res->a0 == QCOM_SCM_INTERRUPTED);
 }
 
 #define IS_WAITQ_SLEEP_OR_WAKE(res) \
@@ -63,7 +61,7 @@ static void __scm_smc_do_quirk(const struct arm_smccc_args *smc,
 
 static void fill_wq_resume_args(struct arm_smccc_args *resume, u32 smc_call_ctx)
 {
-	memset(resume->args, 0, sizeof(resume->args));
+	memset(resume->args, 0, ARRAY_SIZE(resume->args));
 
 	resume->args[0] = ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL,
 			 ARM_SMCCC_SMC_64, ARM_SMCCC_OWNER_SIP,
@@ -76,7 +74,7 @@ static void fill_wq_resume_args(struct arm_smccc_args *resume, u32 smc_call_ctx)
 
 static void fill_wq_wake_ack_args(struct arm_smccc_args *wake_ack, u32 smc_call_ctx)
 {
-	memset(wake_ack->args, 0, sizeof(wake_ack->args));
+	memset(wake_ack->args, 0, ARRAY_SIZE(wake_ack->args));
 
 	wake_ack->args[0] = ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL,
 			 ARM_SMCCC_SMC_64, ARM_SMCCC_OWNER_SIP,
@@ -89,7 +87,7 @@ static void fill_wq_wake_ack_args(struct arm_smccc_args *wake_ack, u32 smc_call_
 
 static void fill_get_wq_ctx_args(struct arm_smccc_args *get_wq_ctx)
 {
-	memset(get_wq_ctx->args, 0, sizeof(get_wq_ctx->args));
+	memset(get_wq_ctx->args, 0, ARRAY_SIZE(get_wq_ctx->args));
 
 	get_wq_ctx->args[0] = ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL,
 			 ARM_SMCCC_SMC_64, ARM_SMCCC_OWNER_SIP,
@@ -293,7 +291,27 @@ int __scm_smc_call(struct device *dev, const struct qcom_scm_desc *desc,
 	}
 
 	ret = (long)smc_res.a0 ? qcom_scm_remap_error(smc_res.a0) : 0;
-	wake_up_interruptible(&tzdbg_log_wq);
 
 	return ret;
+}
+
+void __qcom_scm_init(void)
+{
+	int ret;
+	/**
+	 * The HAB connection should be opened before first SMC call.
+	 * If not, there could be errors that might cause the
+	 * system to crash.
+	 */
+	ret = scm_qcpe_hab_open();
+	if (ret != -EOPNOTSUPP) {
+		hab_calling_convention = true;
+		pr_debug("using HAB channel communication ret = %d\n", ret);
+	}
+
+}
+
+void __qcom_scm_qcpe_exit(void)
+{
+	scm_qcpe_hab_close();
 }

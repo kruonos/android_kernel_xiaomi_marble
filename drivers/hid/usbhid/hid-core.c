@@ -377,27 +377,23 @@ static int hid_submit_ctrl(struct hid_device *hid)
 	len = hid_report_len(report);
 	if (dir == USB_DIR_OUT) {
 		usbhid->urbctrl->pipe = usb_sndctrlpipe(hid_to_usb_dev(hid), 0);
-		usbhid->urbctrl->transfer_buffer_length = len;
 		if (raw_report) {
 			memcpy(usbhid->ctrlbuf, raw_report, len);
 			kfree(raw_report);
 			usbhid->ctrl[usbhid->ctrltail].raw_report = NULL;
 		}
 	} else {
-		int maxpacket, padlen;
+		int maxpacket;
 
 		usbhid->urbctrl->pipe = usb_rcvctrlpipe(hid_to_usb_dev(hid), 0);
 		maxpacket = usb_maxpacket(hid_to_usb_dev(hid),
 					  usbhid->urbctrl->pipe, 0);
-		if (maxpacket > 0) {
-			padlen = DIV_ROUND_UP(len, maxpacket);
-			padlen *= maxpacket;
-			if (padlen > usbhid->bufsize)
-				padlen = usbhid->bufsize;
-		} else
-			padlen = 0;
-		usbhid->urbctrl->transfer_buffer_length = padlen;
+		len += (len == 0);	/* Don't allow 0-length reports */
+		len = round_up(len, maxpacket);
+		if (len > usbhid->bufsize)
+			len = usbhid->bufsize;
 	}
+	usbhid->urbctrl->transfer_buffer_length = len;
 	usbhid->urbctrl->dev = hid_to_usb_dev(hid);
 
 	usbhid->cr->bRequestType = USB_TYPE_CLASS | USB_RECIP_INTERFACE | dir;
@@ -438,6 +434,7 @@ static void hid_irq_out(struct urb *urb)
 		break;
 	case -ESHUTDOWN:	/* unplug */
 		unplug = 1;
+		break;
 	case -EILSEQ:		/* protocol error or unplug */
 	case -EPROTO:		/* protocol error or unplug */
 	case -ECONNRESET:	/* unlink */
@@ -489,6 +486,7 @@ static void hid_ctrl(struct urb *urb)
 		break;
 	case -ESHUTDOWN:	/* unplug */
 		unplug = 1;
+		break;
 	case -EILSEQ:		/* protocol error or unplug */
 	case -EPROTO:		/* protocol error or unplug */
 	case -ECONNRESET:	/* unlink */
@@ -984,12 +982,12 @@ static int usbhid_parse(struct hid_device *hid)
 	struct usb_host_interface *interface = intf->cur_altsetting;
 	struct usb_device *dev = interface_to_usbdev (intf);
 	struct hid_descriptor *hdesc;
-	struct hid_class_descriptor *hcdesc;
-	__u8 fixed_opt_descriptors_size;
 	u32 quirks = 0;
 	unsigned int rsize = 0;
 	char *rdesc;
-	int ret;
+	int ret, n;
+	int num_descriptors;
+	size_t offset = offsetof(struct hid_descriptor, desc);
 
 	quirks = hid_lookup_quirk(hid);
 
@@ -1011,33 +1009,20 @@ static int usbhid_parse(struct hid_device *hid)
 		return -ENODEV;
 	}
 
-	if (!hdesc->bNumDescriptors ||
-	    hdesc->bLength != sizeof(*hdesc) +
-			      (hdesc->bNumDescriptors - 1) * sizeof(*hcdesc)) {
-		dbg_hid("hid descriptor invalid, bLen=%hhu bNum=%hhu\n",
-			hdesc->bLength, hdesc->bNumDescriptors);
-
-		/*
-		 * Some devices may expose a wrong number of descriptors compared
-		 * to the provided length.
-		 * However, we ignore the optional hid class descriptors entirely
-		 * so we can safely recompute the proper field.
-		 */
-		if (hdesc->bLength >= sizeof(*hdesc)) {
-			fixed_opt_descriptors_size = hdesc->bLength - sizeof(*hdesc);
-
-			hid_warn(intf, "fixing wrong optional hid class descriptors count\n");
-			hdesc->bNumDescriptors = fixed_opt_descriptors_size / sizeof(*hcdesc) + 1;
-		} else {
-			return -EINVAL;
-		}
+	if (hdesc->bLength < sizeof(struct hid_descriptor)) {
+		dbg_hid("hid descriptor is too short\n");
+		return -EINVAL;
 	}
 
 	hid->version = le16_to_cpu(hdesc->bcdHID);
 	hid->country = hdesc->bCountryCode;
 
-	if (hdesc->rpt_desc.bDescriptorType == HID_DT_REPORT)
-		rsize = le16_to_cpu(hdesc->rpt_desc.wDescriptorLength);
+	num_descriptors = min_t(int, hdesc->bNumDescriptors,
+	       (hdesc->bLength - offset) / sizeof(struct hid_class_descriptor));
+
+	for (n = 0; n < num_descriptors; n++)
+		if (hdesc->desc[n].bDescriptorType == HID_DT_REPORT)
+			rsize = le16_to_cpu(hdesc->desc[n].wDescriptorLength);
 
 	if (!rsize || rsize > HID_MAX_DESCRIPTOR_SIZE) {
 		dbg_hid("weird size of report descriptor (%u)\n", rsize);
@@ -1064,11 +1049,6 @@ static int usbhid_parse(struct hid_device *hid)
 		dbg_hid("parsing report descriptor failed\n");
 		goto err;
 	}
-
-	if (hdesc->bNumDescriptors > 1)
-		hid_warn(intf,
-			"%u unsupported optional hid class descriptors\n",
-			(int)(hdesc->bNumDescriptors - 1));
 
 	hid->quirks |= quirks;
 
@@ -1331,6 +1311,13 @@ static int usbhid_idle(struct hid_device *hid, int report, int idle,
 	return hid_set_idle(dev, ifnum, report, idle);
 }
 
+static bool usbhid_may_wakeup(struct hid_device *hid)
+{
+	struct usb_device *dev = hid_to_usb_dev(hid);
+
+	return device_may_wakeup(&dev->dev);
+}
+
 struct hid_ll_driver usb_hid_driver = {
 	.parse = usbhid_parse,
 	.start = usbhid_start,
@@ -1343,6 +1330,7 @@ struct hid_ll_driver usb_hid_driver = {
 	.raw_request = usbhid_raw_request,
 	.output_report = usbhid_output_report,
 	.idle = usbhid_idle,
+	.may_wakeup = usbhid_may_wakeup,
 };
 EXPORT_SYMBOL_GPL(usb_hid_driver);
 

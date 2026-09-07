@@ -17,6 +17,11 @@ static int ufs_qcom_phy_qmp_v4_phy_calibrate(struct phy *generic_phy)
 	bool is_g4, is_rate_B;
 	int err;
 
+	/* Never apply the Cape G4 tables to a newer or unknown PHY submode. */
+	if (ufs_qcom_phy->submode != UFS_QCOM_PHY_SUBMODE_NON_G4 &&
+	    ufs_qcom_phy->submode != UFS_QCOM_PHY_SUBMODE_G4)
+		return -EINVAL;
+
 	err = reset_control_assert(ufs_qcom_phy->ufs_reset);
 	if (err) {
 		dev_err(dev, "Failed to assert UFS PHY reset %d\n", err);

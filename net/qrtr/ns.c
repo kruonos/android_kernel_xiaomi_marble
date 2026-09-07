@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright (c) 2015, Sony Mobile Communications Inc.
- * Copyright (c) 2013, 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, The Linux Foundation. All rights reserved.
  * Copyright (c) 2020, Linaro Ltd.
  */
 
@@ -19,7 +19,7 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/qrtr.h>
 
-#define NS_LOG_PAGE_CNT 4
+#define NS_LOG_PAGE_CNT 8
 static void *ns_ilc;
 #define NS_INFO(x, ...) ipc_log_string(ns_ilc, x, ##__VA_ARGS__)
 
@@ -86,14 +86,14 @@ static struct qrtr_node *node_get(unsigned int node_id)
 		return node;
 
 	/* If node didn't exist, allocate and insert it to the tree */
-	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	node = kzalloc(sizeof(*node), GFP_ATOMIC);
 	if (!node)
 		return NULL;
 
 	node->id = node_id;
 	xa_init(&node->servers);
 
-	if (xa_is_err(xa_store(&nodes, node_id, node, GFP_KERNEL))) {
+	if(xa_is_err(xa_store(&nodes, node_id, node, GFP_ATOMIC))){
 		kfree(node);
 		return NULL;
 	}
@@ -230,24 +230,26 @@ static int announce_servers(struct sockaddr_qrtr *sq)
 	struct qrtr_server *srv;
 	struct qrtr_node *node;
 	unsigned long index;
+	unsigned long node_idx;
 	int ret;
 
-	node = node_get(qrtr_ns.local_node);
-	if (!node)
-		return 0;
-
 	/* Announce the list of servers registered in this node */
-	xa_for_each(&node->servers, index, srv) {
-		ret = service_announce_new(sq, srv);
-		if (ret < 0) {
-			if (ret == -ENODEV)
-				continue;
+	xa_for_each(&nodes, node_idx, node) {
+		if (node->id == sq->sq_node) {
+			pr_info("Avoiding duplicate announce for NODE ID %u\n", node->id);
+			continue;
+		}
+		xa_for_each(&node->servers, index, srv) {
+			ret = service_announce_new(sq, srv);
+			if (ret < 0) {
+				if (ret == -ENODEV)
+					continue;
 
-			pr_err("failed to announce new service %d\n", ret);
-			return ret;
+				pr_err("failed to announce new service %d\n", ret);
+				return ret;
+			}
 		}
 	}
-
 	return 0;
 }
 
@@ -795,24 +797,6 @@ int qrtr_ns_init(void)
 	if (ret < 0)
 		goto err_wq;
 
-	/* As the qrtr ns socket owner and creator is the same module, we have
-	 * to decrease the qrtr module reference count to guarantee that it
-	 * remains zero after the ns socket is created, otherwise, executing
-	 * "rmmod" command is unable to make the qrtr module deleted after the
-	 *  qrtr module is inserted successfully.
-	 *
-	 * However, the reference count is increased twice in
-	 * sock_create_kern(): one is to increase the reference count of owner
-	 * of qrtr socket's proto_ops struct; another is to increment the
-	 * reference count of owner of qrtr proto struct. Therefore, we must
-	 * decrement the module reference count twice to ensure that it keeps
-	 * zero after server's listening socket is created. Of course, we
-	 * must bump the module reference count twice as well before the socket
-	 * is closed.
-	 */
-	module_put(qrtr_ns.sock->ops->owner);
-	module_put(qrtr_ns.sock->sk->sk_prot_creator->owner);
-
 	return 0;
 
 err_wq:
@@ -827,15 +811,6 @@ void qrtr_ns_remove(void)
 {
 	kthread_flush_worker(&qrtr_ns.kworker);
 	kthread_stop(qrtr_ns.task);
-
-	/* sock_release() expects the two references that were put during
-	 * qrtr_ns_init(). This function is only called during module remove,
-	 * so try_stop_module() has already set the refcnt to 0. Use
-	 * __module_get() instead of try_module_get() to successfully take two
-	 * references.
-	 */
-	__module_get(qrtr_ns.sock->ops->owner);
-	__module_get(qrtr_ns.sock->sk->sk_prot_creator->owner);
 	sock_release(qrtr_ns.sock);
 }
 EXPORT_SYMBOL_GPL(qrtr_ns_remove);

@@ -235,7 +235,6 @@ static struct phy_driver microchip_t1_phy_driver[] = {
 		.features       = PHY_BASIC_T1_FEATURES,
 
 		.config_init	= lan87xx_config_init,
-		.config_aneg    = genphy_config_aneg,
 
 		.config_intr    = lan87xx_phy_config_intr,
 		.handle_interrupt = lan87xx_handle_interrupt,

@@ -373,7 +373,7 @@ static int atmel_nand_dma_transfer(struct atmel_nand_controller *nc,
 	dma_cookie_t cookie;
 
 	buf_dma = dma_map_single(nc->dev, buf, len, dir);
-	if (dma_mapping_error(nc->dev, buf_dma)) {
+	if (dma_mapping_error(nc->dev, dev_dma)) {
 		dev_err(nc->dev,
 			"Failed to prepare a buffer for DMA access\n");
 		goto err;
@@ -1378,23 +1378,13 @@ static int atmel_smc_nand_prepare_smcconf(struct atmel_nand *nand,
 		return ret;
 
 	/*
-	 * Read setup timing depends on the operation done on the NAND:
-	 *
-	 * NRD_SETUP = max(tAR, tCLR)
-	 */
-	timeps = max(conf->timings.sdr.tAR_min, conf->timings.sdr.tCLR_min);
-	ncycles = DIV_ROUND_UP(timeps, mckperiodps);
-	totalcycles += ncycles;
-	ret = atmel_smc_cs_conf_set_setup(smcconf, ATMEL_SMC_NRD_SHIFT, ncycles);
-	if (ret)
-		return ret;
-
-	/*
-	 * The read cycle timing is directly matching tRC, but is also
+	 * The write cycle timing is directly matching tWC, but is also
 	 * dependent on the setup and hold timings we calculated earlier,
 	 * which gives:
 	 *
-	 * NRD_CYCLE = max(tRC, NRD_SETUP + NRD_PULSE + NRD_HOLD)
+	 * NRD_CYCLE = max(tRC, NRD_PULSE + NRD_HOLD)
+	 *
+	 * NRD_SETUP is always 0.
 	 */
 	ncycles = DIV_ROUND_UP(conf->timings.sdr.tRC_min, mckperiodps);
 	ncycles = max(totalcycles, ncycles);
@@ -1535,7 +1525,12 @@ static int atmel_nand_setup_interface(struct nand_chip *chip, int csline,
 				      const struct nand_interface_config *conf)
 {
 	struct atmel_nand *nand = to_atmel_nand(chip);
+	const struct nand_sdr_timings *sdr;
 	struct atmel_nand_controller *nc;
+
+	sdr = nand_get_sdr_timings(conf);
+	if (IS_ERR(sdr))
+		return PTR_ERR(sdr);
 
 	nc = to_nand_controller(nand->base.controller);
 
@@ -1640,10 +1635,8 @@ static struct atmel_nand *atmel_nand_create(struct atmel_nand_controller *nc,
 	}
 
 	nand = devm_kzalloc(nc->dev, struct_size(nand, cs, numcs), GFP_KERNEL);
-	if (!nand) {
-		dev_err(nc->dev, "Failed to allocate NAND object\n");
+	if (!nand)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	nand->numcs = numcs;
 

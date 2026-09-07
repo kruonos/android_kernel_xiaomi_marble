@@ -31,6 +31,169 @@ u64 arm_smmu_debug_qtb_debugchain_dump(void __iomem *debugchain_base)
 	return dump;
 }
 
+void arm_smmu_debug_qtb_transtracker_set_config(void __iomem *transactiontracker_base, u64 sel)
+{
+	u64 val = 0;
+
+	if (sel) {
+		val |= TTQTB_GlbEn | TTQTB_IgnoreCtiTrigIn0 | TTQTB_LogAsstEn;
+		writel_relaxed(val, transactiontracker_base + TransTrackerQTB_MainCtl);
+		writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base + TransTrackerQTB_LogClr);
+	} else {
+		/*By default All transactions through QTB are captured*/
+		val |= TTQTB_GlbEn | TTQTB_IgnoreCtiTrigIn0 | TTQTB_LogAll;
+		writel_relaxed(val, transactiontracker_base + TransTrackerQTB_MainCtl);
+		writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base + TransTrackerQTB_LogClr);
+	}
+}
+
+u64 arm_smmu_debug_qtb_transtracker_get_config(void __iomem *transactiontracker_base)
+{
+	return readl_relaxed(transactiontracker_base + TransTrackerQTB_MainCtl);
+}
+
+void arm_smmu_debug_qtb_transtracker_setfilter(void __iomem *transactiontracker_base,
+		u64 sel, u64 filter, int qtb_type)
+{
+	u64 val = 0;
+
+	val = TTQTB_RESET_VAL | TTQTB_Filter_DevNeEn | TTQTB_Filter_DevEEn;
+
+	if (sel == 1) {
+		if (filter == 2)
+			val |= TTQTB_Filter_NormalEn;
+		else if (filter == 3)
+			val |= TTQTB_Filter_CachedEn;
+		else if (filter == 4)
+			val |= TTQTB_Filter_SharedEn;
+		else if (filter == 5)
+			val |= TTQTB_Filter_PostedEn;
+		writel_relaxed(val, transactiontracker_base + TransTrackerQTB_Filter_TrType);
+	} else if (sel == 2) {
+		if (qtb_type == 1)
+			writeq_relaxed(filter, transactiontracker_base +
+					TransTrackerQTB_gfx_Filter_Addr_Min);
+		else if (qtb_type == 2)
+			writeq_relaxed(filter, transactiontracker_base +
+					TransTrackerQTB_Filter_Addr_Min_Low);
+	} else if (sel == 3) {
+		if (qtb_type == 1)
+			writel_relaxed(filter, transactiontracker_base +
+					TransTrackerQTB_gfx_Filter_Addr_Max);
+		else if (qtb_type == 2)
+			writeq_relaxed(filter, transactiontracker_base +
+					TransTrackerQTB_Filter_Addr_Max_Low);
+	}
+	writel_relaxed(TTQTB_Filter_OpCode_Set_Val, transactiontracker_base +
+			TransTrackerQTB_Filter_OpCode);
+	writel_relaxed(TTQTB_Filter_Alloc_Set_Val, transactiontracker_base +
+			TransTrackerQTB_Filter_Alloc);
+	writel_relaxed(TTQTB_Filter_Length_Set_Val, transactiontracker_base +
+			TransTrackerQTB_Filter_Length);
+}
+
+void arm_smmu_debug_qtb_transtracker_getfilter(void __iomem *transactiontracker_base,
+		u64 filter[3], int qtb_type)
+{
+	int i = 0;
+
+	if (qtb_type == 1) {
+		filter[i] = readl_relaxed(transactiontracker_base + TransTrackerQTB_Filter_TrType);
+		filter[i+1] = readq_relaxed(transactiontracker_base +
+				TransTrackerQTB_gfx_Filter_Addr_Min);
+		filter[i+2] = readq_relaxed(transactiontracker_base +
+				TransTrackerQTB_gfx_Filter_Addr_Max);
+	} else if (qtb_type == 2) {
+		filter[i] = readl_relaxed(transactiontracker_base + TransTrackerQTB_Filter_TrType);
+		filter[i+1] = (readl_relaxed(transactiontracker_base +
+					TransTrackerQTB_Filter_Addr_Min_Low) |
+				readl_relaxed(transactiontracker_base +
+					TransTrackerQTB_Filter_Addr_Min_High));
+		filter[i+2] = (readl_relaxed(transactiontracker_base +
+					TransTrackerQTB_Filter_Addr_Max_Low) |
+				readl_relaxed(transactiontracker_base +
+					TransTrackerQTB_Filter_Addr_Max_High));
+	}
+}
+
+void arm_smmu_debug_qtb_transtrac_collect(void __iomem *transactiontracker_base,
+		u64 gfxttlogs[TTQTB_Capture_Points][2*TTQTB_Regs_Per_Capture_Points],
+		u64 ttlogs[TTQTB_Capture_Points][4*TTQTB_Regs_Per_Capture_Points],
+		u64 ttlogs_time[2*TTQTB_Capture_Points], int qtb_type)
+{
+	int i, j, x, y;
+
+	for (i = 0, x = 0; i < TTQTB_Capture_Points && x < 2*TTQTB_Capture_Points; ++i, x += 2) {
+		ttlogs_time[x] = readl_relaxed(transactiontracker_base +
+				TransTrackerQTB_Latency(i));
+		ttlogs_time[x+1] = readl_relaxed(transactiontracker_base +
+				TransTrackerQTB_TimeStamp(i));
+		if (qtb_type == 1) {
+			for (j = 0, y = 0; j < TTQTB_Regs_Per_Capture_Points &&
+					y < 2*TTQTB_Regs_Per_Capture_Points; ++j, y += 2) {
+				gfxttlogs[i][y] = readl_relaxed(transactiontracker_base +
+						TransTrackerQTB_LogIn_Low(i, j)) |
+					readl_relaxed(transactiontracker_base +
+							TransTrackerQTB_LogIn_High(i, j));
+				gfxttlogs[i][y+1] = readl_relaxed(transactiontracker_base +
+						TransTrackerQTB_LogOut_Low(i, j)) |
+					readl_relaxed(transactiontracker_base +
+							TransTrackerQTB_LogOut_High(i, j));
+			}
+		} else if (qtb_type == 2) {
+			for (j = 0, y = 0; j < TTQTB_Regs_Per_Capture_Points &&
+					y < 4*TTQTB_Regs_Per_Capture_Points; ++j, y += 4) {
+				ttlogs[i][y] = readl_relaxed(transactiontracker_base +
+						TransTrackerQTB_LogIn_Low(i, j));
+				ttlogs[i][y+1] = readl_relaxed(transactiontracker_base +
+						TransTrackerQTB_LogIn_High(i, j));
+				ttlogs[i][y+2] = readl_relaxed(transactiontracker_base +
+						TransTrackerQTB_LogOut_Low(i, j));
+				ttlogs[i][y+3] = readl_relaxed(transactiontracker_base +
+						TransTrackerQTB_LogOut_High(i, j));
+			}
+		}
+	}
+}
+
+void arm_smmu_debug_qtb_transtrac_reset(void __iomem *transactiontracker_base)
+{
+	/* reset the transaction tracker once called after each read */
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base + TransTrackerQTB_MainCtl);
+	writel_relaxed(TTQTB_SET, transactiontracker_base + TransTrackerQTB_LogClr);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_TrType);
+	writeq_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_gfx_Filter_Addr_Min);
+	writeq_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_gfx_Filter_Addr_Max);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_OpCode);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_ReqUser_Base);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_ReqUser_Mask);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_LogUser_Base);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_LogUser_Mask);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_Alloc);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_ExtId_Base);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_ExtId_Mask);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_Length);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_Urgency);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_CacheIndex_Base);
+	writel_relaxed(TTQTB_RESET_VAL, transactiontracker_base +
+			TransTrackerQTB_Filter_CacheIndex_Mask);
+
+}
+
 void arm_smmu_debug_dump_debugchain(struct device *dev, void __iomem *debugchain_base)
 {
 	long chain_length = 0, index = 0;
@@ -59,7 +222,7 @@ void arm_smmu_debug_dump_qtb_regs(struct device *dev, void __iomem *tbu_base)
 }
 
 u32 arm_smmu_debug_tbu_testbus_select(void __iomem *tbu_base,
-				bool write, u32 val)
+		bool write, u32 val)
 {
 	if (write) {
 		writel_relaxed(val, tbu_base + DEBUG_TESTBUS_SEL_TBU);
@@ -149,22 +312,6 @@ static void arm_smmu_debug_dump_tbu_qns4_testbus(struct device *dev,
 	}
 }
 
-static void arm_smmu_debug_dump_tbu_cmdq_testbus(struct device *dev,
-					void __iomem *tbu_base)
-{
-	u32 i, reg;
-
-	for (i = 0; i < TBU_CMD_QUEUE_SIZE; ++i) {
-		reg = arm_smmu_debug_tbu_testbus_select(tbu_base, READ, 0);
-		reg = (reg & TBU_CMD_QUEUE_MASK) | (i + TBU_CMD_QUEUE_START) << 0;
-		arm_smmu_debug_tbu_testbus_select(tbu_base, WRITE, reg);
-		dev_info(dev, "testbus_sel: 0x%lx val: 0x%llx\n",
-				arm_smmu_debug_tbu_testbus_select(tbu_base,
-					READ, 0),
-				arm_smmu_debug_tbu_testbus_output(tbu_base));
-	}
-}
-
 static void arm_smmu_debug_program_tbu_testbus(void __iomem *tbu_base,
 					int tbu_testbus)
 {
@@ -241,16 +388,6 @@ void arm_smmu_debug_dump_tbu_testbus(struct device *dev, void __iomem *tbu_base,
 						READ, 0),
 			arm_smmu_debug_tbu_testbus_output(tbu_base));
 	}
-
-	if (tbu_testbus_sel & TBU_CMD_QUEUE_SEL) {
-		dev_info(dev, "Dumping tbu cmd queue info:\n");
-		arm_smmu_debug_program_tbu_testbus(tbu_base, TBU_CMD_QUEUE);
-		dev_info(dev, "testbus_sel: 0x%lx val: 0x%llx\n",
-				arm_smmu_debug_tbu_testbus_select(tbu_base, READ, 0),
-				arm_smmu_debug_tbu_testbus_output(tbu_base));
-
-		arm_smmu_debug_dump_tbu_cmdq_testbus(dev, tbu_base);
-	}
 }
 
 static void arm_smmu_debug_program_tcu_testbus(struct device *dev,
@@ -281,82 +418,60 @@ void arm_smmu_debug_dump_tcu_testbus(struct device *dev, phys_addr_t phys_addr,
 {
 	int i;
 
-	/* Always reset the TCU cache testbus */
-	arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base, 0, 0, 1, 0, false);
-
 	if (tcu_testbus_sel & TCU_CACHE_TESTBUS_SEL) {
-		/* 11:8 = 1 , 7:2 = (0 - 36) */
 		dev_info(dev, "Dumping TCU cache testbus:\n");
 		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-				~TCU_TESTBUS_SEL_MASK, 1, 2, 8, false);
+				TCU_CACHE_TESTBUS, 0, 1, 0, false);
 		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-				~TCU_PTW_QUEUE_MASK, 0, TCU_CACHE_LOOKUP_QUEUE_SIZE,
-				2, true);
+						   ~TCU_PTW_QUEUE_MASK, 0,
+						   TCU_CACHE_LOOKUP_QUEUE_SIZE,
+						   2, true);
 	}
 
 	if (tcu_testbus_sel & TCU_PTW_TESTBUS_SEL) {
-		/* 11:8 = 0, 7:2 =(0-31) */
 		dev_info(dev, "Dumping TCU PTW test bus:\n");
+		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base, 1,
+				TCU_PTW_TESTBUS, TCU_PTW_TESTBUS + 1, 0, false);
+
 		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-				~TCU_TESTBUS_SEL_MASK, 0, 1, 8, false);
-		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-						   ~TCU_PTW_QUEUE_MASK, 0,
-						   TCU_PTW_LOOKUP_QUEUE_SIZE,
+						~TCU_PTW_INTERNAL_STATES_MASK,
+						   0, TCU_PTW_INTERNAL_STATES,
 						   2, true);
 
-		/* 11:8 = 0, 7:2 =(32-64), 1:0 = 0-3 */
-		dev_info(dev, "Dumping TCU PTW queue testbus:\n");
 		for (i = TCU_PTW_QUEUE_START;
 			i < TCU_PTW_QUEUE_START + TCU_PTW_QUEUE_SIZE; ++i) {
 			arm_smmu_debug_program_tcu_testbus(dev, phys_addr,
 							   tcu_base,
 							   ~TCU_PTW_QUEUE_MASK,
-							   i, i + 1, 2, false);
+							   i, i + 1, 2, true);
 			arm_smmu_debug_program_tcu_testbus(dev, phys_addr,
 						tcu_base,
 						~TCU_PTW_TESTBUS_SEL2_MASK,
 						TCU_PTW_TESTBUS_SEL2,
-						TCU_PTW_TESTBUS_SEL2 + 4, 0,
-						true);
+						TCU_PTW_TESTBUS_SEL2 + 1, 0,
+						false);
+			dev_info(dev, "testbus_sel: 0x%lx Index: %d val: 0x%lx\n",
+				 arm_smmu_debug_tcu_testbus_select(phys_addr,
+				 tcu_base, PTW_AND_CACHE_TESTBUS, READ, 0), i,
+				 arm_smmu_debug_tcu_testbus_output(phys_addr));
 		}
 	}
 
-	/* Dumping the INV status for SMMU TCU */
-	if (tcu_testbus_sel & TCU_INV_TESTBUS_SEL) {
-		/* 11:8 = 2 , 7:0 = 0 */
-		dev_info(dev, "Dumping TCU invalidation status testbus:\n");
+	if (tcu_testbus_sel & TCU_CD_TESTBUS_SEL) {
+		dev_info(dev, "Dumping TCU CD testbus:\n");
 		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-				~TCU_TESTBUS_SEL_MASK, 2, 3, 8, false);
+				TCU_CD_TESTBUS, 0, 1, 0, false);
 		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-						   ~TCU_PTW_QUEUE_MASK, 0, 1,
-						   2, true);
-
-	}
-
-	/* Dumping the low power status for SMMU TCU */
-	if (tcu_testbus_sel & TCU_LOW_POWER_TESTBUS_SEL) {
-		/* 11:8 = 3, 1:0 = 0 - 3 */
-		dev_info(dev, "Dumping TCU low power testbus stat\n");
-		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-				~TCU_TESTBUS_SEL_MASK, 3, 4, 8, false);
-		arm_smmu_debug_program_tcu_testbus(dev, phys_addr, tcu_base,
-						   ~TCU_PTW_QUEUE_MASK, 0, 4,
-						   0, true);
+						   ~TCU_PTW_QUEUE_MASK, 1,
+						   2, TCU_CD_TESTBUS_SHIFT, true);
 	}
 
 	/* program ARM_SMMU_TESTBUS_SEL_HLOS1_NS to select TCU clk testbus*/
 	arm_smmu_debug_tcu_testbus_select(phys_addr, tcu_base,
-			CLK_TESTBUS, WRITE, TCU_CLK1_TESTBUS_SEL);
-	dev_info(dev, "Programming Tcu clk gate controller: testbus_sel: 0x%lx, value: %lx\n",
-			readl_relaxed(tcu_base + ARM_SMMU_TESTBUS_SEL_HLOS1_NS),
-			arm_smmu_debug_tcu_testbus_select(phys_addr, tcu_base,
+			CLK_TESTBUS, WRITE, TCU_CLK_TESTBUS_SEL);
+	dev_info(dev, "Programming Tcu clk gate controller: testbus_sel: 0x%lx\n",
+		arm_smmu_debug_tcu_testbus_select(phys_addr, tcu_base,
 						CLK_TESTBUS, READ, 0));
-	arm_smmu_debug_tcu_testbus_select(phys_addr, tcu_base,
-			CLK_TESTBUS, WRITE, TCU_CLK2_TESTBUS_SEL);
-	dev_info(dev, "Programming Tcu clk gate controller: testbus_sel: 0x%lx, value: %lx\n",
-			readl_relaxed(tcu_base + ARM_SMMU_TESTBUS_SEL_HLOS1_NS),
-			arm_smmu_debug_tcu_testbus_select(phys_addr, tcu_base,
-				CLK_TESTBUS, READ, 0));
 }
 
 void arm_smmu_debug_set_tnx_tcr_cntl(void __iomem *tbu_base, u64 val)

@@ -2,9 +2,10 @@
 /*
  * Copyright (c) 2011-2015, 2017, 2020-2021, The Linux Foundation.
  * All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/err.h>
@@ -62,17 +63,17 @@
 
 /* Over-temperature trip point values in mC */
 static const long temp_map_gen1[THRESH_COUNT][STAGE_COUNT] = {
-	{105000, 125000, 145000},
-	{110000, 130000, 150000},
-	{115000, 135000, 155000},
-	{120000, 140000, 160000},
+	{ 105000, 125000, 145000 },
+	{ 110000, 130000, 150000 },
+	{ 115000, 135000, 155000 },
+	{ 120000, 140000, 160000 },
 };
 
 static const long temp_map_gen2_v1[THRESH_COUNT][STAGE_COUNT] = {
-	{ 90000, 110000, 140000},
-	{ 95000, 115000, 145000},
-	{100000, 120000, 150000},
-	{105000, 125000, 155000},
+	{  90000, 110000, 140000 },
+	{  95000, 115000, 145000 },
+	{ 100000, 120000, 150000 },
+	{ 105000, 125000, 155000 },
 };
 
 #define TEMP_THRESH_STEP		5000 /* Threshold step: 5 C */
@@ -178,8 +179,8 @@ static long qpnp_tm_decode_temp(struct qpnp_tm_chip *chip, unsigned int stage)
 		return chip->temp_dac_map[stage - 1];
 	}
 
-	if (!chip->temp_map || chip->thresh >= THRESH_COUNT || stage == 0
-	    || stage > STAGE_COUNT)
+	if (!chip->temp_map || chip->thresh >= THRESH_COUNT || stage == 0 ||
+	    stage > STAGE_COUNT)
 		return 0;
 
 	return (*chip->temp_map)[chip->thresh][stage - 1];
@@ -258,7 +259,7 @@ static int qpnp_tm_update_temp_no_adc(struct qpnp_tm_chip *chip)
 static int qpnp_tm_get_temp(void *data, int *temp)
 {
 	struct qpnp_tm_chip *chip = data;
-	int ret, mili_celsius, stage, stage_temp_min;
+	int ret, mili_celsius;
 
 	if (!temp)
 		return -EINVAL;
@@ -275,26 +276,9 @@ static int qpnp_tm_get_temp(void *data, int *temp)
 		if (ret < 0)
 			return ret;
 	} else {
-		mutex_lock(&chip->lock);
-		stage = qpnp_tm_get_temp_stage(chip);
-		if (stage < 0) {
-			mutex_unlock(&chip->lock);
-			return stage;
-		}
-		if (chip->subtype != QPNP_TM_SUBTYPE_GEN1)
-			stage = alarm_state_map[stage];
-		stage_temp_min = qpnp_tm_decode_temp(chip, stage);
-		mutex_unlock(&chip->lock);
-
 		ret = iio_read_channel_processed(chip->adc, &mili_celsius);
 		if (ret < 0)
 			return ret;
-
-		if (stage_temp_min > mili_celsius && stage_temp_min > 0) {
-			dev_dbg(chip->dev, "replacing ADC temp=%d with min stage[%d] temp=%d\n",
-				mili_celsius, stage, stage_temp_min);
-			mili_celsius = stage_temp_min;
-		}
 
 		chip->temp = mili_celsius;
 	}
@@ -439,7 +423,8 @@ static int qpnp_tm_update_critical_trip_temp(struct qpnp_tm_chip *chip,
 			disable_s2_shutdown = true;
 		else
 			dev_warn(chip->dev,
-				 "No ADC is configured and critical temperature is above the maximum stage 2 threshold of 140 C! Configuring stage 2 shutdown at 140 C.\n");
+				 "No ADC is configured and critical temperature %d mC is above the maximum stage 2 threshold of %ld mC! Configuring stage 2 shutdown at %ld mC.\n",
+				 temp, stage2_threshold_max, stage2_threshold_max);
 	}
 
 	if (chip->subtype == QPNP_TM_SUBTYPE_GEN2) {
@@ -911,7 +896,7 @@ static int qpnp_tm_freeze(struct device *dev)
 static int qpnp_tm_suspend(struct device *dev)
 {
 #ifdef CONFIG_DEEPSLEEP
-	if (mem_sleep_current == PM_SUSPEND_MEM)
+	if (pm_suspend_via_firmware())
 		return qpnp_tm_freeze(dev);
 #endif
 
@@ -921,7 +906,7 @@ static int qpnp_tm_suspend(struct device *dev)
 static int qpnp_tm_resume(struct device *dev)
 {
 #ifdef CONFIG_DEEPSLEEP
-	if (mem_sleep_current == PM_SUSPEND_MEM)
+	if (pm_suspend_via_firmware())
 		return qpnp_tm_restore(dev);
 #endif
 
@@ -933,6 +918,7 @@ static const struct dev_pm_ops qpnp_tm_pm_ops = {
 	.restore = qpnp_tm_restore,
 	.suspend = qpnp_tm_suspend,
 	.resume = qpnp_tm_resume,
+	.thaw = qpnp_tm_restore,
 };
 
 static const struct of_device_id qpnp_tm_match_table[] = {

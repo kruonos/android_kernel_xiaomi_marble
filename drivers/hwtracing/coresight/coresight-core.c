@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2012, 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012, 2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -22,6 +22,7 @@
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
 #include "coresight-common.h"
+#include "coresight-syscfg.h"
 
 #define MAX_SINK_NAME 20
 
@@ -76,18 +77,6 @@ void coresight_remove_cti_ops(void)
 }
 EXPORT_SYMBOL_GPL(coresight_remove_cti_ops);
 
-void coresight_set_csr_ops(const struct csr_set_atid_op *csr_op)
-{
-	csr_set_atid_ops = csr_op;
-}
-EXPORT_SYMBOL(coresight_set_csr_ops);
-
-void coresight_remove_csr_ops(void)
-{
-	csr_set_atid_ops = NULL;
-}
-EXPORT_SYMBOL(coresight_remove_csr_ops);
-
 void coresight_set_percpu_sink(int cpu, struct coresight_device *csdev)
 {
 	per_cpu(csdev_sink, cpu) = csdev;
@@ -99,6 +88,18 @@ struct coresight_device *coresight_get_percpu_sink(int cpu)
 	return per_cpu(csdev_sink, cpu);
 }
 EXPORT_SYMBOL_GPL(coresight_get_percpu_sink);
+
+void coresight_set_csr_ops(const struct csr_set_atid_op *csr_op)
+{
+	csr_set_atid_ops = csr_op;
+}
+EXPORT_SYMBOL(coresight_set_csr_ops);
+
+void coresight_remove_csr_ops(void)
+{
+	csr_set_atid_ops = NULL;
+}
+EXPORT_SYMBOL(coresight_remove_csr_ops);
 
 static int coresight_id_match(struct device *dev, void *data)
 {
@@ -116,7 +117,7 @@ static int coresight_id_match(struct device *dev, void *data)
 	    i_csdev->type != CORESIGHT_DEV_TYPE_SOURCE)
 		return 0;
 
-	/* Get the source ID for both compoment */
+	/* Get the source ID for both components */
 	trace_id = source_ops(csdev)->trace_id(csdev);
 	i_trace_id = source_ops(i_csdev)->trace_id(i_csdev);
 
@@ -513,7 +514,7 @@ static int coresight_enable_source(struct coresight_device *csdev, u32 mode)
 			if (ret) {
 				coresight_control_assoc_ectdev(csdev, false);
 				return ret;
-			};
+			}
 		}
 		csdev->enable = true;
 	}
@@ -527,7 +528,7 @@ static int coresight_enable_source(struct coresight_device *csdev, u32 mode)
  *  coresight_disable_source - Drop the reference count by 1 and disable
  *  the device if there are no users left.
  *
- *  @csdev - The coresight device to disable
+ *  @csdev: The coresight device to disable
  *
  *  Returns true if the device has been disabled.
  */
@@ -870,6 +871,9 @@ struct coresight_device *coresight_get_sink_by_id(u32 id)
 /**
  * coresight_get_ref- Helper function to increase reference count to module
  * and device.
+ *
+ * @csdev: The coresight device to get a reference on.
+ *
  * Return true in successful case and power up the device.
  * Return false when failed to get reference of module.
  */
@@ -895,6 +899,8 @@ static inline bool coresight_get_ref(struct coresight_device *csdev)
 /**
  * coresight_put_ref- Helper function to decrease reference count to module
  * and device. Power off the device.
+ *
+ * @csdev: The coresight device to decrement a reference from.
  */
 static inline void coresight_put_ref(struct coresight_device *csdev)
 {
@@ -957,6 +963,7 @@ static void coresight_drop_device(struct coresight_device *csdev)
 /**
  * _coresight_build_path - recursively build a path from a @csdev to a sink.
  * @csdev:	The device to start from.
+ * @sink:	The final sink we want in this path.
  * @path:	The list to add devices to.
  *
  * The tree of Coresight device is traversed until an activated sink is
@@ -1706,20 +1713,18 @@ static void coresight_remove_conns(struct coresight_device *csdev)
 }
 
 /**
- * coresight_timeout_action - loop until a bit has changed to a specific register
- *                  state, with a callback after every trial.
+ * coresight_timeout - loop until a bit has changed to a specific register
+ *			state.
  * @csa: coresight device access for the device
  * @offset: Offset of the register from the base of the device.
  * @position: the position of the bit of interest.
  * @value: the value the bit should have.
- * @cb: Call back after each trial.
  *
  * Return: 0 as soon as the bit has taken the desired state or -EAGAIN if
  * TIMEOUT_US has elapsed, which ever happens first.
  */
-int coresight_timeout_action(struct csdev_access *csa, u32 offset,
-		      int position, int value,
-			  coresight_timeout_cb_t cb)
+int coresight_timeout(struct csdev_access *csa, u32 offset,
+		      int position, int value)
 {
 	int i;
 	u32 val;
@@ -1735,8 +1740,7 @@ int coresight_timeout_action(struct csdev_access *csa, u32 offset,
 			if (!(val & BIT(position)))
 				return 0;
 		}
-		if (cb)
-			cb(csa, offset, position, value);
+
 		/*
 		 * Delay is arbitrary - the specification doesn't say how long
 		 * we are expected to wait.  Extra check required to make sure
@@ -1747,13 +1751,6 @@ int coresight_timeout_action(struct csdev_access *csa, u32 offset,
 	}
 
 	return -EAGAIN;
-}
-EXPORT_SYMBOL_GPL(coresight_timeout_action);
-
-int coresight_timeout(struct csdev_access *csa, u32 offset,
-		      int position, int value)
-{
-	return coresight_timeout_action(csa, offset, position, value, NULL);
 }
 EXPORT_SYMBOL_GPL(coresight_timeout);
 
@@ -2004,9 +2001,9 @@ const char *coresight_alloc_device_name(struct coresight_dev_list *dict,
 	if (idx < 0) {
 		/* Make space for the new entry */
 		idx = dict->nr_idx;
-		list = krealloc(dict->fwnode_list,
-				(idx + 1) * sizeof(*dict->fwnode_list),
-				GFP_KERNEL);
+		list = krealloc_array(dict->fwnode_list,
+				      idx + 1, sizeof(*dict->fwnode_list),
+				      GFP_KERNEL);
 		if (ZERO_OR_NULL_PTR(list)) {
 			idx = -ENOMEM;
 			goto done;
@@ -2076,13 +2073,22 @@ static int __init coresight_init(void)
 
 	ret = etm_perf_init();
 	if (ret)
-		bus_unregister(&coresight_bustype);
+		goto exit_bus_unregister;
 
+	/* initialise the coresight syscfg API */
+	ret = cscfg_init();
+	if (!ret)
+		return 0;
+
+	etm_perf_exit();
+exit_bus_unregister:
+	bus_unregister(&coresight_bustype);
 	return ret;
 }
 
 static void __exit coresight_exit(void)
 {
+	cscfg_exit();
 	etm_perf_exit();
 	bus_unregister(&coresight_bustype);
 }

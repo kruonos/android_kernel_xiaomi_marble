@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2013-2014, 2017-2021, The Linux Foundation.
  * All rights reserved.
- * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/export.h>
@@ -254,26 +254,29 @@ static void qcom_cc_set_critical(struct device *dev, struct qcom_cc *cc)
 	}
 
 	of_property_for_each_u32(dev->of_node, "qcom,critical-devices", prop, p, i) {
-		np = of_find_node_by_phandle(i);
-		if (!np)
-			continue;
-
-		cnt = of_count_phandle_with_args(np, "clocks", "#clock-cells");
-
-		for (i = 0; i < cnt; i++) {
-			of_parse_phandle_with_args(np, "clocks", "#clock-cells",
-						   i, &args);
-			clock_idx = args.args[0];
-
-			if (args.np != dev->of_node || clock_idx >= cc->num_rclks)
+		for (np = of_find_node_by_phandle(i); np; np = of_get_parent(np)) {
+			if (!of_property_read_bool(np, "clocks")) {
+				of_node_put(np);
 				continue;
+			}
 
-			if (cc->rclks[clock_idx])
-				cc->rclks[clock_idx]->flags |= QCOM_CLK_IS_CRITICAL;
-			of_node_put(args.np);
+			cnt = of_count_phandle_with_args(np, "clocks", "#clock-cells");
+
+			for (i = 0; i < cnt; i++) {
+				of_parse_phandle_with_args(np, "clocks", "#clock-cells",
+							   i, &args);
+				clock_idx = args.args[0];
+
+				if (args.np != dev->of_node || clock_idx >= cc->num_rclks)
+					continue;
+
+				if (cc->rclks[clock_idx])
+					cc->rclks[clock_idx]->flags |= QCOM_CLK_IS_CRITICAL;
+				of_node_put(args.np);
+			}
+
+			of_node_put(np);
 		}
-
-		of_node_put(np);
 	}
 }
 
@@ -423,7 +426,7 @@ int qcom_cc_probe_by_index(struct platform_device *pdev, int index,
 	res = platform_get_resource(pdev, IORESOURCE_MEM, index);
 	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
-		return PTR_ERR(base);
+		return -ENOMEM;
 
 	regmap = devm_regmap_init_mmio(&pdev->dev, base, desc->config);
 	if (IS_ERR(regmap))
@@ -604,12 +607,6 @@ int qcom_cc_runtime_suspend(struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL(qcom_cc_runtime_suspend);
-
-static int __init qcom_clk_init(void)
-{
-	return clk_debug_init();
-}
-subsys_initcall(qcom_clk_init);
 
 static void __exit qcom_clk_exit(void)
 {

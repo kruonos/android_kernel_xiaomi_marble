@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "va-minidump: %s: " fmt, __func__
@@ -16,6 +17,7 @@
 #include <linux/dma-direct.h>
 #include <linux/elf.h>
 #include <linux/slab.h>
+#include <linux/panic_notifier.h>
 #include <soc/qcom/minidump.h>
 #include "elf.h"
 
@@ -464,7 +466,7 @@ EXPORT_SYMBOL(qcom_va_md_add_region);
 
 static void qcom_va_md_minidump_registration(void)
 {
-	strlcpy(va_md_data.md_entry.name, "KVA_DUMP", sizeof(va_md_data.md_entry.name));
+	strscpy(va_md_data.md_entry.name, "KVA_DUMP", sizeof(va_md_data.md_entry.name));
 
 	va_md_data.md_entry.virt_addr = va_md_data.elf.ehdr;
 	va_md_data.md_entry.phys_addr =	va_md_data.mem_phys_addr +
@@ -494,7 +496,7 @@ static inline unsigned long set_sec_name(struct elfhdr *ehdr, const char *name)
 		return 0;
 
 	ret = idx;
-	idx += strlcpy((strtab + idx), name, MAX_OWNER_STRING);
+	idx += strscpy((strtab + idx), name, MAX_OWNER_STRING);
 	va_md_data.str_tbl_idx = idx + 1;
 	return ret;
 }

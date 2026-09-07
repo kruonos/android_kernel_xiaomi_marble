@@ -31,7 +31,6 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
-#include <linux/uaccess.h>
 
 /*
  * The call to use to reach the firmware.
@@ -1060,12 +1059,13 @@ static bool __init sdei_present_acpi(void)
 	return true;
 }
 
-void __init acpi_sdei_init(void)
+void __init sdei_init(void)
 {
 	struct platform_device *pdev;
 	int ret;
 
-	if (!sdei_present_acpi())
+	ret = platform_driver_register(&sdei_driver);
+	if (ret || !sdei_present_acpi())
 		return;
 
 	pdev = platform_device_register_simple(sdei_driver.driver.name,
@@ -1078,35 +1078,16 @@ void __init acpi_sdei_init(void)
 	}
 }
 
-static int __init sdei_init(void)
-{
-	return platform_driver_register(&sdei_driver);
-}
-arch_initcall(sdei_init);
-
 int sdei_event_handler(struct pt_regs *regs,
 		       struct sdei_registered_event *arg)
 {
 	int err;
-	mm_segment_t orig_addr_limit;
 	u32 event_num = arg->event_num;
-
-	/*
-	 * Save restore 'fs'.
-	 * The architecture's entry code save/restores 'fs' when taking an
-	 * exception from the kernel. This ensures addr_limit isn't inherited
-	 * if you interrupted something that allowed the uaccess routines to
-	 * access kernel memory.
-	 * Do the same here because this doesn't come via the same entry code.
-	*/
-	orig_addr_limit = force_uaccess_begin();
 
 	err = arg->callback(event_num, regs, arg->callback_arg);
 	if (err)
 		pr_err_ratelimited("event %u on CPU %u failed with error: %d\n",
 				   event_num, smp_processor_id(), err);
-
-	force_uaccess_end(orig_addr_limit);
 
 	return err;
 }

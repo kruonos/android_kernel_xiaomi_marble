@@ -28,6 +28,7 @@ struct usb_qdss_ch {
 	void (*notify)(void *priv, unsigned int event,
 		struct qdss_request *d_req, struct usb_qdss_ch *ch);
 	void *priv;
+	int ch_type;
 };
 
 struct usb_qdss_bam_connect_info {
@@ -92,7 +93,6 @@ struct qdss_req {
 	struct list_head list;
 };
 
-int uninit_data(struct usb_ep *ep);
 int set_qdss_data_connection(struct f_qdss *qdss, int enable);
-int alloc_sps_req(struct usb_ep *data_ep);
+int alloc_hw_req(struct usb_ep *data_ep);
 #endif

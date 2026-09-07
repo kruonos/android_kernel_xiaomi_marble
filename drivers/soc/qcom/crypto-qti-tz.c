@@ -2,7 +2,7 @@
 /*
  * Crypto TZ library for storage encryption.
  *
- * Copyright (c) 2020-2021, Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <asm/cacheflush.h>

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/atomic.h>
@@ -72,6 +73,13 @@ struct batch_cache_req {
 static struct rpmh_ctrlr *get_rpmh_ctrlr(const struct device *dev)
 {
 	struct rsc_drv *drv = dev_get_drvdata(dev->parent);
+
+	return &drv->client;
+}
+
+static struct rpmh_ctrlr *get_rpmh_ctrlr_no_child(const struct device *dev)
+{
+	struct rsc_drv *drv = dev_get_drvdata(dev);
 
 	return &drv->client;
 }
@@ -192,7 +200,7 @@ static int __rpmh_write(const struct device *dev, enum rpmh_state state,
 	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr(dev);
 	int ret = -EINVAL;
 	struct cache_req *req;
-	int i;
+	int i, ch;
 
 	/* Cache the request in our store and link the payload */
 	for (i = 0; i < rpm_msg->msg.num_cmds; i++) {
@@ -202,7 +210,13 @@ static int __rpmh_write(const struct device *dev, enum rpmh_state state,
 	}
 
 	if (state == RPMH_ACTIVE_ONLY_STATE) {
-		ret = rpmh_rsc_send_data(ctrlr_to_drv(ctrlr), &rpm_msg->msg);
+		WARN_ON(irqs_disabled());
+
+		ch = rpmh_rsc_get_channel(ctrlr_to_drv(ctrlr));
+		if (ch < 0)
+			return ch;
+
+		ret = rpmh_rsc_send_data(ctrlr_to_drv(ctrlr), &rpm_msg->msg, ch);
 	} else {
 		/* Clean up our call by spoofing tx_done */
 		ret = 0;
@@ -270,7 +284,7 @@ EXPORT_SYMBOL(rpmh_write_async);
 /**
  * rpmh_write: Write a set of RPMH commands and block until response
  *
- * @rc: The RPMH handle got from rpmh_get_client
+ * @dev: The device making the request
  * @state: Active/sleep set
  * @cmd: The payload data
  * @n: The number of elements in @cmd
@@ -320,7 +334,7 @@ static void cache_batch(struct rpmh_ctrlr *ctrlr, struct batch_cache_req *req)
 	spin_unlock_irqrestore(&ctrlr->cache_lock, flags);
 }
 
-static int flush_batch(struct rpmh_ctrlr *ctrlr)
+static int flush_batch(struct rpmh_ctrlr *ctrlr, int ch)
 {
 	struct batch_cache_req *req;
 	const struct rpmh_request *rpm_msg;
@@ -332,7 +346,7 @@ static int flush_batch(struct rpmh_ctrlr *ctrlr)
 		for (i = 0; i < req->count; i++) {
 			rpm_msg = req->rpm_msgs + i;
 			ret = rpmh_rsc_write_ctrl_data(ctrlr_to_drv(ctrlr),
-						       &rpm_msg->msg);
+						       &rpm_msg->msg, ch);
 			if (ret)
 				break;
 		}
@@ -367,7 +381,7 @@ int rpmh_write_batch(const struct device *dev, enum rpmh_state state,
 	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr(dev);
 	unsigned long time_left;
 	int count = 0;
-	int ret, i;
+	int ret, i, ch;
 	void *ptr;
 
 	if (rpmh_standalone)
@@ -408,12 +422,18 @@ int rpmh_write_batch(const struct device *dev, enum rpmh_state state,
 		return 0;
 	}
 
+	ch = rpmh_rsc_get_channel(ctrlr_to_drv(ctrlr));
+	if (ch < 0) {
+		kfree(ptr);
+		return ch;
+	}
+
 	for (i = 0; i < count; i++) {
 		struct completion *compl = &compls[i];
 
 		init_completion(compl);
 		rpm_msgs[i].completion = compl;
-		ret = rpmh_rsc_send_data(ctrlr_to_drv(ctrlr), &rpm_msgs[i].msg);
+		ret = rpmh_rsc_send_data(ctrlr_to_drv(ctrlr), &rpm_msgs[i].msg, ch);
 		if (ret) {
 			pr_err("Error(%d) sending RPMH message addr=%#x\n",
 			       ret, rpm_msgs[i].msg.cmds[0].addr);
@@ -449,7 +469,7 @@ static int is_req_valid(struct cache_req *req)
 }
 
 static int send_single(struct rpmh_ctrlr *ctrlr, enum rpmh_state state,
-		       u32 addr, u32 data)
+		       u32 addr, u32 data, int ch)
 {
 	DEFINE_RPMH_MSG_ONSTACK(NULL, state, NULL, rpm_msg);
 
@@ -459,10 +479,10 @@ static int send_single(struct rpmh_ctrlr *ctrlr, enum rpmh_state state,
 	rpm_msg.cmd[0].data = data;
 	rpm_msg.msg.num_cmds = 1;
 
-	return rpmh_rsc_write_ctrl_data(ctrlr_to_drv(ctrlr), &rpm_msg.msg);
+	return rpmh_rsc_write_ctrl_data(ctrlr_to_drv(ctrlr), &rpm_msg.msg, ch);
 }
 
-int _rpmh_flush(struct rpmh_ctrlr *ctrlr)
+int _rpmh_flush(struct rpmh_ctrlr *ctrlr, int ch)
 {
 	struct cache_req *p;
 	int ret = 0;
@@ -473,10 +493,10 @@ int _rpmh_flush(struct rpmh_ctrlr *ctrlr)
 	}
 
 	/* Invalidate the TCSes first to avoid stale data */
-	rpmh_rsc_invalidate(ctrlr_to_drv(ctrlr));
+	rpmh_rsc_invalidate(ctrlr_to_drv(ctrlr), ch);
 
 	/* First flush the cached batch requests */
-	ret = flush_batch(ctrlr);
+	ret = flush_batch(ctrlr, ch);
 	if (ret)
 		return ret;
 
@@ -487,11 +507,11 @@ int _rpmh_flush(struct rpmh_ctrlr *ctrlr)
 			continue;
 		}
 		ret = send_single(ctrlr, RPMH_SLEEP_STATE, p->addr,
-				  p->sleep_val);
+				  p->sleep_val, ch);
 		if (ret)
 			return ret;
 		ret = send_single(ctrlr, RPMH_WAKE_ONLY_STATE, p->addr,
-				  p->wake_val);
+				  p->wake_val, ch);
 		if (ret)
 			return ret;
 	}
@@ -505,12 +525,13 @@ int _rpmh_flush(struct rpmh_ctrlr *ctrlr)
  * rpmh_flush() - Flushes the buffered sleep and wake sets to TCSes
  *
  * @ctrlr: Controller making request to flush cached data
+ * @ch:    Channel number
  *
  * Return:
  * * 0          - Success
  * * Error code - Otherwise
  */
-int rpmh_flush(struct rpmh_ctrlr *ctrlr)
+int rpmh_flush(struct rpmh_ctrlr *ctrlr, int ch)
 {
 	int ret;
 
@@ -537,7 +558,7 @@ int rpmh_flush(struct rpmh_ctrlr *ctrlr)
 	 */
 	if (!spin_trylock(&ctrlr->cache_lock))
 		return -EBUSY;
-	ret = _rpmh_flush(ctrlr);
+	ret = _rpmh_flush(ctrlr, ch);
 	spin_unlock(&ctrlr->cache_lock);
 
 	return ret;
@@ -554,9 +575,48 @@ int rpmh_flush(struct rpmh_ctrlr *ctrlr)
  */
 int rpmh_write_sleep_and_wake(const struct device *dev)
 {
-	return rpmh_flush(get_rpmh_ctrlr(dev));
+	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr(dev);
+	int ch, ret;
+
+	ch = rpmh_rsc_get_channel(ctrlr_to_drv(ctrlr));
+	if (ch < 0)
+		return ch;
+
+	ret = rpmh_flush(ctrlr, ch);
+	if (ret || !(ctrlr->flags & HW_CHANNEL_PRESENT))
+		return ret;
+
+	return rpmh_rsc_switch_channel(ctrlr_to_drv(ctrlr), ch);
 }
 EXPORT_SYMBOL(rpmh_write_sleep_and_wake);
+
+/**
+ * rpmh_write_sleep_and_wake_no_child: Writes the buffered wake and sleep sets to TCSes
+ *
+ * Used when the client calling this is not a child device of RSC device.
+ * Use it only after getting the device using rpmh_get_device().
+ * @dev: The device making the request
+ *
+ * Return:
+ * * 0          - Success
+ * * Error code - Otherwise
+ */
+int rpmh_write_sleep_and_wake_no_child(const struct device *dev)
+{
+	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr_no_child(dev);
+	int ch, ret;
+
+	ch = rpmh_rsc_get_channel(ctrlr_to_drv(ctrlr));
+	if (ch < 0)
+		return ch;
+
+	ret = rpmh_flush(ctrlr, ch);
+	if (ret || !(ctrlr->flags & HW_CHANNEL_PRESENT))
+		return ret;
+
+	return rpmh_rsc_switch_channel(ctrlr_to_drv(ctrlr), ch);
+}
+EXPORT_SYMBOL(rpmh_write_sleep_and_wake_no_child);
 
 /**
  * rpmh_invalidate: Invalidate sleep and wake sets in batch_cache
@@ -652,15 +712,20 @@ int rpmh_init_fast_path(const struct device *dev,
 {
 	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr(dev);
 	struct tcs_request req;
+	int ch;
 
 	if (rpmh_standalone)
 		return 0;
+
+	ch = rpmh_rsc_get_channel(ctrlr_to_drv(ctrlr));
+	if (ch < 0)
+		return ch;
 
 	req.cmds = cmd;
 	req.num_cmds = n;
 	req.wait_for_compl = 0;
 
-	return rpmh_rsc_init_fast_path(ctrlr_to_drv(ctrlr), &req);
+	return rpmh_rsc_init_fast_path(ctrlr_to_drv(ctrlr), &req, ch);
 }
 EXPORT_SYMBOL(rpmh_init_fast_path);
 
@@ -681,15 +746,81 @@ int rpmh_update_fast_path(const struct device *dev,
 {
 	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr(dev);
 	struct tcs_request req;
+	int ch;
 
 	if (rpmh_standalone)
 		return 0;
+
+	ch = rpmh_rsc_get_channel(ctrlr_to_drv(ctrlr));
+	if (ch < 0)
+		return ch;
 
 	req.cmds = cmd;
 	req.num_cmds = n;
 	req.wait_for_compl = 0;
 
 	return rpmh_rsc_update_fast_path(ctrlr_to_drv(ctrlr), &req,
-					 update_mask);
+					 update_mask, ch);
 }
 EXPORT_SYMBOL(rpmh_update_fast_path);
+
+/**
+ * rpmh_get_device: Get the DRV device
+ *
+ * @name:        The RSC device used for DRV DRV
+ * @drv_id:      The index of DRV
+ *
+ * Used when the device voting to RPMh is not a child device
+ * of RSC device. Such device can get RSC device using this API.
+ * but will be able to use only rpmh_drv_start(), rpmh_drv_stop()
+ * and rpmh_write_sleep_and_wake_no_child().
+ *
+ * Return:
+ * * dev          - Device to use when calling above APIs
+ * * Error        - Error pointer
+ */
+const struct device *rpmh_get_device(const char *name, u32 drv_id)
+{
+	return rpmh_rsc_get_device(name, drv_id);
+}
+EXPORT_SYMBOL(rpmh_get_device);
+
+/**
+ * rpmh_drv_start: Start the DRV channel
+ *
+ * @dev:         The device making the request
+ *
+ * Return:
+ * * 0          - Success
+ * * Error code - Otherwise
+ */
+int rpmh_drv_start(const struct device *dev)
+{
+	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr_no_child(dev);
+
+	if (rpmh_standalone)
+		return 0;
+
+	return rpmh_rsc_drv_enable(ctrlr_to_drv(ctrlr), true);
+}
+EXPORT_SYMBOL(rpmh_drv_start);
+
+/**
+ * rpmh_drv_stop: Start the DRV channel
+ *
+ * @dev:         The device making the request
+ *
+ * Return:
+ * * 0          - Success
+ * * Error code - Otherwise
+ */
+int rpmh_drv_stop(const struct device *dev)
+{
+	struct rpmh_ctrlr *ctrlr = get_rpmh_ctrlr_no_child(dev);
+
+	if (rpmh_standalone)
+		return 0;
+
+	return rpmh_rsc_drv_enable(ctrlr_to_drv(ctrlr), false);
+}
+EXPORT_SYMBOL(rpmh_drv_stop);

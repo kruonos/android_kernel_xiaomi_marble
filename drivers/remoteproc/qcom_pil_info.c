@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2019-2020 Linaro Ltd.
  */
 #include <linux/kernel.h>
@@ -120,6 +121,7 @@ int qcom_pil_info_store(const char *image, phys_addr_t base, size_t size)
 {
 	char buf[PIL_RELOC_NAME_LEN];
 	void __iomem *entry;
+	size_t entry_size;
 	int ret;
 	int i;
 
@@ -151,7 +153,8 @@ int qcom_pil_info_store(const char *image, phys_addr_t base, size_t size)
 	return -ENOMEM;
 
 found_unused:
-	memcpy_toio(entry, image, strnlen(image, PIL_RELOC_NAME_LEN));
+	entry_size = min(strlen(image), PIL_RELOC_ENTRY_SIZE - 1);
+	memcpy_toio(entry, image, entry_size);
 found_existing:
 	/* Use two writel() as base is only aligned to 4 bytes on odd entries */
 	writel(base, entry + PIL_RELOC_NAME_LEN);

@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mem_buf_vmperm: " fmt
 
 #include <linux/highmem.h>
 #include <linux/mem-buf-exporter.h>
-#include <linux/dma-buf-ref.h>
 #include "mem-buf-dev.h"
+#include "mem-buf-gh.h"
 #include "mem-buf-ids.h"
 
 struct mem_buf_vmperm {
@@ -265,14 +266,6 @@ struct mem_buf_vmperm *to_mem_buf_vmperm(struct dma_buf *dmabuf)
 }
 EXPORT_SYMBOL(to_mem_buf_vmperm);
 
-static bool mem_buf_uncached(struct dma_buf *dmabuf)
-{
-	struct mem_buf_dma_buf_ops *ops;
-
-	ops = container_of(dmabuf->ops, struct mem_buf_dma_buf_ops, dma_ops);
-	return ops->uncached(dmabuf);
-}
-
 int mem_buf_dma_buf_set_destructor(struct dma_buf *buf,
 				   mem_buf_dma_buf_destructor dtor,
 				   void *dtor_data)
@@ -300,7 +293,6 @@ mem_buf_dma_buf_export(struct dma_buf_export_info *exp_info,
 	struct mem_buf_vmperm *vmperm;
 	struct dma_buf *dmabuf;
 	struct dma_buf_ops *dma_ops = &ops->dma_ops;
-	struct msm_dma_buf *m_dmabuf;
 
 	if (dma_ops->attach != mem_buf_dma_buf_attach) {
 		if (!dma_ops->attach) {
@@ -315,11 +307,6 @@ mem_buf_dma_buf_export(struct dma_buf_export_info *exp_info,
 	dmabuf = dma_buf_export(exp_info);
 	if (IS_ERR(dmabuf))
 		return dmabuf;
-
-	m_dmabuf = msm_dma_buf_create(dmabuf);
-	if (!IS_ERR(m_dmabuf)) {
-		dma_buf_ref_mod(m_dmabuf, 1);
-	}
 
 	vmperm = to_mem_buf_vmperm(dmabuf);
 	if (WARN_ON(IS_ERR(vmperm))) {
@@ -403,7 +390,7 @@ bool mem_buf_vmperm_can_vmap(struct mem_buf_vmperm *vmperm)
 EXPORT_SYMBOL(mem_buf_vmperm_can_vmap);
 
 static int validate_lend_vmids(struct mem_buf_lend_kernel_arg *arg,
-				int op)
+				u32 op)
 {
 	int i;
 	bool found = false;
@@ -456,14 +443,13 @@ static bool validate_lend_mapcount(struct mem_buf_vmperm *vmperm,
 
 static int mem_buf_lend_internal(struct dma_buf *dmabuf,
 			struct mem_buf_lend_kernel_arg *arg,
-			int op)
+			u32 op)
 {
 	struct mem_buf_vmperm *vmperm;
 	struct sg_table *sgt;
 	int ret;
 
-	if (!arg->nr_acl_entries || !arg->vmids || !arg->perms ||
-	    mem_buf_check_vmids(arg->vmids, arg->nr_acl_entries))
+	if (!arg->nr_acl_entries || !arg->vmids || !arg->perms)
 		return -EINVAL;
 
 	vmperm = to_mem_buf_vmperm(dmabuf);
@@ -507,10 +493,8 @@ static int mem_buf_lend_internal(struct dma_buf *dmabuf,
 	 * whether they require cache maintenance prior to caling this function
 	 * for backwards compatibility with ion we will always do CMO.
 	 */
-	if (!mem_buf_uncached(dmabuf)) {
-		dma_map_sgtable(mem_buf_dev, vmperm->sgt, DMA_TO_DEVICE, 0);
-		dma_unmap_sgtable(mem_buf_dev, vmperm->sgt, DMA_TO_DEVICE, 0);
-	}
+	dma_map_sgtable(mem_buf_dev, vmperm->sgt, DMA_TO_DEVICE, 0);
+	dma_unmap_sgtable(mem_buf_dev, vmperm->sgt, DMA_TO_DEVICE, 0);
 
 	ret = mem_buf_vmperm_resize(vmperm, arg->nr_acl_entries);
 	if (ret)
@@ -538,7 +522,7 @@ err_resize:
 }
 
 /*
- * Kernel API for Sharing, Lending, Recieving or Reclaiming
+ * Kernel API for Sharing, Lending, Receiving or Reclaiming
  * a dma-buf from a remote Virtual Machine.
  */
 int mem_buf_lend(struct dma_buf *dmabuf,

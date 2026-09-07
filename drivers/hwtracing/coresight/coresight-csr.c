@@ -61,6 +61,8 @@ do {									\
 #define CSR_QDSSSPARE		(0x064)
 #define CSR_IPCAT		(0x068)
 #define CSR_BYTECNTVAL		(0x06C)
+#define CSR_ARADDR_EXT		(0x130)
+#define CSR_AWADDR_EXT		(0x134)
 #define MSR_NUM			((drvdata->msr_end - drvdata->msr_start + 1) \
 				/ sizeof(uint32_t))
 #define MSR_MAX_NUM		128
@@ -80,6 +82,9 @@ do {									\
 #define CSR_ATID_REG_BIT(atid)	(atid % 32)
 #define CSR_MAX_ATID	128
 #define CSR_ATID_REG_SIZE	0xc
+
+#define CSR_ARADDR_EXT_VAL	0x104
+#define CSR_AWADDR_EXT_VAL	0x104
 
 struct csr_drvdata {
 	void __iomem		*base;
@@ -102,6 +107,7 @@ struct csr_drvdata {
 	bool			timestamp_support;
 	bool			enable_flush;
 	bool			msr_support;
+	bool			aodbg_csr_support;
 };
 
 DEFINE_CORESIGHT_DEVLIST(csr_devs, "csr");
@@ -236,6 +242,48 @@ void msm_qdss_csr_disable_flush(struct coresight_csr *csr)
 	spin_unlock_irqrestore(&drvdata->spin_lock, flags);
 }
 EXPORT_SYMBOL(msm_qdss_csr_disable_flush);
+
+void msm_qdss_csr_enable_eth(struct coresight_csr *csr)
+{
+	struct csr_drvdata *drvdata;
+	unsigned long flags;
+
+	if (csr == NULL)
+		return;
+
+	drvdata = to_csr_drvdata(csr);
+	if (IS_ERR_OR_NULL(drvdata))
+		return;
+
+	spin_lock_irqsave(&drvdata->spin_lock, flags);
+	CSR_UNLOCK(drvdata);
+	csr_writel(drvdata, CSR_ARADDR_EXT_VAL, CSR_ARADDR_EXT);
+	csr_writel(drvdata, CSR_AWADDR_EXT_VAL, CSR_AWADDR_EXT);
+	CSR_LOCK(drvdata);
+	spin_unlock_irqrestore(&drvdata->spin_lock, flags);
+}
+EXPORT_SYMBOL(msm_qdss_csr_enable_eth);
+
+void msm_qdss_csr_disable_eth(struct coresight_csr *csr)
+{
+	struct csr_drvdata *drvdata;
+	unsigned long flags;
+
+	if (csr == NULL)
+		return;
+
+	drvdata = to_csr_drvdata(csr);
+	if (IS_ERR_OR_NULL(drvdata))
+		return;
+
+	spin_lock_irqsave(&drvdata->spin_lock, flags);
+	CSR_UNLOCK(drvdata);
+	csr_writel(drvdata, 0, CSR_ARADDR_EXT);
+	csr_writel(drvdata, 0, CSR_AWADDR_EXT);
+	CSR_LOCK(drvdata);
+	spin_unlock_irqrestore(&drvdata->spin_lock, flags);
+}
+EXPORT_SYMBOL(msm_qdss_csr_disable_eth);
 
 int coresight_csr_hwctrl_set(struct coresight_csr *csr, uint64_t addr,
 			 uint32_t val)
@@ -383,6 +431,7 @@ static ssize_t timestamp_show(struct device *dev,
 	uint32_t val, time_val0, time_val1;
 	int ret;
 	unsigned long flags;
+	unsigned long csr_ts_offset = 0;
 
 	struct csr_drvdata *drvdata = dev_get_drvdata(dev->parent);
 
@@ -391,6 +440,9 @@ static ssize_t timestamp_show(struct device *dev,
 		return 0;
 	}
 
+	if (drvdata->aodbg_csr_support)
+		csr_ts_offset = 0x14;
+
 	ret = clk_prepare_enable(drvdata->clk);
 	if (ret)
 		return ret;
@@ -398,16 +450,16 @@ static ssize_t timestamp_show(struct device *dev,
 	spin_lock_irqsave(&drvdata->spin_lock, flags);
 	CSR_UNLOCK(drvdata);
 
-	val = csr_readl(drvdata, CSR_TIMESTAMPCTRL);
+	val = csr_readl(drvdata, CSR_TIMESTAMPCTRL - csr_ts_offset);
 
 	val  = val & ~BIT(0);
-	csr_writel(drvdata, val, CSR_TIMESTAMPCTRL);
+	csr_writel(drvdata, val, CSR_TIMESTAMPCTRL - csr_ts_offset);
 
 	val  = val | BIT(0);
-	csr_writel(drvdata, val, CSR_TIMESTAMPCTRL);
+	csr_writel(drvdata, val, CSR_TIMESTAMPCTRL - csr_ts_offset);
 
-	time_val0 = csr_readl(drvdata, CSR_QDSSTIMEVAL0);
-	time_val1 = csr_readl(drvdata, CSR_QDSSTIMEVAL1);
+	time_val0 = csr_readl(drvdata, CSR_QDSSTIMEVAL0 - csr_ts_offset);
+	time_val1 = csr_readl(drvdata, CSR_QDSSTIMEVAL1 - csr_ts_offset);
 
 	CSR_LOCK(drvdata);
 	spin_unlock_irqrestore(&drvdata->spin_lock, flags);
@@ -661,6 +713,13 @@ static int csr_probe(struct platform_device *pdev)
 		dev_dbg(dev, "timestamp_support handled by other subsystem\n");
 	else
 		dev_dbg(dev, "timestamp_support operation supported\n");
+
+	drvdata->aodbg_csr_support = of_property_read_bool(pdev->dev.of_node,
+						"qcom,aodbg-csr-support");
+	if (!drvdata->aodbg_csr_support)
+		dev_dbg(dev, "aodbg_csr_support operation not supported\n");
+	else
+		dev_dbg(dev, "aodbg_csr_support operation supported\n");
 
 	drvdata->perflsheot_set_support = of_property_read_bool(
 			pdev->dev.of_node, "qcom,perflsheot-set-support");

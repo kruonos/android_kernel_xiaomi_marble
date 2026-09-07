@@ -4245,6 +4245,18 @@ static void __exit tpdm_remove(struct amba_device *adev)
 	coresight_unregister(drvdata->csdev);
 }
 
+#ifdef CONFIG_DEEPSLEEP
+static int tpdm_suspend(struct device *dev)
+{
+	struct tpdm_drvdata *drvdata = dev_get_drvdata(dev);
+
+	if (pm_suspend_via_firmware())
+		coresight_disable(drvdata->csdev);
+
+	return 0;
+}
+#endif
+
 #ifdef CONFIG_HIBERNATION
 static int tpdm_freeze(struct device *dev)
 {
@@ -4257,6 +4269,9 @@ static int tpdm_freeze(struct device *dev)
 #endif
 
 static const struct dev_pm_ops tpdm_dev_pm_ops = {
+#ifdef CONFIG_DEEPSLEEP
+	.suspend = tpdm_suspend,
+#endif
 #ifdef CONFIG_HIBERNATION
 	.freeze  = tpdm_freeze,
 #endif

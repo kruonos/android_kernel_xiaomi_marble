@@ -60,7 +60,6 @@ enum binderfs_stats_mode {
 
 struct binder_features {
 	bool oneway_spam_detection;
-	bool freeze_notification;
 };
 
 static const struct constant_table binderfs_param_stats[] = {
@@ -76,7 +75,6 @@ static const struct fs_parameter_spec binderfs_fs_parameters[] = {
 
 static struct binder_features binder_features = {
 	.oneway_spam_detection = true,
-	.freeze_notification = true,
 };
 
 static inline struct binderfs_info *BINDERFS_SB(const struct super_block *sb)
@@ -132,8 +130,8 @@ static int binderfs_binder_device_create(struct inode *ref_inode,
 	mutex_lock(&binderfs_minors_mutex);
 	if (++info->device_count <= info->mount_opts.max)
 		minor = ida_alloc_max(&binderfs_minors,
-				      use_reserve ? BINDERFS_MAX_MINOR - 1 :
-						    BINDERFS_MAX_MINOR_CAPPED - 1,
+				      use_reserve ? BINDERFS_MAX_MINOR :
+						    BINDERFS_MAX_MINOR_CAPPED,
 				      GFP_KERNEL);
 	else
 		minor = -ENOSPC;
@@ -365,7 +363,8 @@ static inline bool is_binderfs_control_device(const struct dentry *dentry)
 	return info->control_dentry == dentry;
 }
 
-static int binderfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+static int binderfs_rename(struct user_namespace *mnt_userns,
+			   struct inode *old_dir, struct dentry *old_dentry,
 			   struct inode *new_dir, struct dentry *new_dentry,
 			   unsigned int flags)
 {
@@ -373,7 +372,8 @@ static int binderfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	    is_binderfs_control_device(new_dentry))
 		return -EPERM;
 
-	return simple_rename(old_dir, old_dentry, new_dir, new_dentry, flags);
+	return simple_rename(&init_user_ns, old_dir, old_dentry, new_dir,
+			     new_dentry, flags);
 }
 
 static int binderfs_unlink(struct inode *dir, struct dentry *dentry)
@@ -433,8 +433,8 @@ static int binderfs_binder_ctl_create(struct super_block *sb)
 	/* Reserve a new minor number for the new device. */
 	mutex_lock(&binderfs_minors_mutex);
 	minor = ida_alloc_max(&binderfs_minors,
-			      use_reserve ? BINDERFS_MAX_MINOR - 1 :
-					    BINDERFS_MAX_MINOR_CAPPED - 1,
+			      use_reserve ? BINDERFS_MAX_MINOR :
+					    BINDERFS_MAX_MINOR_CAPPED,
 			      GFP_KERNEL);
 	mutex_unlock(&binderfs_minors_mutex);
 	if (minor < 0) {
@@ -612,12 +612,6 @@ static int init_binder_features(struct super_block *sb)
 	dentry = binderfs_create_file(dir, "oneway_spam_detection",
 				      &binder_features_fops,
 				      &binder_features.oneway_spam_detection);
-	if (IS_ERR(dentry))
-		return PTR_ERR(dentry);
-
-	dentry = binderfs_create_file(dir, "freeze_notification",
-				      &binder_features_fops,
-				      &binder_features.freeze_notification);
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 

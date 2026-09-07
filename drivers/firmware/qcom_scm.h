@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2010-2015,2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2015,2019,2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef __QCOM_SCM_INT_H
 #define __QCOM_SCM_INT_H
@@ -86,12 +87,10 @@ extern int scm_legacy_call_atomic(struct device *dev,
 extern int scm_legacy_call(struct device *dev, const struct qcom_scm_desc *desc,
 			   struct qcom_scm_res *res);
 
-int qcom_scm_handle_wait(struct device *dev, int scm_ret,
-			struct qcom_scm_res *res);
-
 #define QCOM_SCM_SVC_BOOT		0x01
 #define QCOM_SCM_BOOT_SET_ADDR		0x01
 #define QCOM_SCM_BOOT_TERMINATE_PC	0x02
+#define QCOM_SCM_BOOT_SET_DLOAD_MODE	0x10
 #define QCOM_SCM_BOOT_SEC_WDOG_DIS		0x07
 #define QCOM_SCM_BOOT_SEC_WDOG_TRIGGER		0x08
 #define QCOM_SCM_BOOT_WDOG_DEBUG_PART		0x09
@@ -109,7 +108,6 @@ int qcom_scm_handle_wait(struct device *dev, int scm_ret,
 #define QCOM_SCM_PIL_PAS_SHUTDOWN	0x06
 #define QCOM_SCM_PIL_PAS_IS_SUPPORTED	0x07
 #define QCOM_SCM_PIL_PAS_MSS_RESET	0x0a
-
 #define QCOM_SCM_SVC_UTIL			0x03
 #define QCOM_SCM_UTIL_GET_SEC_DUMP_STATE	0x10
 #define QCOM_SCM_UTIL_DUMP_TABLE_ASSIGN		0x13
@@ -171,12 +169,12 @@ int qcom_scm_handle_wait(struct device *dev, int scm_ret,
 #define QCOM_SCM_ES_CONFIG_SET_ICE_KEY_V2	0x05
 #define QCOM_SCM_ES_CLEAR_ICE_KEY		0x06
 #define QCOM_SCM_ES_DERIVE_RAW_SECRET	0x07
-#define QCOM_SCM_ES_HIBERNATE_EXIT	0x0B
 
 #define QCOM_SCM_SVC_HDCP		0x11
 #define QCOM_SCM_HDCP_INVOKE		0x01
 
 #define QCOM_SCM_SVC_LMH			0x13
+#define QCOM_SCM_LMH_LIMIT_PROFILE_CHANGE	0x01
 #define QCOM_SCM_LMH_DEBUG_SET			0x08
 #define QCOM_SCM_LMH_DEBUG_READ_BUF_SIZE	0x09
 #define QCOM_SCM_LMH_LIMIT_DCVSH		0x10
@@ -208,6 +206,7 @@ int qcom_scm_handle_wait(struct device *dev, int scm_ret,
 /* OEM Services and Function IDs */
 #define QCOM_SCM_SVC_OEM_POWER			0x09
 #define QCOM_SCM_OEM_POWER_REBOOT		0x22
+#define QCOM_SCM_OEM_POWER_CUSTOM_REBOOT	0x23
 
 /* TOS Services and Function IDs */
 #define QCOM_SCM_SVC_QSEELOG			0x01
@@ -228,17 +227,11 @@ int qcom_scm_handle_wait(struct device *dev, int scm_ret,
 #define QCOM_SCM_FEAT_LOG_ID			0x0a
 #define QCOM_SCM_MP_CP_FEAT_ID			0x0c
 
-#define QCOM_SCM_LMH_LIMIT_PROFILE_CHANGE	0x01
-#define QCOM_SCM_LMH_LIMIT_DCVSH		0x10
-#define QCOM_SCM_GET_MEM_LAT_STATS_ID		0x15
-#define QCOM_SCM_SVC_MEM_LAT			0x06
-
-#define QCOM_SCM_SVC_MISSRATE			0x06
-#define QCOM_SCM_GET_LLCC_MISSRATE_STATS_ID	0x14
-#define QCOM_SCM_SVC_LLCC_OCCUPANCY		0x06
-#define QCOM_SCM_GET_LLCC_OCCUPANCY_STATS_ID	0x13
-
 extern void __qcom_scm_init(void);
+extern void __qcom_scm_qcpe_exit(void);
+#define TZ_SVC_BW_PROF_ID		0x07 /* ddr profiler */
+extern int __qcom_scm_ddrbw_profiler(struct device *dev, phys_addr_t in_buf,
+	size_t in_buf_size, phys_addr_t out_buf, size_t out_buf_size);
 
 /* common error codes */
 #define QCOM_SCM_V2_EBUSY	-12

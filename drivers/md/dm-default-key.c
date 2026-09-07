@@ -323,6 +323,7 @@ static void default_key_status(struct dm_target *ti, status_type_t type,
 
 	switch (type) {
 	case STATUSTYPE_INFO:
+	case STATUSTYPE_IMA:
 		result[0] = '\0';
 		break;
 

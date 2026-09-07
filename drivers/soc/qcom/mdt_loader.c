@@ -4,7 +4,7 @@
  *
  * Copyright (C) 2016 Linaro Ltd
  * Copyright (C) 2015 Sony Mobile Communications Inc
- * Copyright (c) 2012-2013, 2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, 2021 The Linux Foundation. All rights reserved.
  */
 
 #include <linux/device.h>
@@ -12,45 +12,11 @@
 #include <linux/firmware.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/overflow.h>
 #include <linux/qcom_scm.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
 #include <linux/soc/qcom/mdt_loader.h>
-
-static bool mdt_header_valid(const struct firmware *fw)
-{
-	const struct elf32_hdr *ehdr;
-	size_t phend;
-	size_t shend;
-
-	if (fw->size < sizeof(*ehdr))
-		return false;
-
-	ehdr = (struct elf32_hdr *)fw->data;
-
-	if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG))
-		return false;
-
-	if (ehdr->e_phentsize != sizeof(struct elf32_phdr))
-		return false;
-
-	phend = size_add(size_mul(sizeof(struct elf32_phdr), ehdr->e_phnum), ehdr->e_phoff);
-	if (phend > fw->size)
-		return false;
-
-	if (ehdr->e_shentsize || ehdr->e_shnum) {
-		if (ehdr->e_shentsize != sizeof(struct elf32_shdr))
-			return false;
-
-		shend = size_add(size_mul(sizeof(struct elf32_shdr), ehdr->e_shnum), ehdr->e_shoff);
-		if (shend > fw->size)
-			return false;
-	}
-
-	return true;
-}
 
 static bool mdt_phdr_valid(const struct elf32_phdr *phdr)
 {
@@ -100,9 +66,6 @@ ssize_t qcom_mdt_get_size(const struct firmware *fw)
 	phys_addr_t min_addr = PHYS_ADDR_MAX;
 	phys_addr_t max_addr = 0;
 	int i;
-
-	if (!mdt_header_valid(fw))
-		return -EINVAL;
 
 	ehdr = (struct elf32_hdr *)fw->data;
 	phdrs = (struct elf32_phdr *)(ehdr + 1);
@@ -156,19 +119,10 @@ void *qcom_mdt_read_metadata(struct device *dev, const struct firmware *fw, cons
 	void *data;
 	int ret;
 
-	if (fw->size < sizeof(struct elf32_hdr)) {
-		dev_err(dev, "Image is too small\n");
-		return ERR_PTR(-EINVAL);
-	}
-
-	if (!mdt_header_valid(fw))
-		return ERR_PTR(-EINVAL);
-
 	ehdr = (struct elf32_hdr *)fw->data;
 	phdrs = (struct elf32_phdr *)(ehdr + 1);
 
-	if (ehdr->e_phnum < 2 || ehdr->e_phoff > fw->size ||
-	    (sizeof(phdrs) * ehdr->e_phnum > fw->size - ehdr->e_phoff))
+	if (ehdr->e_phnum < 2 || ehdr->e_phnum > PN_XNUM)
 		return ERR_PTR(-EINVAL);
 
 	if (phdrs[0].p_type == PT_LOAD)
@@ -190,8 +144,8 @@ void *qcom_mdt_read_metadata(struct device *dev, const struct firmware *fw, cons
 		return ERR_PTR(-ENOMEM);
 
 	/*
-	 * During the scm call memory protection will be enabled for the meta
-	 * data blob, so make sure it's physically contiguous, 4K aligned and
+	 * During the scm call memory protection will be enabled for the metadata
+	 * blob, so make sure it's physically contiguous, 4K aligned and
 	 * non-cachable to avoid XPU violations.
 	 */
 	if (metadata_phys) {
@@ -263,12 +217,12 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw, const 
 	phys_addr_t mem_reloc;
 	phys_addr_t min_addr = PHYS_ADDR_MAX;
 	phys_addr_t max_addr = 0;
-	dma_addr_t metadata_phys;
+	dma_addr_t metadata_phys = 0;
 	struct device *scm_dev = NULL;
-	size_t metadata_len;
+	size_t metadata_len = 0;
 	size_t fw_name_len;
 	ssize_t offset;
-	void *metadata;
+	void *metadata = NULL;
 	char *fw_name;
 	bool relocate = false;
 	bool is_split;
@@ -279,10 +233,7 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw, const 
 	if (!fw || !mem_region || !mem_phys || !mem_size)
 		return -EINVAL;
 
-	if (!mdt_header_valid(fw))
-		return -EINVAL;
 	is_split = qcom_mdt_bins_are_split(fw);
-
 	ehdr = (struct elf32_hdr *)fw->data;
 	phdrs = (struct elf32_phdr *)(ehdr + 1);
 
@@ -300,7 +251,7 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw, const 
 		if (IS_ERR(metadata)) {
 			ret = PTR_ERR(metadata);
 			dev_err(dev, "error %d reading firmware %s metadata\n",
-					ret, fw_name);
+				ret, fw_name);
 			goto out;
 		}
 

@@ -156,19 +156,15 @@ static int fs_index(const char __user * __name)
 static int fs_name(unsigned int index, char __user * buf)
 {
 	struct file_system_type * tmp;
-	int len, res = -EINVAL;
+	int len, res;
 
 	read_lock(&file_systems_lock);
-	for (tmp = file_systems; tmp; tmp = tmp->next, index--) {
-		if (index == 0) {
-			if (try_module_get(tmp->owner))
-				res = 0;
+	for (tmp = file_systems; tmp; tmp = tmp->next, index--)
+		if (index <= 0 && try_module_get(tmp->owner))
 			break;
-		}
-	}
 	read_unlock(&file_systems_lock);
-	if (res)
-		return res;
+	if (!tmp)
+		return -EINVAL;
 
 	/* OK, we got the reference, so we can safely block */
 	len = strlen(tmp->name) + 1;
@@ -213,21 +209,28 @@ SYSCALL_DEFINE3(sysfs, int, option, unsigned long, arg1, unsigned long, arg2)
 }
 #endif
 
-int __init get_filesystem_list(char *buf)
+int __init list_bdev_fs_names(char *buf, size_t size)
 {
-	int len = 0;
-	struct file_system_type * tmp;
+	struct file_system_type *p;
+	size_t len;
+	int count = 0;
 
 	read_lock(&file_systems_lock);
-	tmp = file_systems;
-	while (tmp && len < PAGE_SIZE - 80) {
-		len += sprintf(buf+len, "%s\t%s\n",
-			(tmp->fs_flags & FS_REQUIRES_DEV) ? "" : "nodev",
-			tmp->name);
-		tmp = tmp->next;
+	for (p = file_systems; p; p = p->next) {
+		if (!(p->fs_flags & FS_REQUIRES_DEV))
+			continue;
+		len = strlen(p->name) + 1;
+		if (len > size) {
+			pr_warn("%s: truncating file system list\n", __func__);
+			break;
+		}
+		memcpy(buf, p->name, len);
+		buf += len;
+		size -= len;
+		count++;
 	}
 	read_unlock(&file_systems_lock);
-	return len;
+	return count;
 }
 
 #ifdef CONFIG_PROC_FS

@@ -100,27 +100,12 @@ static void fsl_dcu_irq_uninstall(struct drm_device *dev)
 static int fsl_dcu_load(struct drm_device *dev, unsigned long flags)
 {
 	struct fsl_dcu_drm_device *fsl_dev = dev->dev_private;
-	struct regmap *scfg;
 	int ret;
 
 	ret = fsl_dcu_drm_modeset_init(fsl_dev);
 	if (ret < 0) {
 		dev_err(dev->dev, "failed to initialize mode setting\n");
 		return ret;
-	}
-
-	scfg = syscon_regmap_lookup_by_compatible("fsl,ls1021a-scfg");
-	if (PTR_ERR(scfg) != -ENODEV) {
-		/*
-		 * For simplicity, enable the PIXCLK unconditionally,
-		 * resulting in increased power consumption. Disabling
-		 * the clock in PM or on unload could be implemented as
-		 * a future improvement.
-		 */
-		ret = regmap_update_bits(scfg, SCFG_PIXCLKCR, SCFG_PIXCLKCR_PXCEN,
-					 SCFG_PIXCLKCR_PXCEN);
-		if (ret < 0)
-			return dev_err_probe(dev->dev, ret, "failed to enable pixclk\n");
 	}
 
 	ret = drm_vblank_init(dev, dev->mode_config.num_crtc);
@@ -166,7 +151,7 @@ static void fsl_dcu_unload(struct drm_device *dev)
 
 DEFINE_DRM_GEM_CMA_FOPS(fsl_dcu_drm_fops);
 
-static struct drm_driver fsl_dcu_drm_driver = {
+static const struct drm_driver fsl_dcu_drm_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.load			= fsl_dcu_load,
 	.unload			= fsl_dcu_unload,
@@ -263,7 +248,6 @@ static int fsl_dcu_drm_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct resource *res;
 	void __iomem *base;
-	struct drm_driver *driver = &fsl_dcu_drm_driver;
 	struct clk *pix_clk_in;
 	char pix_clk_name[32];
 	const char *pix_clk_in_name;
@@ -333,7 +317,7 @@ static int fsl_dcu_drm_probe(struct platform_device *pdev)
 
 	fsl_dev->tcon = fsl_tcon_init(dev);
 
-	drm = drm_dev_alloc(driver, dev);
+	drm = drm_dev_alloc(&fsl_dcu_drm_driver, dev);
 	if (IS_ERR(drm)) {
 		ret = PTR_ERR(drm);
 		goto unregister_pix_clk;

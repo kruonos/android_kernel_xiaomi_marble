@@ -12,6 +12,8 @@
 #include <linux/configfs.h>
 #include <linux/badblocks.h>
 #include <linux/fault-inject.h>
+#include <linux/spinlock.h>
+#include <linux/mutex.h>
 
 struct nullb_cmd {
 	struct request *rq;
@@ -33,6 +35,26 @@ struct nullb_queue {
 	struct nullb_cmd *cmds;
 };
 
+struct nullb_zone {
+	/*
+	 * Zone lock to prevent concurrent modification of a zone write
+	 * pointer position and condition: with memory backing, a write
+	 * command execution may sleep on memory allocation. For this case,
+	 * use mutex as the zone lock. Otherwise, use the spinlock for
+	 * locking the zone.
+	 */
+	union {
+		spinlock_t spinlock;
+		struct mutex mutex;
+	};
+	enum blk_zone_type type;
+	enum blk_zone_cond cond;
+	sector_t start;
+	sector_t wp;
+	unsigned int len;
+	unsigned int capacity;
+};
+
 struct nullb_device {
 	struct nullb *nullb;
 	struct config_item item;
@@ -46,10 +68,11 @@ struct nullb_device {
 	unsigned int nr_zones_imp_open;
 	unsigned int nr_zones_exp_open;
 	unsigned int nr_zones_closed;
-	struct blk_zone *zones;
+	unsigned int imp_close_zone_no;
+	struct nullb_zone *zones;
 	sector_t zone_size_sects;
-	spinlock_t zone_lock;
-	unsigned long *zone_locks;
+	bool need_zone_res_mgmt;
+	spinlock_t zone_res_lock;
 
 	unsigned long size; /* device size in MB */
 	unsigned long completion_nsec; /* time in ns to complete a request */
@@ -63,6 +86,7 @@ struct nullb_device {
 	unsigned int home_node; /* home node for the device */
 	unsigned int queue_mode; /* block interface */
 	unsigned int blocksize; /* block size */
+	unsigned int max_sectors; /* Max sectors per command */
 	unsigned int irqmode; /* IRQ completion handler */
 	unsigned int hw_queue_depth; /* queue depth */
 	unsigned int index; /* index of the disk, only valid with a disk */
@@ -73,6 +97,7 @@ struct nullb_device {
 	bool memory_backed; /* if data is stored in memory */
 	bool discard; /* if support discard */
 	bool zoned; /* if device is zoned */
+	bool virt_boundary; /* virtual boundary on/off for the device */
 };
 
 struct nullb {
@@ -94,6 +119,8 @@ struct nullb {
 	char disk_name[DISK_NAME_LEN];
 };
 
+blk_status_t null_handle_discard(struct nullb_device *dev, sector_t sector,
+				 sector_t nr_sectors);
 blk_status_t null_process_cmd(struct nullb_cmd *cmd,
 			      enum req_opf op, sector_t sector,
 			      unsigned int nr_sectors);

@@ -424,7 +424,7 @@ static netdev_tx_t sun4ican_start_xmit(struct sk_buff *skb, struct net_device *d
 	netif_stop_queue(dev);
 
 	id = cf->can_id;
-	dlc = cf->can_dlc;
+	dlc = cf->len;
 	msg_flag_n = dlc;
 
 	if (id & CAN_RTR_FLAG)
@@ -448,7 +448,7 @@ static netdev_tx_t sun4ican_start_xmit(struct sk_buff *skb, struct net_device *d
 
 	writel(msg_flag_n, priv->base + SUN4I_REG_BUF0_ADDR);
 
-	can_put_echo_skb(skb, dev, 0);
+	can_put_echo_skb(skb, dev, 0, 0);
 
 	if (priv->can.ctrlmode & CAN_CTRLMODE_LOOPBACK)
 		sun4i_can_write_cmdreg(priv, SUN4I_CMD_SELF_RCV_REQ);
@@ -475,7 +475,7 @@ static void sun4i_can_rx(struct net_device *dev)
 		return;
 
 	fi = readl(priv->base + SUN4I_REG_BUF0_ADDR);
-	cf->can_dlc = get_can_dlc(fi & 0x0F);
+	cf->len = can_cc_dlc2len(fi & 0x0F);
 	if (fi & SUN4I_MSG_EFF_FLAG) {
 		dreg = SUN4I_REG_BUF5_ADDR;
 		id = (readl(priv->base + SUN4I_REG_BUF1_ADDR) << 21) |
@@ -493,7 +493,7 @@ static void sun4i_can_rx(struct net_device *dev)
 	if (fi & SUN4I_MSG_RTR_FLAG)
 		id |= CAN_RTR_FLAG;
 	else
-		for (i = 0; i < cf->can_dlc; i++)
+		for (i = 0; i < cf->len; i++)
 			cf->data[i] = readl(priv->base + dreg + i * 4);
 
 	cf->can_id = id;
@@ -501,7 +501,7 @@ static void sun4i_can_rx(struct net_device *dev)
 	sun4i_can_write_cmdreg(priv, SUN4I_CMD_RELEASE_RBUF);
 
 	stats->rx_packets++;
-	stats->rx_bytes += cf->can_dlc;
+	stats->rx_bytes += cf->len;
 	netif_rx(skb);
 
 	can_led_event(dev, CAN_LED_EVENT_RX);
@@ -563,9 +563,11 @@ static int sun4i_can_err(struct net_device *dev, u8 isrc, u8 status)
 		/* bus error interrupt */
 		netdev_dbg(dev, "bus error interrupt\n");
 		priv->can.can_stats.bus_error++;
-		ecc = readl(priv->base + SUN4I_REG_STA_ADDR);
+		stats->rx_errors++;
 
 		if (likely(skb)) {
+			ecc = readl(priv->base + SUN4I_REG_STA_ADDR);
+
 			cf->can_id |= CAN_ERR_PROT | CAN_ERR_BUSERROR;
 
 			switch (ecc & SUN4I_STA_MASK_ERR) {
@@ -583,15 +585,9 @@ static int sun4i_can_err(struct net_device *dev, u8 isrc, u8 status)
 					       >> 16;
 				break;
 			}
-		}
-
-		/* error occurred during transmission? */
-		if ((ecc & SUN4I_STA_ERR_DIR) == 0) {
-			if (likely(skb))
+			/* error occurred during transmission? */
+			if ((ecc & SUN4I_STA_ERR_DIR) == 0)
 				cf->data[2] |= CAN_ERR_PROT_TX;
-			stats->tx_errors++;
-		} else {
-			stats->rx_errors++;
 		}
 	}
 	if (isrc & SUN4I_INT_ERR_PASSIVE) {
@@ -617,17 +613,17 @@ static int sun4i_can_err(struct net_device *dev, u8 isrc, u8 status)
 		tx_state = txerr >= rxerr ? state : 0;
 		rx_state = txerr <= rxerr ? state : 0;
 
-		/* The skb allocation might fail, but can_change_state()
-		 * handles cf == NULL.
-		 */
-		can_change_state(dev, cf, tx_state, rx_state);
+		if (likely(skb))
+			can_change_state(dev, cf, tx_state, rx_state);
+		else
+			priv->can.state = state;
 		if (state == CAN_STATE_BUS_OFF)
 			can_bus_off(dev);
 	}
 
 	if (likely(skb)) {
 		stats->rx_packets++;
-		stats->rx_bytes += cf->can_dlc;
+		stats->rx_bytes += cf->len;
 		netif_rx(skb);
 	} else {
 		return -ENOMEM;
@@ -644,8 +640,8 @@ static irqreturn_t sun4i_can_interrupt(int irq, void *dev_id)
 	u8 isrc, status;
 	int n = 0;
 
-	while ((n < SUN4I_CAN_MAX_IRQ) &&
-	       (isrc = readl(priv->base + SUN4I_REG_INT_ADDR))) {
+	while ((isrc = readl(priv->base + SUN4I_REG_INT_ADDR)) &&
+	       (n < SUN4I_CAN_MAX_IRQ)) {
 		n++;
 		status = readl(priv->base + SUN4I_REG_STA_ADDR);
 
@@ -658,7 +654,7 @@ static irqreturn_t sun4i_can_interrupt(int irq, void *dev_id)
 			    readl(priv->base +
 				  SUN4I_REG_RBUF_RBACK_START_ADDR) & 0xf;
 			stats->tx_packets++;
-			can_get_echo_skb(dev, 0);
+			can_get_echo_skb(dev, 0, NULL);
 			netif_wake_queue(dev);
 			can_led_event(dev, CAN_LED_EVENT_TX);
 		}
@@ -751,7 +747,6 @@ static const struct net_device_ops sun4ican_netdev_ops = {
 	.ndo_open = sun4ican_open,
 	.ndo_stop = sun4ican_close,
 	.ndo_start_xmit = sun4ican_start_xmit,
-	.ndo_change_mtu = can_change_mtu,
 };
 
 static const struct of_device_id sun4ican_of_match[] = {

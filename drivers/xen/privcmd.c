@@ -10,7 +10,6 @@
 #define pr_fmt(fmt) "xen:" KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
-#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -25,9 +24,6 @@
 #include <linux/seq_file.h>
 #include <linux/miscdevice.h>
 #include <linux/moduleparam.h>
-#include <linux/notifier.h>
-#include <linux/security.h>
-#include <linux/wait.h>
 
 #include <asm/xen/hypervisor.h>
 #include <asm/xen/hypercall.h>
@@ -41,7 +37,6 @@
 #include <xen/page.h>
 #include <xen/xen-ops.h>
 #include <xen/balloon.h>
-#include <xen/xenbus.h>
 
 #include "privcmd.h"
 
@@ -60,19 +55,9 @@ module_param_named(dm_op_buf_max_size, privcmd_dm_op_buf_max_size, uint,
 MODULE_PARM_DESC(dm_op_buf_max_size,
 		 "Maximum size of a dm_op hypercall buffer");
 
-static bool unrestricted;
-module_param(unrestricted, bool, 0);
-MODULE_PARM_DESC(unrestricted,
-	"Don't restrict hypercalls to target domain if running in a domU");
-
 struct privcmd_data {
 	domid_t domid;
 };
-
-/* DOMID_INVALID implies no restriction */
-static domid_t target_domain = DOMID_INVALID;
-static bool restrict_wait;
-static DECLARE_WAIT_QUEUE_HEAD(restrict_wait_wq);
 
 static int privcmd_vma_range_is_mapped(
                struct vm_area_struct *vma,
@@ -272,7 +257,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 	LIST_HEAD(pagelist);
 	struct mmap_gfn_state state;
 
-	/* We only support privcmd_ioctl_mmap_batch for auto translated. */
+	/* We only support privcmd_ioctl_mmap_batch for non-auto-translated. */
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return -ENOSYS;
 
@@ -435,7 +420,7 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	int rc;
 	struct page **pages;
 
-	pages = kcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
+	pages = kvcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
 	if (pages == NULL)
 		return -ENOMEM;
 
@@ -443,7 +428,7 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	if (rc != 0) {
 		pr_warn("%s Could not alloc %d pfns rc:%d\n", __func__,
 			numpgs, rc);
-		kfree(pages);
+		kvfree(pages);
 		return -ENOMEM;
 	}
 	BUG_ON(vma->vm_private_data != NULL);
@@ -826,8 +811,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 						 kdata.addr & PAGE_MASK,
 						 pfns, kdata.num, errs,
 						 vma->vm_page_prot,
-						 domid,
-						 vma->vm_private_data);
+						 domid);
 		if (num < 0)
 			rc = num;
 		else if (num != kdata.num) {
@@ -893,16 +877,13 @@ static long privcmd_ioctl(struct file *file,
 
 static int privcmd_open(struct inode *ino, struct file *file)
 {
-	struct privcmd_data *data;
+	struct privcmd_data *data = kzalloc(sizeof(*data), GFP_KERNEL);
 
-	if (wait_event_interruptible(restrict_wait_wq, !restrict_wait) < 0)
-		return -EINTR;
-
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->domid = target_domain;
+	/* DOMID_INVALID implies no restriction */
+	data->domid = DOMID_INVALID;
 
 	file->private_data = data;
 	return 0;
@@ -932,13 +913,7 @@ static void privcmd_close(struct vm_area_struct *vma)
 	else
 		pr_crit("unable to unmap MFN range: leaking %d pages. rc=%d\n",
 			numpgs, rc);
-	kfree(pages);
-}
-
-static int privcmd_may_split(struct vm_area_struct *area, unsigned long addr)
-{
-	/* Forbid splitting, avoids double free via privcmd_close(). */
-	return -EINVAL;
+	kvfree(pages);
 }
 
 static vm_fault_t privcmd_fault(struct vm_fault *vmf)
@@ -952,7 +927,6 @@ static vm_fault_t privcmd_fault(struct vm_fault *vmf)
 
 static const struct vm_operations_struct privcmd_vm_ops = {
 	.close = privcmd_close,
-	.split = privcmd_may_split,
 	.fault = privcmd_fault
 };
 
@@ -1002,61 +976,12 @@ static struct miscdevice privcmd_dev = {
 	.fops = &xen_privcmd_fops,
 };
 
-static int init_restrict(struct notifier_block *notifier,
-			 unsigned long event,
-			 void *data)
-{
-	char *target;
-	unsigned int domid;
-
-	/* Default to an guaranteed unused domain-id. */
-	target_domain = DOMID_IDLE;
-
-	target = xenbus_read(XBT_NIL, "target", "", NULL);
-	if (IS_ERR(target) || kstrtouint(target, 10, &domid)) {
-		pr_err("No target domain found, blocking all hypercalls\n");
-		goto out;
-	}
-
-	target_domain = domid;
-
- out:
-	if (!IS_ERR(target))
-		kfree(target);
-
-	restrict_wait = false;
-	wake_up_all(&restrict_wait_wq);
-
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block xenstore_notifier = {
-	.notifier_call = init_restrict,
-};
-
-static void __init restrict_driver(void)
-{
-	if (unrestricted) {
-		if (security_locked_down(LOCKDOWN_XEN_USER_ACTIONS))
-			pr_warn("Kernel is locked down, parameter \"unrestricted\" ignored\n");
-		else
-			return;
-	}
-
-	restrict_wait = true;
-
-	register_xenstore_notifier(&xenstore_notifier);
-}
-
 static int __init privcmd_init(void)
 {
 	int err;
 
 	if (!xen_domain())
 		return -ENODEV;
-
-	if (!xen_initial_domain())
-		restrict_driver();
 
 	err = misc_register(&privcmd_dev);
 	if (err != 0) {
@@ -1076,9 +1001,6 @@ static int __init privcmd_init(void)
 
 static void __exit privcmd_exit(void)
 {
-	if (!xen_initial_domain())
-		unregister_xenstore_notifier(&xenstore_notifier);
-
 	misc_deregister(&privcmd_dev);
 	misc_deregister(&xen_privcmdbuf_dev);
 }

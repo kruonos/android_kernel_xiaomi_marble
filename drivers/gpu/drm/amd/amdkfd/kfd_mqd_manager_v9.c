@@ -277,6 +277,13 @@ static void update_mqd(struct mqd_manager *mm, void *mqd,
 }
 
 
+static uint32_t read_doorbell_id(void *mqd)
+{
+	struct v9_mqd *m = (struct v9_mqd *)mqd;
+
+	return m->queue_doorbell_id0;
+}
+
 static int destroy_mqd(struct mqd_manager *mm, void *mqd,
 			enum kfd_preempt_type type,
 			unsigned int timeout, uint32_t pipe_id,
@@ -396,10 +403,6 @@ static void update_mqd_sdma(struct mqd_manager *mm, void *mqd,
 	m->sdma_engine_id = q->sdma_engine_id;
 	m->sdma_queue_id = q->sdma_queue_id;
 	m->sdmax_rlcx_dummy_reg = SDMA_RLC_DUMMY_DEFAULT;
-	/* Allow context switch so we don't cross-process starve with a massive
-	 * command buffer of long-running SDMA commands
-	 */
-	m->sdmax_rlcx_ib_cntl |= SDMA0_GFX_IB_CNTL__SWITCH_INSIDE_IB_MASK;
 
 	q->is_active = QUEUE_IS_ACTIVE(*q);
 }
@@ -482,6 +485,7 @@ struct mqd_manager *mqd_manager_init_v9(enum KFD_MQD_TYPE type,
 #if defined(CONFIG_DEBUG_FS)
 		mqd->debugfs_show_mqd = debugfs_show_mqd;
 #endif
+		mqd->read_doorbell_id = read_doorbell_id;
 		break;
 	case KFD_MQD_TYPE_DIQ:
 		mqd->allocate_mqd = allocate_mqd;

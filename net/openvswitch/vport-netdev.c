@@ -44,10 +44,9 @@ static void netdev_port_receive(struct sk_buff *skb)
 	if (unlikely(!skb))
 		return;
 
-	if (skb->dev->type == ARPHRD_ETHER) {
-		skb_push(skb, ETH_HLEN);
-		skb_postpush_rcsum(skb, skb->data, ETH_HLEN);
-	}
+	if (skb->dev->type == ARPHRD_ETHER)
+		skb_push_rcsum(skb, ETH_HLEN);
+
 	ovs_vport_receive(vport, skb, skb_tunnel_info(skb));
 	return;
 error:
@@ -146,35 +145,19 @@ static void vport_netdev_free(struct rcu_head *rcu)
 void ovs_netdev_detach_dev(struct vport *vport)
 {
 	ASSERT_RTNL();
+	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
 	netdev_rx_handler_unregister(vport->dev);
 	netdev_upper_dev_unlink(vport->dev,
 				netdev_master_upper_dev_get(vport->dev));
 	dev_set_promiscuity(vport->dev, -1);
-
-	/* paired with smp_mb() in netdev_destroy() */
-	smp_wmb();
-
-	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
 }
 
 static void netdev_destroy(struct vport *vport)
 {
-	/* When called from ovs_db_notify_wq() after a dp_device_event(), the
-	 * port has already been detached, so we can avoid taking the RTNL by
-	 * checking this first.
-	 */
-	if (netif_is_ovs_port(vport->dev)) {
-		rtnl_lock();
-		/* Check again while holding the lock to ensure we don't race
-		 * with the netdev notifier and detach twice.
-		 */
-		if (netif_is_ovs_port(vport->dev))
-			ovs_netdev_detach_dev(vport);
-		rtnl_unlock();
-	}
-
-	/* paired with smp_wmb() in ovs_netdev_detach_dev() */
-	smp_mb();
+	rtnl_lock();
+	if (netif_is_ovs_port(vport->dev))
+		ovs_netdev_detach_dev(vport);
+	rtnl_unlock();
 
 	call_rcu(&vport->rcu, vport_netdev_free);
 }

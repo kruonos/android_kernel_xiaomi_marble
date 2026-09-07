@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2015, 2017-2020, The Linux Foundation. All rights reserved.*/
-/* Copyright (c) 2025 Qualcomm Innovation Center, Inc. All rights reserved.*/
+/*
+ * Copyright (c) 2015, 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ */
+
 /*
  * MSM PCIe endpoint service layer.
  */
@@ -14,7 +17,7 @@
 
 LIST_HEAD(head);
 
-int ep_pcie_register_drv(struct ep_pcie_hw *handle, void *dev)
+int ep_pcie_register_drv(struct ep_pcie_hw *handle)
 {
 	struct ep_pcie_hw *present;
 	bool new = true;
@@ -31,12 +34,10 @@ int ep_pcie_register_drv(struct ep_pcie_hw *handle, void *dev)
 
 	if (new) {
 		list_add(&handle->node, &head);
-		handle->private_data = (struct ep_pcie_dev_t *)dev;
 		pr_debug("ep_pcie:%s: register a new driver for device 0x%x\n",
 			__func__, handle->device_id);
 		return 0;
 	}
-
 	pr_debug(
 		"ep_pcie:%s: driver to register for device 0x%x has already existed\n",
 		__func__, handle->device_id);
@@ -127,41 +128,34 @@ enum ep_pcie_link_status ep_pcie_get_linkstatus(struct ep_pcie_hw *phandle)
 }
 EXPORT_SYMBOL(ep_pcie_get_linkstatus);
 
-u32 ep_pcie_qtimer_cap_off(struct ep_pcie_hw *phandle)
-{
-	if (phandle)
-		return phandle->get_qtimer_off(phandle->private_data);
-	return -EINVAL;
-}
-EXPORT_SYMBOL_GPL(ep_pcie_qtimer_cap_off);
-
 int ep_pcie_config_outbound_iatu(struct ep_pcie_hw *phandle,
 				struct ep_pcie_iatu entries[],
-				u32 num_entries)
+				u32 num_entries,
+				u32 vf_id)
 {
 	if (WARN_ON(!phandle))
 		return -EINVAL;
 
-	return phandle->config_outbound_iatu(entries, num_entries);
+	return phandle->config_outbound_iatu(entries, num_entries, vf_id);
 }
 EXPORT_SYMBOL(ep_pcie_config_outbound_iatu);
 
 int ep_pcie_get_msi_config(struct ep_pcie_hw *phandle,
-				struct ep_pcie_msi_config *cfg)
+				struct ep_pcie_msi_config *cfg, u32 vf_id)
 {
 	if (WARN_ON(!phandle))
 		return -EINVAL;
 
-	return phandle->get_msi_config(cfg);
+	return phandle->get_msi_config(cfg, vf_id);
 }
 EXPORT_SYMBOL(ep_pcie_get_msi_config);
 
-int ep_pcie_trigger_msi(struct ep_pcie_hw *phandle, u32 idx)
+int ep_pcie_trigger_msi(struct ep_pcie_hw *phandle, u32 idx, u32 vf_id)
 {
 	if (WARN_ON(!phandle))
 		return -EINVAL;
 
-	return phandle->trigger_msi(idx);
+	return phandle->trigger_msi(idx, vf_id);
 }
 EXPORT_SYMBOL(ep_pcie_trigger_msi);
 
@@ -177,12 +171,13 @@ EXPORT_SYMBOL(ep_pcie_wakeup_host);
 
 int ep_pcie_config_db_routing(struct ep_pcie_hw *phandle,
 				struct ep_pcie_db_config chdb_cfg,
-				struct ep_pcie_db_config erdb_cfg)
+				struct ep_pcie_db_config erdb_cfg,
+				u32 vf_id)
 {
 	if (WARN_ON(!phandle))
 		return -EINVAL;
 
-	return phandle->config_db_routing(chdb_cfg, erdb_cfg);
+	return phandle->config_db_routing(chdb_cfg, erdb_cfg, vf_id);
 }
 EXPORT_SYMBOL(ep_pcie_config_db_routing);
 
@@ -215,3 +210,13 @@ int ep_pcie_mask_irq_event(struct ep_pcie_hw *phandle,
 	return phandle->mask_irq_event(event, enable);
 }
 EXPORT_SYMBOL(ep_pcie_mask_irq_event);
+
+int ep_pcie_core_get_capability(struct ep_pcie_hw *phandle,
+		struct ep_pcie_cap *ep_cap)
+{
+	if (WARN_ON(!phandle))
+		return -EINVAL;
+
+	return phandle->get_capability(ep_cap);
+}
+EXPORT_SYMBOL(ep_pcie_core_get_capability);

@@ -91,7 +91,7 @@ static inline int to_reg(int gpio, enum ctrl_register reg_type)
 		case 0x5e:
 			return GPIOPANELCTL;
 		default:
-			return -ENOTSUPP;
+			return -EOPNOTSUPP;
 		}
 	}
 
@@ -339,8 +339,6 @@ static int crystalcove_gpio_probe(struct platform_device *pdev)
 	if (!cg)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, cg);
-
 	mutex_init(&cg->buslock);
 	cg->chip.label = KBUILD_MODNAME;
 	cg->chip.direction_input = crystalcove_gpio_dir_in;
@@ -372,13 +370,7 @@ static int crystalcove_gpio_probe(struct platform_device *pdev)
 		return retval;
 	}
 
-	retval = devm_gpiochip_add_data(&pdev->dev, &cg->chip, cg);
-	if (retval) {
-		dev_warn(&pdev->dev, "add gpio chip error: %d\n", retval);
-		return retval;
-	}
-
-	return 0;
+	return devm_gpiochip_add_data(&pdev->dev, &cg->chip, cg);
 }
 
 static struct platform_driver crystalcove_gpio_driver = {

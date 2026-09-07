@@ -167,6 +167,7 @@ struct crypto_async_request;
 struct crypto_tfm;
 struct crypto_type;
 
+typedef struct crypto_async_request crypto_completion_data_t;
 typedef void (*crypto_completion_t)(struct crypto_async_request *req, int err);
 
 /**
@@ -586,6 +587,11 @@ struct crypto_wait {
 /*
  * Async ops completion helper functioons
  */
+static inline void *crypto_get_completion_data(crypto_completion_data_t *req)
+{
+	return req->data;
+}
+
 void crypto_req_done(struct crypto_async_request *req, int err);
 
 static inline int crypto_wait_req(int err, struct crypto_wait *wait)
@@ -641,32 +647,6 @@ struct crypto_tfm {
 
 struct crypto_comp {
 	struct crypto_tfm base;
-};
-
-enum {
-	CRYPTOA_UNSPEC,
-	CRYPTOA_ALG,
-	CRYPTOA_TYPE,
-	CRYPTOA_U32,
-	__CRYPTOA_MAX,
-};
-
-#define CRYPTOA_MAX (__CRYPTOA_MAX - 1)
-
-/* Maximum number of (rtattr) parameters for each template. */
-#define CRYPTO_MAX_ATTRS 32
-
-struct crypto_attr_alg {
-	char name[CRYPTO_MAX_ALG_NAME];
-};
-
-struct crypto_attr_type {
-	u32 type;
-	u32 mask;
-};
-
-struct crypto_attr_u32 {
-	u32 num;
 };
 
 /* 

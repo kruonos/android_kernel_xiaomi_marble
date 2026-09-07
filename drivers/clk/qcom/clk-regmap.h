@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2014, 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
- */
+/* Copyright (c) 2014, 2019-2021, The Linux Foundation. All rights reserved. */
+/* Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved. */
 
 #ifndef __QCOM_CLK_REGMAP_H__
 #define __QCOM_CLK_REGMAP_H__
@@ -36,7 +35,6 @@ struct clk_regmap_ops {
 /**
  * struct clk_regmap - regmap supporting clock
  * @hw:		handle between common and hardware-specific interfaces
- * @dependent_hw: dependent clocks clock hw
  * @regmap:	regmap to use for regmap helpers and/or by providers
  * @enable_reg: register when using regmap enable/disable ops
  * @enable_mask: mask when using regmap enable/disable ops
@@ -48,7 +46,6 @@ struct clk_regmap_ops {
 
 struct clk_regmap {
 	struct clk_hw hw;
-	struct clk_hw *dependent_hw;
 	struct regmap *regmap;
 	unsigned int enable_reg;
 	unsigned int enable_mask;
@@ -77,6 +74,7 @@ int clk_pre_change_regmap(struct clk_hw *hw, unsigned long cur_rate,
 int clk_post_change_regmap(struct clk_hw *hw, unsigned long old_rate,
 			unsigned long cur_rate);
 int devm_clk_register_regmap(struct device *dev, struct clk_regmap *rclk);
+void devm_clk_regmap_list_node(struct device *dev, struct clk_regmap *rclk);
 
 bool clk_is_regmap_clk(struct clk_hw *hw);
 

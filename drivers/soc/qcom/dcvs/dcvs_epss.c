@@ -47,7 +47,7 @@ int populate_l3_table(struct device *dev, u32 **freq_table)
 	unsigned long freq, prev_freq = 0;
 	struct resource res;
 	void __iomem *ftbl_base;
-	unsigned int ftbl_row_size = FTBL_ROW_SIZE;
+	unsigned int ftbl_row_size;
 	u32 *tmp_l3_table;
 
 	idx = of_property_match_string(dev->of_node, "reg-names", "l3tbl-base");
@@ -68,9 +68,17 @@ int populate_l3_table(struct device *dev, u32 **freq_table)
 		return -ENOMEM;
 	}
 
+	ret = of_property_read_u32(dev->of_node, "qcom,ftbl-row-size",
+						&ftbl_row_size);
+	if (ret < 0)
+		ftbl_row_size = FTBL_ROW_SIZE;
+
 	tmp_l3_table = kcalloc(MAX_L3_ENTRIES, sizeof(*tmp_l3_table), GFP_KERNEL);
-	if (!tmp_l3_table)
+	if (!tmp_l3_table) {
+		iounmap(ftbl_base);
 		return -ENOMEM;
+	}
+
 	for (idx = 0; idx < MAX_L3_ENTRIES; idx++) {
 		data = readl_relaxed(ftbl_base + idx * ftbl_row_size);
 		src = ((data & SRC_MASK) >> SRC_SHIFT);
@@ -87,8 +95,10 @@ int populate_l3_table(struct device *dev, u32 **freq_table)
 	len = idx;
 
 	*freq_table = devm_kzalloc(dev, len * sizeof(**freq_table), GFP_KERNEL);
-	if (!*freq_table)
+	if (!*freq_table) {
+		iounmap(ftbl_base);
 		return -ENOMEM;
+	}
 
 	for (idx = 0; idx < len; idx++)
 		(*freq_table)[idx] = tmp_l3_table[idx];

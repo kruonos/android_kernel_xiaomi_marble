@@ -93,27 +93,18 @@ static inline struct kernfs_node *kernfs_dentry_node(struct dentry *dentry)
 static inline void kernfs_set_rev(struct kernfs_node *parent,
 				  struct dentry *dentry)
 {
-	struct kernfs_node_ext *node_ext;
-
-	node_ext = container_of(parent, struct kernfs_node_ext, node);
-	dentry->d_time = node_ext->rev;
+	dentry->d_time = parent->dir.rev;
 }
 
 static inline void kernfs_inc_rev(struct kernfs_node *parent)
 {
-	struct kernfs_node_ext *node_ext;
-
-	node_ext = container_of(parent, struct kernfs_node_ext, node);
-	node_ext->rev++;
+	parent->dir.rev++;
 }
 
 static inline bool kernfs_dir_changed(struct kernfs_node *parent,
 				      struct dentry *dentry)
 {
-	struct kernfs_node_ext *node_ext;
-
-	node_ext = container_of(parent, struct kernfs_node_ext, node);
-	if (node_ext->rev != dentry->d_time)
+	if (parent->dir.rev != dentry->d_time)
 		return true;
 	return false;
 }
@@ -126,9 +117,12 @@ extern struct kmem_cache *kernfs_node_cache, *kernfs_iattrs_cache;
  */
 extern const struct xattr_handler *kernfs_xattr_handlers[];
 void kernfs_evict_inode(struct inode *inode);
-int kernfs_iop_permission(struct inode *inode, int mask);
-int kernfs_iop_setattr(struct dentry *dentry, struct iattr *iattr);
-int kernfs_iop_getattr(const struct path *path, struct kstat *stat,
+int kernfs_iop_permission(struct user_namespace *mnt_userns,
+			  struct inode *inode, int mask);
+int kernfs_iop_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+		       struct iattr *iattr);
+int kernfs_iop_getattr(struct user_namespace *mnt_userns,
+		       const struct path *path, struct kstat *stat,
 		       u32 request_mask, unsigned int query_flags);
 ssize_t kernfs_iop_listxattr(struct dentry *dentry, char *buf, size_t size);
 int __kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr);

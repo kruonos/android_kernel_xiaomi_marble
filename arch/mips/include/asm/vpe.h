@@ -26,7 +26,6 @@
 #endif
 
 #define MAX_VPES 16
-#define VPE_PATH_MAX 256
 
 static inline int aprp_cpu_index(void)
 {
@@ -62,7 +61,6 @@ struct vpe {
 	unsigned long len;
 	char *pbuffer;
 	unsigned long plen;
-	char cwd[VPE_PATH_MAX];
 
 	unsigned long __start;
 
@@ -104,13 +102,13 @@ struct vpe_control {
 	struct list_head tc_list;       /* Thread contexts */
 };
 
+extern unsigned long physical_memsize;
 extern struct vpe_control vpecontrol;
 extern const struct file_operations vpe_fops;
 
 int vpe_notify(int index, struct vpe_notifications *notify);
 
 void *vpe_get_shared(int index);
-char *vpe_getcwd(int index);
 
 struct vpe *get_vpe(int minor);
 struct tc *get_tc(int index);
@@ -126,12 +124,4 @@ void cleanup_tc(struct tc *tc);
 
 int __init vpe_module_init(void);
 void __exit vpe_module_exit(void);
-
-#ifdef CONFIG_MIPS_VPE_LOADER_MT
-void *vpe_alloc(void);
-int vpe_start(void *vpe, unsigned long start);
-int vpe_stop(void *vpe);
-int vpe_free(void *vpe);
-#endif /* CONFIG_MIPS_VPE_LOADER_MT */
-
 #endif /* _ASM_VPE_H */

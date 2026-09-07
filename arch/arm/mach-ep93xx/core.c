@@ -337,7 +337,6 @@ static struct gpiod_lookup_table ep93xx_i2c_gpiod_table = {
 				GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
 		GPIO_LOOKUP_IDX("G", 0, NULL, 1,
 				GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
-		{ }
 	},
 };
 
@@ -1004,9 +1003,4 @@ void ep93xx_restart(enum reboot_mode mode, const char *cmd)
 
 	while (1)
 		;
-}
-
-void __init ep93xx_init_late(void)
-{
-	crunch_init();
 }

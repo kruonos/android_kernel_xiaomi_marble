@@ -24,11 +24,11 @@
 struct clk_branch {
 	u32	hwcg_reg;
 	u32	halt_reg;
-	u32	sreg_enable_reg;
+	u32	mem_enable_reg;
+	u32	mem_ack_reg;
 	u8	hwcg_bit;
 	u8	halt_bit;
-	u32	sreg_core_ack_bit;
-	u32	sreg_periph_ack_bit;
+	u8	mem_enable_ack_bit;
 	u8	halt_check;
 #define BRANCH_VOTED			BIT(7) /* Delay on disable */
 #define BRANCH_HALT			0 /* pol: 1 = halt */
@@ -37,7 +37,7 @@ struct clk_branch {
 #define BRANCH_HALT_ENABLE_VOTED	(BRANCH_HALT_ENABLE | BRANCH_VOTED)
 #define BRANCH_HALT_DELAY		2 /* No bit to check; just delay */
 #define BRANCH_HALT_SKIP		3 /* Don't check halt bit */
-#define BRANCH_HALT_POLL		4 /* Don't enable the clock, poll for halt */
+#define BRANCH_HALT_INVERT		4 /* Invert logic for halt bit */
 
 	struct clk_regmap clkr;
 };
@@ -48,7 +48,7 @@ extern const struct clk_ops clk_branch2_hw_ctl_ops;
 extern const struct clk_ops clk_branch_simple_ops;
 extern const struct clk_ops clk_branch2_aon_ops;
 extern const struct clk_ops clk_branch2_force_off_ops;
-extern const struct clk_ops clk_branch2_sreg_ops;
+extern const struct clk_ops clk_branch2_mem_ops;
 
 #define to_clk_branch(_hw) \
 	container_of(to_clk_regmap(_hw), struct clk_branch, clkr)

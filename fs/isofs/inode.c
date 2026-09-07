@@ -338,6 +338,7 @@ static int parse_options(char *options, struct iso9660_options *popt)
 {
 	char *p;
 	int option;
+	unsigned int uv;
 
 	popt->map = 'n';
 	popt->rock = 1;
@@ -435,17 +436,17 @@ static int parse_options(char *options, struct iso9660_options *popt)
 		case Opt_ignore:
 			break;
 		case Opt_uid:
-			if (match_int(&args[0], &option))
+			if (match_uint(&args[0], &uv))
 				return 0;
-			popt->uid = make_kuid(current_user_ns(), option);
+			popt->uid = make_kuid(current_user_ns(), uv);
 			if (!uid_valid(popt->uid))
 				return 0;
 			popt->uid_set = 1;
 			break;
 		case Opt_gid:
-			if (match_int(&args[0], &option))
+			if (match_uint(&args[0], &uv))
 				return 0;
-			popt->gid = make_kgid(current_user_ns(), option);
+			popt->gid = make_kgid(current_user_ns(), uv);
 			if (!gid_valid(popt->gid))
 				return 0;
 			popt->gid_set = 1;
@@ -907,22 +908,8 @@ root_found:
 	 * we then decide whether to use the Joliet descriptor.
 	 */
 	inode = isofs_iget(s, sbi->s_firstdatazone, 0);
-
-	/*
-	 * Fix for broken CDs with a corrupt root inode but a correct Joliet
-	 * root directory.
-	 */
-	if (IS_ERR(inode)) {
-		if (joliet_level && sbi->s_firstdatazone != first_data_zone) {
-			printk(KERN_NOTICE
-			       "ISOFS: root inode is unusable. "
-			       "Disabling Rock Ridge and switching to Joliet.");
-			sbi->s_rock = 0;
-			inode = NULL;
-		} else {
-			goto out_no_root;
-		}
-	}
+	if (IS_ERR(inode))
+		goto out_no_root;
 
 	/*
 	 * Fix for broken CDs with Rock Ridge and empty ISO root directory but
@@ -1492,16 +1479,9 @@ static int isofs_read_inode(struct inode *inode, int relocated)
 		inode->i_op = &page_symlink_inode_operations;
 		inode_nohighmem(inode);
 		inode->i_data.a_ops = &isofs_symlink_aops;
-	} else if (S_ISCHR(inode->i_mode) || S_ISBLK(inode->i_mode) ||
-		   S_ISFIFO(inode->i_mode) || S_ISSOCK(inode->i_mode)) {
+	} else
 		/* XXX - parse_rock_ridge_inode() had already set i_rdev. */
 		init_special_inode(inode, inode->i_mode, inode->i_rdev);
-	} else {
-		printk(KERN_DEBUG "ISOFS: Invalid file type 0%04o for inode %lu.\n",
-			inode->i_mode, inode->i_ino);
-		ret = -EIO;
-		goto fail;
-	}
 
 	ret = 0;
 out:

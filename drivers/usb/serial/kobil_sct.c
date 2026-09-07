@@ -48,12 +48,12 @@
 
 /* Function prototypes */
 static int kobil_port_probe(struct usb_serial_port *probe);
-static int kobil_port_remove(struct usb_serial_port *probe);
+static void kobil_port_remove(struct usb_serial_port *probe);
 static int  kobil_open(struct tty_struct *tty, struct usb_serial_port *port);
 static void kobil_close(struct usb_serial_port *port);
 static int  kobil_write(struct tty_struct *tty, struct usb_serial_port *port,
 			 const unsigned char *buf, int count);
-static int  kobil_write_room(struct tty_struct *tty);
+static unsigned int kobil_write_room(struct tty_struct *tty);
 static int  kobil_ioctl(struct tty_struct *tty,
 			unsigned int cmd, unsigned long arg);
 static int  kobil_tiocmget(struct tty_struct *tty);
@@ -143,14 +143,12 @@ static int kobil_port_probe(struct usb_serial_port *port)
 }
 
 
-static int kobil_port_remove(struct usb_serial_port *port)
+static void kobil_port_remove(struct usb_serial_port *port)
 {
 	struct kobil_private *priv;
 
 	priv = usb_get_serial_port_data(port);
 	kfree(priv);
-
-	return 0;
 }
 
 static void kobil_init_termios(struct tty_struct *tty)
@@ -360,7 +358,7 @@ static int kobil_write(struct tty_struct *tty, struct usb_serial_port *port,
 }
 
 
-static int kobil_write_room(struct tty_struct *tty)
+static unsigned int kobil_write_room(struct tty_struct *tty)
 {
 	/* FIXME */
 	return 8;
@@ -421,7 +419,7 @@ static int kobil_tiocmset(struct tty_struct *tty,
 	struct usb_serial_port *port = tty->driver_data;
 	struct device *dev = &port->dev;
 	struct kobil_private *priv;
-	int result = 0;
+	int result;
 	int dtr = 0;
 	int rts = 0;
 
@@ -438,12 +436,12 @@ static int kobil_tiocmset(struct tty_struct *tty,
 	if (set & TIOCM_DTR)
 		dtr = 1;
 	if (clear & TIOCM_RTS)
-		rts = 1;
+		rts = 0;
 	if (clear & TIOCM_DTR)
-		dtr = 1;
+		dtr = 0;
 
-	if (dtr && priv->device_type == KOBIL_ADAPTER_B_PRODUCT_ID) {
-		if (set & TIOCM_DTR)
+	if (priv->device_type == KOBIL_ADAPTER_B_PRODUCT_ID) {
+		if (dtr != 0)
 			dev_dbg(dev, "%s - Setting DTR\n", __func__);
 		else
 			dev_dbg(dev, "%s - Clearing DTR\n", __func__);
@@ -451,13 +449,13 @@ static int kobil_tiocmset(struct tty_struct *tty,
 			  usb_sndctrlpipe(port->serial->dev, 0),
 			  SUSBCRequest_SetStatusLinesOrQueues,
 			  USB_TYPE_VENDOR | USB_RECIP_ENDPOINT | USB_DIR_OUT,
-			  ((set & TIOCM_DTR) ? SUSBCR_SSL_SETDTR : SUSBCR_SSL_CLRDTR),
+			  ((dtr != 0) ? SUSBCR_SSL_SETDTR : SUSBCR_SSL_CLRDTR),
 			  0,
 			  NULL,
 			  0,
 			  KOBIL_TIMEOUT);
-	} else if (rts) {
-		if (set & TIOCM_RTS)
+	} else {
+		if (rts != 0)
 			dev_dbg(dev, "%s - Setting RTS\n", __func__);
 		else
 			dev_dbg(dev, "%s - Clearing RTS\n", __func__);
@@ -465,7 +463,7 @@ static int kobil_tiocmset(struct tty_struct *tty,
 			usb_sndctrlpipe(port->serial->dev, 0),
 			SUSBCRequest_SetStatusLinesOrQueues,
 			USB_TYPE_VENDOR | USB_RECIP_ENDPOINT | USB_DIR_OUT,
-			((set & TIOCM_RTS) ? SUSBCR_SSL_SETRTS : SUSBCR_SSL_CLRRTS),
+			((rts != 0) ? SUSBCR_SSL_SETRTS : SUSBCR_SSL_CLRRTS),
 			0,
 			NULL,
 			0,

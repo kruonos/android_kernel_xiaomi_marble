@@ -104,14 +104,6 @@ static void synthesize_set_arg1(kprobe_opcode_t *addr, unsigned long val)
 asm (
 			".pushsection .rodata\n"
 			"optprobe_template_func:\n"
-			".pushsection .discard.func_stack_frame_non_standard\n"
-			"__func_stack_frame_non_standard_optprobe_template_func:\n"
-#ifdef CONFIG_64BIT
-		        ".quad optprobe_template_func\n"
-#else
-			".long optprobe_template_func\n"
-#endif
-			".popsection\n"
 			".global optprobe_template_entry\n"
 			"optprobe_template_entry:\n"
 #ifdef CONFIG_X86_64
@@ -162,6 +154,9 @@ asm (
 			".global optprobe_template_end\n"
 			"optprobe_template_end:\n"
 			".popsection\n");
+
+void optprobe_template_func(void);
+STACK_FRAME_NON_STANDARD(optprobe_template_func);
 
 #define TMPL_CLAC_IDX \
 	((long)optprobe_template_clac - (long)optprobe_template_entry)
@@ -317,7 +312,7 @@ static int can_optimize(unsigned long paddr)
 		if (!recovered_insn)
 			return 0;
 
-		ret = insn_decode(&insn, (void *)recovered_insn, MAX_INSN_SIZE, INSN_MODE_KERN);
+		ret = insn_decode_kernel(&insn, (void *)recovered_insn);
 		if (ret < 0)
 			return 0;
 #ifdef CONFIG_KGDB

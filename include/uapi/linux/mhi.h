@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
-/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.*/
+/*
+ * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ */
 
 #ifndef _UAPI_MHI_H
 #define _UAPI_MHI_H

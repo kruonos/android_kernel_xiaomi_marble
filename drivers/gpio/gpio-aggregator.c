@@ -37,59 +37,6 @@ struct gpio_aggregator {
 static DEFINE_MUTEX(gpio_aggregator_lock);	/* protects idr */
 static DEFINE_IDR(gpio_aggregator_idr);
 
-static char *get_arg(char **args)
-{
-	char *start, *end;
-
-	start = skip_spaces(*args);
-	if (!*start)
-		return NULL;
-
-	if (*start == '"') {
-		/* Quoted arg */
-		end = strchr(++start, '"');
-		if (!end)
-			return ERR_PTR(-EINVAL);
-	} else {
-		/* Unquoted arg */
-		for (end = start; *end && !isspace(*end); end++) ;
-	}
-
-	if (*end)
-		*end++ = '\0';
-
-	*args = end;
-	return start;
-}
-
-static bool isrange(const char *s)
-{
-	size_t n;
-
-	if (IS_ERR_OR_NULL(s))
-		return false;
-
-	while (1) {
-		n = strspn(s, "0123456789");
-		if (!n)
-			return false;
-
-		s += n;
-
-		switch (*s++) {
-		case '\0':
-			return true;
-
-		case '-':
-		case ',':
-			break;
-
-		default:
-			return false;
-		}
-	}
-}
-
 static int aggr_add_gpio(struct gpio_aggregator *aggr, const char *key,
 			 int hwnum, unsigned int *n)
 {
@@ -100,8 +47,7 @@ static int aggr_add_gpio(struct gpio_aggregator *aggr, const char *key,
 	if (!lookups)
 		return -ENOMEM;
 
-	lookups->table[*n] =
-		(struct gpiod_lookup)GPIO_LOOKUP_IDX(key, hwnum, NULL, *n, 0);
+	lookups->table[*n] = GPIO_LOOKUP_IDX(key, hwnum, NULL, *n, 0);
 
 	(*n)++;
 	memset(&lookups->table[*n], 0, sizeof(lookups->table[*n]));
@@ -112,25 +58,22 @@ static int aggr_add_gpio(struct gpio_aggregator *aggr, const char *key,
 
 static int aggr_parse(struct gpio_aggregator *aggr)
 {
-	char *args = aggr->args;
+	char *args = skip_spaces(aggr->args);
+	char *name, *offsets, *p;
 	unsigned long *bitmap;
 	unsigned int i, n = 0;
-	char *name, *offsets;
 	int error = 0;
 
 	bitmap = bitmap_alloc(ARCH_NR_GPIOS, GFP_KERNEL);
 	if (!bitmap)
 		return -ENOMEM;
 
-	for (name = get_arg(&args), offsets = get_arg(&args); name;
-	     offsets = get_arg(&args)) {
-		if (IS_ERR(name)) {
-			pr_err("Cannot get GPIO specifier: %pe\n", name);
-			error = PTR_ERR(name);
-			goto free_bitmap;
-		}
+	args = next_arg(args, &name, &p);
+	while (*args) {
+		args = next_arg(args, &offsets, &p);
 
-		if (!isrange(offsets)) {
+		p = get_options(offsets, 0, &error);
+		if (error == 0 || *p) {
 			/* Named GPIO line */
 			error = aggr_add_gpio(aggr, name, U16_MAX, &n);
 			if (error)
@@ -153,7 +96,7 @@ static int aggr_parse(struct gpio_aggregator *aggr)
 				goto free_bitmap;
 		}
 
-		name = get_arg(&args);
+		args = next_arg(args, &name, &p);
 	}
 
 	if (!n) {
@@ -173,15 +116,10 @@ static ssize_t new_device_store(struct device_driver *driver, const char *buf,
 	struct platform_device *pdev;
 	int res, id;
 
-	if (!try_module_get(THIS_MODULE))
-		return -ENOENT;
-
 	/* kernfs guarantees string termination, so count + 1 is safe */
 	aggr = kzalloc(sizeof(*aggr) + count + 1, GFP_KERNEL);
-	if (!aggr) {
-		res = -ENOMEM;
-		goto put_module;
-	}
+	if (!aggr)
+		return -ENOMEM;
 
 	memcpy(aggr->args, buf, count + 1);
 
@@ -220,7 +158,6 @@ static ssize_t new_device_store(struct device_driver *driver, const char *buf,
 	}
 
 	aggr->pdev = pdev;
-	module_put(THIS_MODULE);
 	return count;
 
 remove_table:
@@ -235,8 +172,6 @@ free_table:
 	kfree(aggr->lookups);
 free_ga:
 	kfree(aggr);
-put_module:
-	module_put(THIS_MODULE);
 	return res;
 }
 
@@ -265,19 +200,13 @@ static ssize_t delete_device_store(struct device_driver *driver,
 	if (error)
 		return error;
 
-	if (!try_module_get(THIS_MODULE))
-		return -ENOENT;
-
 	mutex_lock(&gpio_aggregator_lock);
 	aggr = idr_remove(&gpio_aggregator_idr, id);
 	mutex_unlock(&gpio_aggregator_lock);
-	if (!aggr) {
-		module_put(THIS_MODULE);
+	if (!aggr)
 		return -ENOENT;
-	}
 
 	gpio_aggregator_free(aggr);
-	module_put(THIS_MODULE);
 	return count;
 }
 static DRIVER_ATTR_WO(delete_device);
@@ -285,7 +214,7 @@ static DRIVER_ATTR_WO(delete_device);
 static struct attribute *gpio_aggregator_attrs[] = {
 	&driver_attr_new_device.attr,
 	&driver_attr_delete_device.attr,
-	NULL,
+	NULL
 };
 ATTRIBUTE_GROUPS(gpio_aggregator);
 
@@ -569,7 +498,7 @@ static const struct of_device_id gpio_aggregator_dt_ids[] = {
 	 * Add GPIO-operated devices controlled from userspace below,
 	 * or use "driver_override" in sysfs
 	 */
-	{},
+	{}
 };
 MODULE_DEVICE_TABLE(of, gpio_aggregator_dt_ids);
 #endif

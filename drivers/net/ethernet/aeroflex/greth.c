@@ -484,7 +484,7 @@ greth_start_xmit_gbit(struct sk_buff *skb, struct net_device *dev)
 
 	if (unlikely(skb->len > MAX_FRAME_SIZE)) {
 		dev->stats.tx_errors++;
-		goto len_error;
+		goto out;
 	}
 
 	/* Save skb pointer. */
@@ -575,7 +575,6 @@ frag_map_error:
 map_error:
 	if (net_ratelimit())
 		dev_warn(greth->dev, "Could not create TX DMA mapping\n");
-len_error:
 	dev_kfree_skb(skb);
 out:
 	return err;
@@ -1451,10 +1450,10 @@ static int greth_of_probe(struct platform_device *ofdev)
 			break;
 	}
 	if (i == 6) {
-		const u8 *addr;
+		u8 addr[ETH_ALEN];
 
-		addr = of_get_mac_address(ofdev->dev.of_node);
-		if (!IS_ERR(addr)) {
+		err = of_get_mac_address(ofdev->dev.of_node, addr);
+		if (!err) {
 			for (i = 0; i < 6; i++)
 				macaddr[i] = (unsigned int) addr[i];
 		} else {

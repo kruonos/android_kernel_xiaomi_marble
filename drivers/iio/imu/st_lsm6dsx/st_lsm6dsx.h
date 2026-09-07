@@ -13,6 +13,7 @@
 
 #include <linux/device.h>
 #include <linux/iio/iio.h>
+#include <linux/regulator/consumer.h>
 
 #define ST_LSM6DS3_DEV_NAME	"lsm6ds3"
 #define ST_LSM6DS3H_DEV_NAME	"lsm6ds3h"
@@ -28,6 +29,8 @@
 #define ST_LSM9DS1_DEV_NAME	"lsm9ds1-imu"
 #define ST_LSM6DS0_DEV_NAME	"lsm6ds0"
 #define ST_LSM6DSRX_DEV_NAME	"lsm6dsrx"
+#define ST_LSM6DST_DEV_NAME	"lsm6dst"
+#define ST_LSM6DSOP_DEV_NAME	"lsm6dsop"
 
 enum st_lsm6dsx_hw_id {
 	ST_LSM6DS3_ID,
@@ -44,6 +47,8 @@ enum st_lsm6dsx_hw_id {
 	ST_LSM9DS1_ID,
 	ST_LSM6DS0_ID,
 	ST_LSM6DSRX_ID,
+	ST_LSM6DST_ID,
+	ST_LSM6DSOP_ID,
 	ST_LSM6DSX_MAX_ID,
 };
 
@@ -117,13 +122,6 @@ struct st_lsm6dsx_odr_table_entry {
 
 	struct st_lsm6dsx_odr odr_avl[ST_LSM6DSX_ODR_LIST_SIZE];
 	int odr_len;
-};
-
-struct st_lsm6dsx_samples_to_discard {
-	struct {
-		u32 milli_hz;
-		u16 samples;
-	} val[ST_LSM6DSX_ODR_LIST_SIZE];
 };
 
 struct st_lsm6dsx_fs {
@@ -228,15 +226,6 @@ struct st_lsm6dsx_event_settings {
 	u8 wakeup_src_x_mask;
 };
 
-enum st_lsm6dsx_sensor_id {
-	ST_LSM6DSX_ID_GYRO,
-	ST_LSM6DSX_ID_ACC,
-	ST_LSM6DSX_ID_EXT0,
-	ST_LSM6DSX_ID_EXT1,
-	ST_LSM6DSX_ID_EXT2,
-	ST_LSM6DSX_ID_MAX
-};
-
 enum st_lsm6dsx_ext_sensor_id {
 	ST_LSM6DSX_ID_MAGN,
 };
@@ -279,7 +268,6 @@ struct st_lsm6dsx_ext_dev_settings {
 
 /**
  * struct st_lsm6dsx_settings - ST IMU sensor settings
- * @wai: Sensor WhoAmI default value.
  * @reset: register address for reset.
  * @boot: register address for boot.
  * @bdu: register address for Block Data Update.
@@ -289,7 +277,6 @@ struct st_lsm6dsx_ext_dev_settings {
  * @irq_config: interrupts related registers.
  * @drdy_mask: register info for data-ready mask (addr + mask).
  * @odr_table: Hw sensors odr table (Hz + val).
- * @samples_to_discard: Number of samples to discard for filters settling time.
  * @fs_table: Hw sensors gain table (gain + val).
  * @decimator: List of decimator register info (addr + mask).
  * @batch: List of FIFO batching register info (addr + mask).
@@ -298,7 +285,6 @@ struct st_lsm6dsx_ext_dev_settings {
  * @shub_settings: i2c controller related settings.
  */
 struct st_lsm6dsx_settings {
-	u8 wai;
 	struct st_lsm6dsx_reg reset;
 	struct st_lsm6dsx_reg boot;
 	struct st_lsm6dsx_reg bdu;
@@ -306,6 +292,7 @@ struct st_lsm6dsx_settings {
 	struct {
 		enum st_lsm6dsx_hw_id hw_id;
 		const char *name;
+		u8 wai;
 	} id[ST_LSM6DSX_MAX_ID];
 	struct {
 		const struct iio_chan_spec *chan;
@@ -323,14 +310,22 @@ struct st_lsm6dsx_settings {
 	} irq_config;
 	struct st_lsm6dsx_reg drdy_mask;
 	struct st_lsm6dsx_odr_table_entry odr_table[2];
-	struct st_lsm6dsx_samples_to_discard samples_to_discard[2];
 	struct st_lsm6dsx_fs_table_entry fs_table[2];
-	struct st_lsm6dsx_reg decimator[ST_LSM6DSX_ID_MAX];
-	struct st_lsm6dsx_reg batch[2];
+	struct st_lsm6dsx_reg decimator[ST_LSM6DSX_MAX_ID];
+	struct st_lsm6dsx_reg batch[ST_LSM6DSX_MAX_ID];
 	struct st_lsm6dsx_fifo_ops fifo_ops;
 	struct st_lsm6dsx_hw_ts_settings ts_settings;
 	struct st_lsm6dsx_shub_settings shub_settings;
 	struct st_lsm6dsx_event_settings event_settings;
+};
+
+enum st_lsm6dsx_sensor_id {
+	ST_LSM6DSX_ID_GYRO,
+	ST_LSM6DSX_ID_ACC,
+	ST_LSM6DSX_ID_EXT0,
+	ST_LSM6DSX_ID_EXT1,
+	ST_LSM6DSX_ID_EXT2,
+	ST_LSM6DSX_ID_MAX,
 };
 
 enum st_lsm6dsx_fifo_mode {
@@ -344,8 +339,7 @@ enum st_lsm6dsx_fifo_mode {
  * @id: Sensor identifier.
  * @hw: Pointer to instance of struct st_lsm6dsx_hw.
  * @gain: Configured sensor sensitivity.
- * @odr: Output data rate of the sensor [mHz].
- * @samples_to_discard: Number of samples to discard for filters settling time.
+ * @odr: Output data rate of the sensor [Hz].
  * @watermark: Sensor watermark level.
  * @decimator: Sensor decimation factor.
  * @sip: Number of samples in a given pattern.
@@ -360,7 +354,6 @@ struct st_lsm6dsx_sensor {
 	u32 gain;
 	u32 odr;
 
-	u16 samples_to_discard;
 	u16 watermark;
 	u8 decimator;
 	u8 sip;
@@ -377,6 +370,7 @@ struct st_lsm6dsx_sensor {
  * struct st_lsm6dsx_hw - ST IMU MEMS hw instance
  * @dev: Pointer to instance of struct device (I2C or SPI).
  * @regmap: Register map of the device.
+ * @regulators: VDD/VDDIO voltage regulators.
  * @irq: Device interrupt line (I2C or SPI).
  * @fifo_lock: Mutex to prevent concurrent access to the hw FIFO.
  * @conf_lock: Mutex to prevent concurrent FIFO configuration update.
@@ -399,6 +393,7 @@ struct st_lsm6dsx_sensor {
 struct st_lsm6dsx_hw {
 	struct device *dev;
 	struct regmap *regmap;
+	struct regulator_bulk_data regulators[2];
 	int irq;
 
 	struct mutex fifo_lock;
@@ -508,17 +503,6 @@ st_lsm6dsx_get_mount_matrix(const struct iio_dev *iio_dev,
 	struct st_lsm6dsx_hw *hw = sensor->hw;
 
 	return &hw->orientation;
-}
-
-static inline int
-st_lsm6dsx_device_set_enable(struct st_lsm6dsx_sensor *sensor, bool enable)
-{
-	if (sensor->id == ST_LSM6DSX_ID_EXT0 ||
-	    sensor->id == ST_LSM6DSX_ID_EXT1 ||
-	    sensor->id == ST_LSM6DSX_ID_EXT2)
-		return st_lsm6dsx_shub_set_enable(sensor, enable);
-
-	return st_lsm6dsx_sensor_set_enable(sensor, enable);
 }
 
 static const

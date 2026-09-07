@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2015, 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/coresight.h>
-#include <linux/coresight-cti.h>
 #include <linux/workqueue.h>
 #include <linux/sched/clock.h>
 #include <linux/regulator/consumer.h>
-#include <soc/qcom/sysmon.h>
 #include "esoc-mdm.h"
 
 enum gpio_update_config {
@@ -150,18 +149,6 @@ static void mdm_update_gpio_configs(struct mdm_ctrl *mdm, enum gpio_update_confi
 	if (pins_state != NULL) {
 		if (pinctrl_select_state(mdm->pinctrl, pins_state))
 			dev_err(mdm->dev, "switching gpio config failed\n");
-	}
-}
-
-static void mdm_trigger_dbg(struct mdm_ctrl *mdm)
-{
-	int ret;
-
-	if (mdm->dbg_mode && !mdm->trig_cnt) {
-		ret = coresight_cti_pulse_trig(mdm->cti, MDM_CTI_CH);
-		mdm->trig_cnt++;
-		if (ret)
-			dev_err(mdm->dev, "unable to trigger cti pulse on\n");
 	}
 }
 
@@ -510,7 +497,6 @@ static irqreturn_t mdm_status_change(int irq, void *dev_id)
 		dev_dbg(dev, "status = 1: mdm is now ready\n");
 		mdm->ready = true;
 		esoc_clink_evt_notify(ESOC_BOOT_STATE, esoc);
-		mdm_trigger_dbg(mdm);
 		queue_work(mdm->mdm_queue, &mdm->mdm_status_work);
 		if (mdm->get_restart_reason)
 			queue_work(mdm->mdm_queue, &mdm->restart_reason_work);
@@ -534,7 +520,6 @@ static irqreturn_t mdm_pblrdy_change(int irq, void *dev_id)
 	dev_dbg(dev, "pbl ready %d:\n", gpio_get_value(MDM_GPIO(mdm, MDM2AP_PBLRDY)));
 	if (mdm->init) {
 		mdm->init = 0;
-		mdm_trigger_dbg(mdm);
 		esoc_clink_queue_request(ESOC_REQ_IMG, esoc);
 		return IRQ_HANDLED;
 	}
@@ -1088,7 +1073,7 @@ err_destroy_wrkq:
 	return ret;
 }
 
-static int lemur_setup_regulators(struct mdm_ctrl *mdm)
+static int sdx_setup_regulators(struct mdm_ctrl *mdm)
 {
 	int len;
 	int i, rc;
@@ -1160,13 +1145,83 @@ static int lemur_setup_hw(struct mdm_ctrl *mdm, const struct mdm_ops *ops,
 		return ret;
 	}
 
-	ret = lemur_setup_regulators(mdm);
+	ret = sdx_setup_regulators(mdm);
 	if (ret) {
 		dev_err(mdm->dev, "Failed to setup regulators: %d\n", ret);
 		esoc_mdm_log("Failed to setup regulators: %d\n", ret);
 	}
 
 	esoc_mdm_log("Hardware setup done for lemur\n");
+
+	return ret;
+}
+
+static int pinn_setup_hw(struct mdm_ctrl *mdm, const struct mdm_ops *ops,
+			  struct platform_device *pdev)
+{
+	int ret;
+	struct esoc_clink *esoc;
+
+	/* Same configuration as that of sdx75, except for the name */
+	esoc = devm_kzalloc(&pdev->dev, sizeof(*esoc), GFP_KERNEL);
+	if (IS_ERR_OR_NULL(esoc)) {
+		dev_err(&pdev->dev, "cannot allocate esoc device\n");
+		return PTR_ERR(esoc);
+	}
+
+	esoc->name = PINN_LABEL;
+	esoc->link_name = PINN_PCIE;
+	esoc->sysmon_name = PINN_LABEL;
+
+	ret = sdx_setup_hw(mdm, ops, pdev, esoc);
+	if (ret) {
+		dev_err(mdm->dev, "Hardware setup failed for pinn\n");
+		esoc_mdm_log("Hardware setup failed for pinn\n");
+		return ret;
+	}
+
+	ret = sdx_setup_regulators(mdm);
+	if (ret) {
+		dev_err(mdm->dev, "Failed to setup regulators: %d\n", ret);
+		esoc_mdm_log("Failed to setup regulators: %d\n", ret);
+	}
+
+	esoc_mdm_log("Hardware setup done for pinn\n");
+
+	return ret;
+}
+
+static int baagha_setup_hw(struct mdm_ctrl *mdm, const struct mdm_ops *ops,
+			  struct platform_device *pdev)
+{
+	int ret;
+	struct esoc_clink *esoc;
+
+	/* Same configuration as that of sdx75, except for the name */
+	esoc = devm_kzalloc(&pdev->dev, sizeof(*esoc), GFP_KERNEL);
+	if (IS_ERR_OR_NULL(esoc)) {
+		dev_err(&pdev->dev, "cannot allocate esoc device\n");
+		return PTR_ERR(esoc);
+	}
+
+	esoc->name = BAAGHA_LABEL;
+	esoc->link_name = BAAGHA_PCIE;
+	esoc->sysmon_name = BAAGHA_LABEL;
+
+	ret = sdx_setup_hw(mdm, ops, pdev, esoc);
+	if (ret) {
+		dev_err(mdm->dev, "Hardware setup failed for baagha\n");
+		esoc_mdm_log("Hardware setup failed for baahga\n");
+		return ret;
+	}
+
+	ret = sdx_setup_regulators(mdm);
+	if (ret) {
+		dev_err(mdm->dev, "Failed to setup regulators: %d\n", ret);
+		esoc_mdm_log("Failed to setup regulators: %d\n", ret);
+	}
+
+	esoc_mdm_log("Hardware setup done for baagha\n");
 
 	return ret;
 }
@@ -1202,6 +1257,18 @@ static struct mdm_ops lemur_ops = {
 	.pon_ops = &sdx50m_pon_ops,
 };
 
+static struct mdm_ops pinn_ops = {
+	.clink_ops = &mdm_cops,
+	.config_hw = pinn_setup_hw,
+	.pon_ops = &sdx50m_pon_ops,
+};
+
+static struct mdm_ops baagha_ops = {
+	.clink_ops = &mdm_cops,
+	.config_hw = baagha_setup_hw,
+	.pon_ops = &sdx50m_pon_ops,
+};
+
 static const struct of_device_id mdm_dt_match[] = {
 	{ .compatible = "qcom,ext-mdm9x55",
 		.data = &mdm9x55_ops, },
@@ -1211,6 +1278,10 @@ static const struct of_device_id mdm_dt_match[] = {
 		.data = &sdx55m_ops, },
 	{ .compatible = "qcom,ext-lemur",
 		.data = &lemur_ops, },
+	{ .compatible = "qcom,ext-pinn",
+		.data = &pinn_ops, },
+	{ .compatible = "qcom,ext-baagha",
+		.data = &baagha_ops, },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mdm_dt_match);

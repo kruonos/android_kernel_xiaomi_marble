@@ -263,7 +263,8 @@ static ssize_t lirc_transmit(struct file *file, const char __user *buf,
 			goto out_unlock;
 		}
 
-		if (scan.flags || scan.keycode || scan.timestamp) {
+		if (scan.flags || scan.keycode || scan.timestamp ||
+		    scan.rc_proto > RC_PROTO_MAX) {
 			ret = -EINVAL;
 			goto out_unlock;
 		}
@@ -415,7 +416,7 @@ static long lirc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			val |= LIRC_CAN_SET_REC_CARRIER |
 				LIRC_CAN_SET_REC_CARRIER_RANGE;
 
-		if (dev->s_learning_mode)
+		if (dev->s_wideband_receiver)
 			val |= LIRC_CAN_USE_WIDEBAND_RECEIVER;
 
 		if (dev->s_carrier_report)
@@ -522,10 +523,10 @@ static long lirc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case LIRC_SET_WIDEBAND_RECEIVER:
-		if (!dev->s_learning_mode)
+		if (!dev->s_wideband_receiver)
 			ret = -ENOTTY;
 		else
-			ret = dev->s_learning_mode(dev, !!val);
+			ret = dev->s_wideband_receiver(dev, !!val);
 		break;
 
 	case LIRC_SET_MEASURE_CARRIER_MODE:
@@ -731,7 +732,7 @@ int lirc_register(struct rc_dev *dev)
 	const char *rx_type, *tx_type;
 	int err, minor;
 
-	minor = ida_alloc_max(&lirc_ida, RC_DEV_MAX - 1, GFP_KERNEL);
+	minor = ida_simple_get(&lirc_ida, 0, RC_DEV_MAX, GFP_KERNEL);
 	if (minor < 0)
 		return minor;
 
@@ -747,11 +748,11 @@ int lirc_register(struct rc_dev *dev)
 
 	cdev_init(&dev->lirc_cdev, &lirc_fops);
 
-	get_device(&dev->dev);
-
 	err = cdev_device_add(&dev->lirc_cdev, &dev->lirc_dev);
 	if (err)
-		goto out_put_device;
+		goto out_ida;
+
+	get_device(&dev->dev);
 
 	switch (dev->driver_type) {
 	case RC_DRIVER_SCANCODE:
@@ -775,9 +776,8 @@ int lirc_register(struct rc_dev *dev)
 
 	return 0;
 
-out_put_device:
-	put_device(&dev->lirc_dev);
-	ida_free(&lirc_ida, minor);
+out_ida:
+	ida_simple_remove(&lirc_ida, minor);
 	return err;
 }
 
@@ -795,7 +795,7 @@ void lirc_unregister(struct rc_dev *dev)
 	spin_unlock_irqrestore(&dev->lirc_fh_lock, flags);
 
 	cdev_device_del(&dev->lirc_cdev, &dev->lirc_dev);
-	ida_free(&lirc_ida, MINOR(dev->lirc_dev.devt));
+	ida_simple_remove(&lirc_ida, MINOR(dev->lirc_dev.devt));
 }
 
 int __init lirc_dev_init(void)
@@ -841,10 +841,8 @@ struct rc_dev *rc_dev_get_from_fd(int fd, bool write)
 		return ERR_PTR(-EINVAL);
 	}
 
-	if (write && !(f.file->f_mode & FMODE_WRITE)) {
-		fdput(f);
+	if (write && !(f.file->f_mode & FMODE_WRITE))
 		return ERR_PTR(-EPERM);
-	}
 
 	fh = f.file->private_data;
 	dev = fh->rc;

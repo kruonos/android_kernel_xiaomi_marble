@@ -20,38 +20,42 @@ static int mvs_find_tag(struct mvs_info *mvi, struct sas_task *task, u32 *tag)
 	return 0;
 }
 
-static void mvs_tag_clear(struct mvs_info *mvi, u32 tag)
+void mvs_tag_clear(struct mvs_info *mvi, u32 tag)
 {
-	void *bitmap = mvi->rsvd_tags;
+	void *bitmap = mvi->tags;
 	clear_bit(tag, bitmap);
 }
 
-static void mvs_tag_free(struct mvs_info *mvi, u32 tag)
+void mvs_tag_free(struct mvs_info *mvi, u32 tag)
 {
-	if (tag >= MVS_RSVD_SLOTS)
-		return;
-
 	mvs_tag_clear(mvi, tag);
 }
 
-static void mvs_tag_set(struct mvs_info *mvi, unsigned int tag)
+void mvs_tag_set(struct mvs_info *mvi, unsigned int tag)
 {
-	void *bitmap = mvi->rsvd_tags;
+	void *bitmap = mvi->tags;
 	set_bit(tag, bitmap);
 }
 
-static int mvs_tag_alloc(struct mvs_info *mvi, u32 *tag_out)
+inline int mvs_tag_alloc(struct mvs_info *mvi, u32 *tag_out)
 {
 	unsigned int index, tag;
-	void *bitmap = mvi->rsvd_tags;
+	void *bitmap = mvi->tags;
 
-	index = find_first_zero_bit(bitmap, MVS_RSVD_SLOTS);
+	index = find_first_zero_bit(bitmap, mvi->tags_num);
 	tag = index;
-	if (tag >= MVS_RSVD_SLOTS)
+	if (tag >= mvi->tags_num)
 		return -SAS_QUEUE_FULL;
 	mvs_tag_set(mvi, tag);
 	*tag_out = tag;
 	return 0;
+}
+
+void mvs_tag_init(struct mvs_info *mvi)
+{
+	int i;
+	for (i = 0; i < mvi->tags_num; ++i)
+		mvs_tag_clear(mvi, i);
 }
 
 static struct mvs_info *mvs_find_dev_mvi(struct domain_device *dev)
@@ -225,7 +229,7 @@ static void mvs_bytes_dmaed(struct mvs_info *mvi, int i, gfp_t gfp_flags)
 		return;
 	}
 
-	sas_notify_phy_event_gfp(sas_phy, PHYE_OOB_DONE, gfp_flags);
+	sas_notify_phy_event(sas_phy, PHYE_OOB_DONE, gfp_flags);
 
 	if (sas_phy->phy) {
 		struct sas_phy *sphy = sas_phy->phy;
@@ -257,7 +261,7 @@ static void mvs_bytes_dmaed(struct mvs_info *mvi, int i, gfp_t gfp_flags)
 
 	sas_phy->frame_rcvd_size = phy->frame_rcvd_size;
 
-	sas_notify_port_event_gfp(sas_phy, PORTE_BYTES_DMAED, gfp_flags);
+	sas_notify_port_event(sas_phy, PORTE_BYTES_DMAED, gfp_flags);
 }
 
 void mvs_scan_start(struct Scsi_Host *shost)
@@ -694,7 +698,6 @@ static int mvs_task_prep(struct sas_task *task, struct mvs_info *mvi, int is_tmf
 	struct mvs_task_exec_info tei;
 	struct mvs_slot_info *slot;
 	u32 tag = 0xdeadbeef, n_elem = 0;
-	struct request *rq;
 	int rc = 0;
 
 	if (!dev->port) {
@@ -759,14 +762,9 @@ static int mvs_task_prep(struct sas_task *task, struct mvs_info *mvi, int is_tmf
 		n_elem = task->num_scatter;
 	}
 
-	rq = sas_task_find_rq(task);
-	if (rq) {
-		tag = rq->tag + MVS_RSVD_SLOTS;
-	} else {
-		rc = mvs_tag_alloc(mvi, &tag);
-		if (rc)
-			goto err_out;
-	}
+	rc = mvs_tag_alloc(mvi, &tag);
+	if (rc)
+		goto err_out;
 
 	slot = &mvi->slot_info[tag];
 
@@ -831,7 +829,7 @@ err_out:
 	dev_printk(KERN_ERR, mvi->dev, "mvsas prep failed[%d]!\n", rc);
 	if (!sas_protocol_ata(task->task_proto))
 		if (n_elem)
-			dma_unmap_sg(mvi->dev, task->scatter, task->num_scatter,
+			dma_unmap_sg(mvi->dev, task->scatter, n_elem,
 				     task->data_dir);
 prep_out:
 	return rc;
@@ -869,7 +867,7 @@ int mvs_queue_command(struct sas_task *task, gfp_t gfp_flags)
 static void mvs_slot_free(struct mvs_info *mvi, u32 rx_desc)
 {
 	u32 slot_idx = rx_desc & RXQ_SLOT_MASK;
-	mvs_tag_free(mvi, slot_idx);
+	mvs_tag_clear(mvi, slot_idx);
 }
 
 static void mvs_slot_task_free(struct mvs_info *mvi, struct sas_task *task,
@@ -882,7 +880,7 @@ static void mvs_slot_task_free(struct mvs_info *mvi, struct sas_task *task,
 	if (!sas_protocol_ata(task->task_proto))
 		if (slot->n_elem)
 			dma_unmap_sg(mvi->dev, task->scatter,
-				     task->num_scatter, task->data_dir);
+				     slot->n_elem, task->data_dir);
 
 	switch (task->task_proto) {
 	case SAS_PROTOCOL_SMP:
@@ -1894,7 +1892,7 @@ static void mvs_work_queue(struct work_struct *work)
 			if (!(tmp & PHY_READY_MASK)) {
 				sas_phy_disconnected(sas_phy);
 				mvs_phy_disconnected(phy);
-				sas_notify_phy_event_gfp(sas_phy,
+				sas_notify_phy_event(sas_phy,
 					PHYE_LOSS_OF_SIGNAL, GFP_ATOMIC);
 				mv_dprintk("phy%d Removed Device\n", phy_no);
 			} else {
@@ -1907,7 +1905,7 @@ static void mvs_work_queue(struct work_struct *work)
 		}
 	} else if (mwq->handler & EXP_BRCT_CHG) {
 		phy->phy_event &= ~EXP_BRCT_CHG;
-		sas_notify_port_event_gfp(sas_phy,
+		sas_notify_port_event(sas_phy,
 				PORTE_BROADCAST_RCVD, GFP_ATOMIC);
 		mv_dprintk("phy%d Got Broadcast Change\n", phy_no);
 	}

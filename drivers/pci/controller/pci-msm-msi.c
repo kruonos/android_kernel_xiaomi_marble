@@ -232,7 +232,7 @@ static int msm_msi_domain_prepare(struct irq_domain *domain, struct device *dev,
 	struct msm_msi *msi = domain->parent->host_data;
 	struct msm_msi_client *client;
 
-	client = devm_kzalloc(msi->dev, sizeof(*client), GFP_KERNEL);
+	client = kzalloc(sizeof(*client), GFP_KERNEL);
 	if (!client)
 		return -ENOMEM;
 
@@ -292,7 +292,7 @@ static void msm_msi_domain_finish(msi_alloc_info_t *arg, int retval)
 			dma_unmap_resource(client->dev, client->msi_addr,
 					PAGE_SIZE, DMA_FROM_DEVICE, 0);
 
-		devm_kfree(msi->dev, client);
+		kfree(client);
 
 		return;
 	}
@@ -428,7 +428,7 @@ static void msm_msi_irq_domain_free(struct irq_domain *domain,
 			dma_unmap_resource(client->dev, client->msi_addr,
 					PAGE_SIZE, DMA_FROM_DEVICE, 0);
 		list_del(&client->node);
-		devm_kfree(msi->dev, client);
+		kfree(client);
 	}
 
 	mutex_unlock(&msi->mutex);
@@ -480,14 +480,6 @@ static int msm_msi_snps_irq_setup(struct msm_msi *msi)
 			goto free_irqs;
 		}
 
-		ret = enable_irq_wake(irq);
-		if (ret) {
-			dev_err(msi->dev,
-				"MSI: Unable to set enable_irq_wake for interrupt: %d: %d\n",
-				i, irq);
-			goto free_irq;
-		}
-
 		msi_grp = &msi->grps[i];
 		msi_grp->int_en_reg = msi->pcie_cfg +
 				PCIE_MSI_CTRL_INT_N_EN_OFFS(i);
@@ -511,14 +503,11 @@ static int msm_msi_snps_irq_setup(struct msm_msi *msi)
 
 	return 0;
 
-free_irq:
-	irq_dispose_mapping(irq);
 free_irqs:
 	for (--i; i >= 0; i--) {
 		irq = msi->grps[i].irqs[0].hwirq;
 
 		irq_set_chained_handler_and_data(irq, NULL, NULL);
-		disable_irq_wake(irq);
 		irq_dispose_mapping(irq);
 	}
 
@@ -542,14 +531,6 @@ static int msm_msi_qgic_irq_setup(struct msm_msi *msi)
 			goto free_irqs;
 		}
 
-		ret = enable_irq_wake(irq);
-		if (ret) {
-			dev_err(msi->dev,
-				"MSI: Unable to set enable_irq_wake for interrupt: %d: %d\n",
-				i, irq);
-			goto free_irq;
-		}
-
 		grp = i / MSI_IRQ_PER_GRP;
 		index = i % MSI_IRQ_PER_GRP;
 		msi_grp = &msi->grps[grp];
@@ -566,8 +547,6 @@ static int msm_msi_qgic_irq_setup(struct msm_msi *msi)
 
 	return 0;
 
-free_irq:
-	irq_dispose_mapping(irq);
 free_irqs:
 	for (--i; i >= 0; i--) {
 		grp = i / MSI_IRQ_PER_GRP;
@@ -575,7 +554,6 @@ free_irqs:
 		irq = msi->grps[grp].irqs[index].hwirq;
 
 		irq_set_chained_handler_and_data(irq, NULL, NULL);
-		disable_irq_wake(irq);
 		irq_dispose_mapping(irq);
 	}
 
@@ -654,7 +632,7 @@ int msm_msi_init(struct device *dev)
 		goto err;
 	}
 
-	msi = devm_kzalloc(dev, sizeof(*msi), GFP_KERNEL);
+	msi = kzalloc(sizeof(*msi), GFP_KERNEL);
 	if (!msi) {
 		ret = -ENOMEM;
 		goto err;
@@ -710,11 +688,10 @@ int msm_msi_init(struct device *dev)
 			goto err;
 		}
 
-		msi->pcie_cfg = devm_ioremap(msi->dev, res->start,
-						resource_size(res));
+		msi->pcie_cfg = ioremap(res->start, resource_size(res));
 		if (!msi->pcie_cfg) {
 			ret = -ENOMEM;
-			goto err;
+			goto free_msi;
 		}
 
 		msi->nr_virqs = msi->nr_hwirqs * MSI_IRQ_PER_GRP;
@@ -730,24 +707,23 @@ int msm_msi_init(struct device *dev)
 		msi_irq_setup = msm_msi_qgic_irq_setup;
 	}
 
-	msi->grps = devm_kcalloc(msi->dev, msi->nr_grps,
-				sizeof(*msi->grps), GFP_KERNEL);
+	msi->grps = kcalloc(msi->nr_grps, sizeof(*msi->grps), GFP_KERNEL);
 	if (!msi->grps) {
 		ret = -ENOMEM;
-		goto err;
+		goto unmap_cfg;
 	}
 
-	msi->bitmap = devm_kcalloc(msi->dev, BITS_TO_LONGS(msi->nr_virqs),
-				   sizeof(*msi->bitmap), GFP_KERNEL);
+	msi->bitmap = kcalloc(BITS_TO_LONGS(msi->nr_virqs),
+			      sizeof(*msi->bitmap), GFP_KERNEL);
 	if (!msi->bitmap) {
 		ret = -ENOMEM;
-		goto err;
+		goto free_grps;
 	}
 
 	ret = msm_msi_alloc_domains(msi);
 	if (ret) {
 		dev_err(msi->dev, "MSI: failed to allocate MSI domains\n");
-		goto err;
+		goto free_bitmap;
 	}
 
 	ret = msi_irq_setup(msi);
@@ -761,6 +737,14 @@ int msm_msi_init(struct device *dev)
 remove_domains:
 	irq_domain_remove(msi->msi_domain);
 	irq_domain_remove(msi->inner_domain);
+free_bitmap:
+	kfree(msi->bitmap);
+free_grps:
+	kfree(msi->grps);
+unmap_cfg:
+	iounmap(msi->pcie_cfg);
+free_msi:
+	kfree(msi);
 err:
 	of_node_put(of_node);
 

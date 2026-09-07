@@ -2,7 +2,7 @@
 /*
  * Qualcomm ICE (Inline Crypto Engine) support.
  *
- * Copyright (c) 2014-2019,2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
  * Copyright 2019 Google LLC
  */
 
@@ -74,7 +74,7 @@ static bool qcom_ice_supported(struct ufs_qcom_host *host)
 	int step = regval & 0xFFFF;
 
 	/* For now this driver only supports ICE version 3. */
-	if (major != 3) {
+	if (major < 3) {
 		dev_warn(dev, "Unsupported ICE version: v%d.%d.%d\n",
 			 major, minor, step);
 		return false;
@@ -144,6 +144,17 @@ int ufs_qcom_ice_init(struct ufs_qcom_host *host)
 	if (!qcom_ice_supported(host))
 		goto disable;
 
+	/*
+	 * add support for FDE
+	 */
+#if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
+	err = crypto_qti_ice_init_fde_node(dev);
+	if (err) {
+		dev_err(dev, "Failed to add fde node, err=%d\n", err);
+		return err;
+	}
+#endif
+
 	return 0;
 
 disable:
@@ -161,7 +172,7 @@ static void qcom_ice_low_power_mode_enable(struct ufs_qcom_host *host)
 	 * Enable low power mode sequence
 	 * [0]-0, [1]-0, [2]-0, [3]-E, [4]-0, [5]-0, [6]-0, [7]-0
 	 */
-	regval |= 0x7000;
+	regval |= 0xF000;
 	qcom_ice_writel(host, regval, QCOM_ICE_REG_ADVANCED_CONTROL);
 }
 
@@ -171,7 +182,7 @@ static void qcom_ice_optimization_enable(struct ufs_qcom_host *host)
 
 	/* ICE Optimizations Enable Sequence */
 	regval = qcom_ice_readl(host, QCOM_ICE_REG_ADVANCED_CONTROL);
-	regval |= 0xD807100;
+	regval |= 0xD80F100;
 	/* ICE HPG requires delay before writing */
 	udelay(5);
 	qcom_ice_writel(host, regval, QCOM_ICE_REG_ADVANCED_CONTROL);
@@ -275,7 +286,7 @@ int ufs_qcom_ice_program_key(struct ufs_hba *hba,
 
 	err = qcom_scm_config_set_ice_key(slot, shm.paddr,
 					AES_256_XTS_KEY_SIZE,
-					QCOM_SCM_ICE_CIPHER_AES_256_XTS,
+				   QCOM_SCM_ICE_CIPHER_AES_256_XTS,
 					cfg->data_unit_size, UFS_CE);
 	if (err)
 		pr_err("%s:SCM call Error: 0x%x slot %d\n",

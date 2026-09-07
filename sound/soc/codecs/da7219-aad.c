@@ -115,7 +115,7 @@ static void da7219_aad_hptest_work(struct work_struct *work)
 
 	__le16 tonegen_freq_hptest;
 	u8 pll_srm_sts, pll_ctrl, gain_ramp_ctrl, accdet_cfg8;
-	int report = 0, ret = 0;
+	int report = 0, ret;
 
 	/* Lock DAPM, Kcontrols affected by this test and the PLL */
 	snd_soc_dapm_mutex_lock(dapm);
@@ -629,10 +629,8 @@ static struct da7219_aad_pdata *da7219_aad_fw_to_pdata(struct device *dev)
 		return NULL;
 
 	aad_pdata = devm_kzalloc(dev, sizeof(*aad_pdata), GFP_KERNEL);
-	if (!aad_pdata) {
-		fwnode_handle_put(aad_np);
+	if (!aad_pdata)
 		return NULL;
-	}
 
 	aad_pdata->irq = i2c->irq;
 
@@ -706,8 +704,6 @@ static struct da7219_aad_pdata *da7219_aad_fw_to_pdata(struct device *dev)
 			da7219_aad_fw_adc_1bit_rpt(dev, fw_val32);
 	else
 		aad_pdata->adc_1bit_rpt = DA7219_AAD_ADC_1BIT_RPT_1;
-
-	fwnode_handle_put(aad_np);
 
 	return aad_pdata;
 }

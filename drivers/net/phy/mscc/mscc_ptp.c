@@ -136,7 +136,7 @@ static void vsc85xx_ts_write_csr(struct phy_device *phydev, enum ts_blk blk,
 
 	phy_ts_base_write(phydev, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_1588);
 
-	if (!cond || (cond && upper))
+	if (!cond || upper)
 		phy_ts_base_write(phydev, MSCC_PHY_TS_CSR_DATA_MSB, upper);
 
 	phy_ts_base_write(phydev, MSCC_PHY_TS_CSR_DATA_LSB, lower);
@@ -506,9 +506,9 @@ static int vsc85xx_ptp_cmp_init(struct phy_device *phydev, enum ts_blk blk)
 {
 	struct vsc8531_private *vsc8531 = phydev->priv;
 	bool base = phydev->mdio.addr == vsc8531->ts_base_addr;
-	enum vsc85xx_ptp_msg_type msgs[] = {
-		PTP_MSG_TYPE_SYNC,
-		PTP_MSG_TYPE_DELAY_REQ
+	static const u8 msgs[] = {
+		PTP_MSGTYPE_SYNC,
+		PTP_MSGTYPE_DELAY_REQ
 	};
 	u32 val;
 	u8 i;
@@ -847,9 +847,9 @@ static int vsc85xx_ts_ptp_action_flow(struct phy_device *phydev, enum ts_blk blk
 static int vsc85xx_ptp_conf(struct phy_device *phydev, enum ts_blk blk,
 			    bool one_step, bool enable)
 {
-	enum vsc85xx_ptp_msg_type msgs[] = {
-		PTP_MSG_TYPE_SYNC,
-		PTP_MSG_TYPE_DELAY_REQ
+	static const u8 msgs[] = {
+		PTP_MSGTYPE_SYNC,
+		PTP_MSGTYPE_DELAY_REQ
 	};
 	u32 val;
 	u8 i;
@@ -858,7 +858,7 @@ static int vsc85xx_ptp_conf(struct phy_device *phydev, enum ts_blk blk,
 		if (blk == INGRESS)
 			vsc85xx_ts_ptp_action_flow(phydev, blk, msgs[i],
 						   PTP_WRITE_NS);
-		else if (msgs[i] == PTP_MSG_TYPE_SYNC && one_step)
+		else if (msgs[i] == PTP_MSGTYPE_SYNC && one_step)
 			/* no need to know Sync t when sending in one_step */
 			vsc85xx_ts_ptp_action_flow(phydev, blk, msgs[i],
 						   PTP_WRITE_1588);
@@ -897,7 +897,6 @@ static int vsc85xx_eth1_conf(struct phy_device *phydev, enum ts_blk blk,
 				     get_unaligned_be32(ptp_multicast));
 	} else {
 		val |= ANA_ETH1_FLOW_ADDR_MATCH2_ANY_MULTICAST;
-		val |= ANA_ETH1_FLOW_ADDR_MATCH2_ANY_UNICAST;
 		vsc85xx_ts_write_csr(phydev, blk,
 				     MSCC_ANA_ETH1_FLOW_ADDR_MATCH2(0), val);
 		vsc85xx_ts_write_csr(phydev, blk,
@@ -944,9 +943,7 @@ static int vsc85xx_ip1_conf(struct phy_device *phydev, enum ts_blk blk,
 	/* UDP checksum offset in IPv4 packet
 	 * according to: https://tools.ietf.org/html/rfc768
 	 */
-	val |= IP1_NXT_PROT_UDP_CHKSUM_OFF(26);
-	if (enable)
-		val |= IP1_NXT_PROT_UDP_CHKSUM_CLEAR;
+	val |= IP1_NXT_PROT_UDP_CHKSUM_OFF(26) | IP1_NXT_PROT_UDP_CHKSUM_CLEAR;
 	vsc85xx_ts_write_csr(phydev, blk, MSCC_ANA_IP1_NXT_PROT_UDP_CHKSUM,
 			     val);
 
@@ -1271,8 +1268,8 @@ static void vsc8584_set_input_clk_configured(struct phy_device *phydev)
 static int __vsc8584_init_ptp(struct phy_device *phydev)
 {
 	struct vsc8531_private *vsc8531 = phydev->priv;
-	u32 ltc_seq_e[] = { 0, 400000, 0, 0, 0 };
-	u8  ltc_seq_a[] = { 8, 6, 5, 4, 2 };
+	static const u32 ltc_seq_e[] = { 0, 400000, 0, 0, 0 };
+	static const u8  ltc_seq_a[] = { 8, 6, 5, 4, 2 };
 	u32 val;
 
 	if (!vsc8584_is_1588_input_clk_configured(phydev)) {
@@ -1513,6 +1510,8 @@ void vsc8584_config_ts_intr(struct phy_device *phydev)
 int vsc8584_ptp_init(struct phy_device *phydev)
 {
 	switch (phydev->phy_id & phydev->drv->phy_id_mask) {
+	case PHY_ID_VSC8572:
+	case PHY_ID_VSC8574:
 	case PHY_ID_VSC8575:
 	case PHY_ID_VSC8582:
 	case PHY_ID_VSC8584:

@@ -100,6 +100,11 @@ struct kernfs_elem_dir {
 	 * better directly in kernfs_node but is here to save space.
 	 */
 	struct kernfs_root	*root;
+	/*
+	 * Monotonic revision counter, used to identify if a directory
+	 * node has changed during negative dentry revalidation.
+	 */
+	unsigned long		rev;
 };
 
 struct kernfs_elem_symlink {
@@ -118,7 +123,7 @@ struct kernfs_elem_attr {
  * kernfs node is represented by single kernfs_node.  Most fields are
  * private to kernfs and shouldn't be accessed directly by kernfs users.
  *
- * As long as s_count reference is held, the kernfs_node itself is
+ * As long as count reference is held, the kernfs_node itself is
  * accessible.  Dereferencing elem or any other outer entity requires
  * active reference.
  */
@@ -160,15 +165,6 @@ struct kernfs_node {
 	struct kernfs_iattrs	*iattr;
 
 	ANDROID_KABI_RESERVE(1);
-};
-
-struct kernfs_node_ext {
-	struct kernfs_node	node;
-	/*
-	 * Monotonic revision counter, used to identify if a directory
-	 * node has changed during negative dentry revalidation.
-	 */
-	unsigned long		rev;
 };
 
 /*

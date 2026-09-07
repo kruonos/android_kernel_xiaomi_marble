@@ -318,7 +318,7 @@ static int qpnp_ibb_regulator_set_load(struct regulator_dev *rdev,
 			IBB_DUAL_PHASE_CTL_MASK, ibb_phase);
 }
 
-static struct regulator_ops qpnp_amoled_ab_ops = {
+static const struct regulator_ops qpnp_amoled_ab_ops = {
 	.enable		= qpnp_ab_regulator_enable,
 	.disable	= qpnp_ab_regulator_disable,
 	.is_enabled	= qpnp_ab_regulator_is_enabled,
@@ -328,7 +328,7 @@ static struct regulator_ops qpnp_amoled_ab_ops = {
 	.get_mode	= qpnp_ab_ibb_regulator_get_mode,
 };
 
-static struct regulator_ops qpnp_amoled_ibb_ops = {
+static const struct regulator_ops qpnp_amoled_ibb_ops = {
 	.enable		= qpnp_ibb_regulator_enable,
 	.disable	= qpnp_ibb_regulator_disable,
 	.is_enabled	= qpnp_ibb_regulator_is_enabled,
@@ -403,7 +403,7 @@ static unsigned int qpnp_oledb_regulator_get_mode(struct regulator_dev *rdev)
 	return chip->oledb.vreg.mode;
 }
 
-static struct regulator_ops qpnp_amoled_oledb_ops = {
+static const struct regulator_ops qpnp_amoled_oledb_ops = {
 	.enable		= qpnp_oledb_regulator_enable,
 	.disable	= qpnp_oledb_regulator_disable,
 	.is_enabled	= qpnp_oledb_regulator_is_enabled,

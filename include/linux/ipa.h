@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _IPA_H_
@@ -27,6 +28,10 @@
 #define BUFF_ABOVE_HIGH_THRESHOLD_FOR_COAL_PIPE           2
 #define BUFF_BELOW_LOW_THRESHOLD_FOR_DEFAULT_PIPE         3
 #define BUFF_BELOW_LOW_THRESHOLD_FOR_COAL_PIPE            4
+#define BUFF_ABOVE_HIGH_THRESHOLD_FOR_LL_PIPE             5
+#define BUFF_BELOW_LOW_THRESHOLD_FOR_LL_PIPE              6
+#define FREE_PAGE_TASK_SCHEDULED                          7
+#define FREE_PAGE_TASK_SCHEDULED_LL                       8
 
 /**
  * the attributes of the socksv5 options
@@ -143,9 +148,14 @@ enum hdr_total_len_or_pad_type {
  * @nat_en:	This defines the default NAT mode for the pipe: in case of
  *		filter miss - the default NAT mode defines the NATing operation
  *		on the packet. Valid for Input Pipes only (IPA consumer)
+ * @nat_exc_suppress: 1 - NAT exception is supressed and packet will be
+ * routed using configured routing tables.
+ *	0 - NAT exception is allowed and packets will be routed to exception
+ * pipe. Valid for input pipes only (IPA consumer)
  */
 struct ipa_ep_cfg_nat {
 	enum ipa_nat_en_type nat_en;
+	bool nat_exc_suppress;
 };
 
 /**
@@ -327,6 +337,9 @@ struct ipa_ep_cfg_mode {
  *			granularity.
  *			For internal use
  *			Supported starting IPA4.5
+ * @aggr_coal_l2: enable L2  coalescing on the specifid dest pipe,
+ *			work only if AGGR_TYPE set to AGGR_TYPE_COALESCING.
+ *			Supported starting IPA5.5
  */
 struct ipa_ep_cfg_aggr {
 	enum ipa_aggr_en_type aggr_en;
@@ -338,6 +351,7 @@ struct ipa_ep_cfg_aggr {
 	bool aggr_sw_eof_active;
 	u8 pulse_generator;
 	u8 scaled_time;
+	bool aggr_coal_l2;
 };
 
 /**
@@ -445,13 +459,17 @@ enum ipa_cs_offload {
  *	input pipe (IPA consumer) specifies IPA checksum calculation.
  *	11: Reserved
  * @cs_metadata_hdr_offset: Offset in Words (4 bytes) within header in which
- *	checksum meta info header (4 bytes) starts (UL). Values are 0-15, which
+ *	checksum metadata info header (4 bytes) starts (UL). Values are 0-15, which
  *	mean 0 - 60 byte checksum header offset. Valid for input
  *	pipes only (IPA consumer)
  * @gen_qmb_master_sel: Select bit for ENDP GEN-QMB master. This is used to
  *	separate DDR & PCIe transactions in-order to limit them as
  *	a group (using MAX_WRITES/READS limiation). Valid for input and
  *	output pipes (IPA consumer+producer)
+ * @pipe_replicate_en: 1 - For consumer pipe - consumer DPL will be active.
+ *	For producer pipe - producer DPL will be active.
+ *	0 - packet replication disabled for both consumer and producer pipe.
+ *	Supported from IPA5.5 onwards.
  */
 struct ipa_ep_cfg_cfg {
 	bool frag_offload_en;
@@ -459,6 +477,34 @@ struct ipa_ep_cfg_cfg {
 	u8 cs_metadata_hdr_offset;
 	u8 gen_qmb_master_sel;
 	u8 tx_instance;
+	bool pipe_replicate_en;
+};
+
+/**
+ * struct ipa_ep_cfg_prod_cfg - IPA ENDP_INIT Producer Configuration register
+ * @tx_instance: - 0 - select TX_0 instance.
+ * 1 - select TX_1 instance.
+ * @tsp_enable: boolean to indicate TSP-enablement per producer pipe.
+ * @max_output_size_drop_enable: enable policing by max output size for TSP
+ * feature. In case of TSP_ENABLE == 1 + valid egress_tc, max output size
+ * policing will be valid regardless to this bit.
+ * @tsp_idx: TSP producer-index. Controls pointer to producer-rate database.
+ * Valid only when TSP_ENABLE field is set. Value should be unique.
+ * @max_output_size: max output size allowed per producer. Value is in 64-byte
+ * resolution for TSP feature
+ * @egress_tc_lowest: Lowest egress traffic-class index assignes to this
+ * producer.
+ * @egress_tc_highest: Highest egress traffic-class index assignes to this
+ * producer.
+ */
+struct ipa_ep_cfg_prod_cfg {
+	u8 tx_instance;
+	bool tsp_enable;
+	bool max_output_size_drop_enable;
+	u8 tsp_idx;
+	u8 max_output_size;
+	u8 egress_tc_lowest;
+	u8 egress_tc_highest;
 };
 
 /**
@@ -473,8 +519,8 @@ struct ipa_ep_cfg_metadata_mask {
 };
 
 /**
- * struct ipa_ep_cfg_metadata - Meta Data configuration in IPA end-point
- * @md:	This defines the meta data from tx data descriptor
+ * struct ipa_ep_cfg_metadata - Metadata configuration in IPA end-point
+ * @md:	This defines the metadata from tx data descriptor
  * @qmap_id: qmap id
  */
 struct ipa_ep_cfg_metadata {
@@ -519,9 +565,10 @@ struct ipa_ep_cfg_ulso {
  * @route:		Routing parameters
  * @cfg:		Configuration register data
  * @metadata_mask:	Hdr metadata mask
- * @meta:		Meta Data
+ * @meta:		Metadata
  * @seq:		HPS/DPS sequencers configuration
  * @ulso:		ULSO configuration
+ * @prod_cfg:	Producer specific Configuration register data
  */
 struct ipa_ep_cfg {
 	struct ipa_ep_cfg_nat nat;
@@ -537,6 +584,7 @@ struct ipa_ep_cfg {
 	struct ipa_ep_cfg_metadata meta;
 	struct ipa_ep_cfg_seq seq;
 	struct ipa_ep_cfg_ulso ulso;
+	struct ipa_ep_cfg_prod_cfg prod_cfg;
 };
 
 /**
@@ -704,7 +752,7 @@ struct ipa_sys_connect_params {
 };
 
 /**
- * struct ipa_tx_meta - meta-data for the TX packet
+ * struct ipa_tx_meta - metadata for the TX packet
  * @dma_address: dma mapped address of TX packet
  * @dma_address_valid: is above field valid?
  */
@@ -1502,11 +1550,11 @@ int ipa_restore_suspend_handler(void);
 
 /**
  * ipa_send_msg() - Send "message" from kernel client to IPA driver
- * @meta: [in] message meta-data
+ * @metadata: [in] message metadata
  * @buff: [in] the payload for message
  * @callback: [in] free callback
  *
- * Client supplies the message meta-data and payload which IPA driver buffers
+ * Client supplies the message metadata and payload which IPA driver buffers
  * till read by user-space. After read from user space IPA driver invokes the
  * callback supplied to free the message payload. Client must not touch/free
  * the message payload after calling this API.
@@ -1515,7 +1563,7 @@ int ipa_restore_suspend_handler(void);
  *
  * Note:	Should not be called from atomic context
  */
-int ipa_send_msg(struct ipa_msg_meta *meta, void *buff,
+int ipa_send_msg(struct ipa_msg_meta *metadata, void *buff,
 		  ipa_msg_free_fn callback);
 
 /*
@@ -1526,7 +1574,7 @@ int ipa_send_msg(struct ipa_msg_meta *meta, void *buff,
  * ipa_tx_dp() - Data-path tx handler
  * @dst:	[in] which IPA destination to route tx packets to
  * @skb:	[in] the packet to send
- * @metadata:	[in] TX packet meta-data
+ * @metadata:	[in] TX packet metadata
  *
  * Data-path tx handler, this is used for both SW data-path which by-passes most
  * IPA HW blocks AND the regular HW data-path for WLAN AMPDU traffic only. If
@@ -1701,7 +1749,7 @@ int ipa_dma_enable(void);
  * Return codes: 0: success
  *		-EINVAL: IPADMA is not initialized
  *		-EPERM: Operation not permitted as ipa_dma is already
- *			diabled
+ *			disabled
  *		-EFAULT: can not disable ipa_dma as there are pending
  *			memcopy works
  */
@@ -1762,7 +1810,7 @@ bool ipa_is_ready(void);
 void ipa_proxy_clk_vote(void);
 void ipa_proxy_clk_unvote(void);
 
-#ifdef CONFIG_DEEPSLEEP
+#if IS_ENABLED(CONFIG_DEEPSLEEP) || IS_ENABLED(CONFIG_HIBERNATION)
 int ipa_fmwk_deepsleep_entry_ipa(void);
 
 int ipa_fmwk_deepsleep_exit_ipa(void);
@@ -2003,7 +2051,7 @@ static inline int ipa_restore_suspend_handler(void)
 /*
  * Messaging
  */
-static inline int ipa_send_msg(struct ipa_msg_meta *meta, void *buff,
+static inline int ipa_send_msg(struct ipa_msg_meta *metadata, void *buff,
 		ipa_msg_free_fn callback)
 {
 	return -EPERM;
@@ -2291,7 +2339,7 @@ static inline int ipa_put_hdr(u32 hdr_hdl)
 	return -EPERM;
 }
 
-static inline int ipa_deregister_pull_msg(struct ipa_msg_meta *meta)
+static inline int ipa_deregister_pull_msg(struct ipa_msg_meta *metadata)
 {
 	return -EPERM;
 }

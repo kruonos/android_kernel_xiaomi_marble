@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.*/
+/*
+ * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ */
 
 #ifndef __MSM_MHI_DEV_H
 #define __MSM_MHI_DEV_H
@@ -16,11 +19,13 @@ enum cb_reason {
 };
 
 struct mhi_dev_client_cb_reason {
+	uint32_t		vf_id;
 	uint32_t		ch_id;
 	enum cb_reason		reason;
 };
 
 struct mhi_dev_client {
+	uint32_t			vf_id;
 	struct list_head		list;
 	struct mhi_dev_channel		*channel;
 	void (*event_trigger)(struct mhi_dev_client_cb_reason *cb);
@@ -50,6 +55,7 @@ enum mhi_ctrl_info {
 };
 
 struct mhi_req {
+	u32                             vf_id;
 	u32                             chan;
 	u32                             mode;
 	u32				chain;
@@ -117,6 +123,10 @@ enum mhi_client_channel {
 	MHI_CLIENT_SMCT_IN = 45,
 	MHI_CLIENT_IP_SW_4_OUT  = 46,
 	MHI_CLIENT_IP_SW_4_IN  = 47,
+	MHI_CLIENT_IP_SW_5_OUT = 48,
+	MHI_CLIENT_IP_SW_5_IN  = 49,
+	MHI_CLIENT_IP_SW_6_OUT = 50,
+	MHI_CLIENT_IP_SW_6_IN = 51,
 	MHI_MAX_SOFTWARE_CHANNELS,
 	MHI_CLIENT_TEST_OUT = 60,
 	MHI_CLIENT_TEST_IN = 61,
@@ -161,13 +171,25 @@ int mhi_dev_open_channel(uint32_t chan_id,
 		void (*event_trigger)(struct mhi_dev_client_cb_reason *cb));
 
 /**
+ * mhi_dev_vf_open_channel() - Channel open in particular MHI instnace for a
+ *                             given client done prior to read/write.
+ * @vf_id:	MHI instnace id in which channel is going to be used.
+ * @chan_id:	Software Channel ID for the assigned client.
+ * @handle_client: Structure device for client handle.
+ * @notifier: Client issued callback notification.
+ */
+int mhi_dev_vf_open_channel(uint32_t vf_id, uint32_t chan_id,
+		struct mhi_dev_client **handle_client,
+		void (*event_trigger)(struct mhi_dev_client_cb_reason *cb));
+
+/**
  * mhi_dev_close_channel() - Channel close for a given client.
  */
 void mhi_dev_close_channel(struct mhi_dev_client *handle_client);
 
 /**
  * mhi_dev_read_channel() - Channel read for a given client
- * @mreq:       mreq is the client argument which includes meta info
+ * @mreq:       mreq is the client argument which includes personal info
  *              like write data location, buffer len, read offset, mode,
  *              chain and client call back function which will be invoked
  *              when data read is completed.
@@ -176,7 +198,7 @@ int mhi_dev_read_channel(struct mhi_req *mreq);
 
 /**
  * mhi_dev_write_channel() - Channel write for a given software client.
- * @wreq	wreq is the client argument which includes meta info like
+ * @wreq	wreq is the client argument which includes personal info like
  *              client handle, read data location, buffer length, mode,
  *              and client call back function which will free the packet.
  *              when data write is completed.
@@ -211,6 +233,22 @@ bool mhi_dev_channel_has_pending_write(struct mhi_dev_client *handle);
 int mhi_ctrl_state_info(uint32_t idx, uint32_t *info);
 
 /**
+ * mhi_vf_ctrl_state_info() - Provide MHI channel state info in a MHI instnace
+ *		@vf_id: MHI instnace id. For Physical MHI it will be zero.
+ *		For virtual MHI it would be non zero.
+ *		@idx: Channel number idx. Look at channel_state_info and
+ *		pass the index for the corresponding channel.
+ *		@info: Return the control info.
+ *		MHI_STATE=CONFIGURED - MHI device is present but not ready
+ *					for data traffic.
+ *		MHI_STATE=CONNECTED - MHI device is ready for data transfer.
+ *		MHI_STATE=DISCONNECTED - MHI device has its pipes suspended.
+ *		exposes device nodes for the supported MHI software
+ *		channels.
+ */
+int mhi_vf_ctrl_state_info(u32 vf_id, uint32_t idx, uint32_t *info);
+
+/**
  * mhi_register_state_cb() - Clients can register and receive callback after
  *		MHI channel is connected or disconnected.
  */
@@ -218,33 +256,49 @@ int mhi_register_state_cb(void (*mhi_state_cb)
 			(struct mhi_dev_client_cb_data *cb_data), void *data,
 			enum mhi_client_channel channel);
 
+/**
+ * mhi_vf_register_state_cb() - Clients can register and receive callback after
+ *		MHI channel is connected or disconnected in a given mhi instnace.
+ */
+int mhi_vf_register_state_cb(void (*mhi_state_cb)
+			(struct mhi_dev_client_cb_data *cb_data), void *data,
+			enum mhi_client_channel channel,
+			unsigned int vf_id);
+
 #else
 static inline int mhi_dev_open_channel(uint32_t chan_id,
 		struct mhi_dev_client **handle_client,
 		void (*event_trigger)(struct mhi_dev_client_cb_reason *cb))
 {
 	return -EINVAL;
-};
+}
+
+static inline int mhi_dev_vf_open_channel(uint32_t vf_id, uint32_t chan_id,
+		struct mhi_dev_client **handle_client,
+		void (*event_trigger)(struct mhi_dev_client_cb_reason *cb))
+{
+	return -EINVAL;
+}
 
 static inline int mhi_dev_close_channel(struct mhi_dev_client *handle_client)
 {
 	return -EINVAL;
-};
+}
 
 static inline int mhi_dev_read_channel(struct mhi_req *mreq)
 {
 	return -EINVAL;
-};
+}
 
 static inline int mhi_dev_write_channel(struct mhi_req *wreq)
 {
 	return -EINVAL;
-};
+}
 
 static inline int mhi_dev_channel_isempty(struct mhi_dev_client *handle)
 {
 	return -EINVAL;
-};
+}
 
 static inline bool mhi_dev_channel_has_pending_write
 	(struct mhi_dev_client *handle)
@@ -255,14 +309,29 @@ static inline bool mhi_dev_channel_has_pending_write
 static inline int mhi_ctrl_state_info(uint32_t idx, uint32_t *info)
 {
 	return -EINVAL;
-};
+}
+
+static inline int mhi_vf_ctrl_state_info(u32 vf_id, uint32_t idx, uint32_t *info)
+{
+	return -EINVAL;
+}
 
 static inline int mhi_register_state_cb(void (*mhi_state_cb)
 			(struct mhi_dev_client_cb_data *cb_data), void *data,
 			enum mhi_client_channel channel)
 {
 	return -EINVAL;
-};
+}
+
+int mhi_vf_register_state_cb(void (*mhi_state_cb)
+			(struct mhi_dev_client_cb_data *cb_data), void *data,
+			enum mhi_client_channel channel,
+			unsigned int vf_id)
+
+{
+	return -EINVAL;
+}
+
 #endif
 
 #endif /* _MSM_MHI_DEV_H*/

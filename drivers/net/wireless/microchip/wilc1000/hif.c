@@ -157,7 +157,7 @@ int wilc_scan(struct wilc_vif *vif, u8 scan_source, u8 scan_type,
 	u32 index = 0;
 	u32 i, scan_timeout;
 	u8 *buffer;
-	u32 valuesize = 0;
+	u8 valuesize = 0;
 	u8 *search_ssid_vals = NULL;
 	struct host_if_drv *hif_drv = vif->hif_drv;
 
@@ -359,31 +359,17 @@ out:
 void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 				struct cfg80211_crypto_settings *crypto)
 {
-	const u8 *ies_data, *tim_elm, *ssid_elm, *rates_ie, *supp_rates_ie;
-	const u8 *ht_ie, *wpa_ie, *wmm_ie, *rsn_ie;
-	struct ieee80211_p2p_noa_attr noa_attr;
-	const struct cfg80211_bss_ies *ies;
 	struct wilc_join_bss_param *param;
+	struct ieee80211_p2p_noa_attr noa_attr;
 	u8 rates_len = 0;
-	int ies_len;
-	u64 ies_tsf;
+	const u8 *tim_elm, *ssid_elm, *rates_ie, *supp_rates_ie;
+	const u8 *ht_ie, *wpa_ie, *wmm_ie, *rsn_ie;
 	int ret;
+	const struct cfg80211_bss_ies *ies = rcu_dereference(bss->ies);
 
 	param = kzalloc(sizeof(*param), GFP_KERNEL);
 	if (!param)
 		return NULL;
-
-	rcu_read_lock();
-	ies = rcu_dereference(bss->ies);
-	ies_data = kmemdup(ies->data, ies->len, GFP_ATOMIC);
-	if (!ies_data) {
-		rcu_read_unlock();
-		kfree(param);
-		return NULL;
-	}
-	ies_len = ies->len;
-	ies_tsf = ies->tsf;
-	rcu_read_unlock();
 
 	param->beacon_period = cpu_to_le16(bss->beacon_interval);
 	param->cap_info = cpu_to_le16(bss->capability);
@@ -391,20 +377,20 @@ void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 	param->ch = ieee80211_frequency_to_channel(bss->channel->center_freq);
 	ether_addr_copy(param->bssid, bss->bssid);
 
-	ssid_elm = cfg80211_find_ie(WLAN_EID_SSID, ies_data, ies_len);
+	ssid_elm = cfg80211_find_ie(WLAN_EID_SSID, ies->data, ies->len);
 	if (ssid_elm) {
 		if (ssid_elm[1] <= IEEE80211_MAX_SSID_LEN)
 			memcpy(param->ssid, ssid_elm + 2, ssid_elm[1]);
 	}
 
-	tim_elm = cfg80211_find_ie(WLAN_EID_TIM, ies_data, ies_len);
+	tim_elm = cfg80211_find_ie(WLAN_EID_TIM, ies->data, ies->len);
 	if (tim_elm && tim_elm[1] >= 2)
 		param->dtim_period = tim_elm[3];
 
 	memset(param->p_suites, 0xFF, 3);
 	memset(param->akm_suites, 0xFF, 3);
 
-	rates_ie = cfg80211_find_ie(WLAN_EID_SUPP_RATES, ies_data, ies_len);
+	rates_ie = cfg80211_find_ie(WLAN_EID_SUPP_RATES, ies->data, ies->len);
 	if (rates_ie) {
 		rates_len = rates_ie[1];
 		if (rates_len > WILC_MAX_RATES_SUPPORTED)
@@ -415,7 +401,7 @@ void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 
 	if (rates_len < WILC_MAX_RATES_SUPPORTED) {
 		supp_rates_ie = cfg80211_find_ie(WLAN_EID_EXT_SUPP_RATES,
-						 ies_data, ies_len);
+						 ies->data, ies->len);
 		if (supp_rates_ie) {
 			u8 ext_rates = supp_rates_ie[1];
 
@@ -430,15 +416,15 @@ void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 		}
 	}
 
-	ht_ie = cfg80211_find_ie(WLAN_EID_HT_CAPABILITY, ies_data, ies_len);
+	ht_ie = cfg80211_find_ie(WLAN_EID_HT_CAPABILITY, ies->data, ies->len);
 	if (ht_ie)
 		param->ht_capable = true;
 
-	ret = cfg80211_get_p2p_attr(ies_data, ies_len,
+	ret = cfg80211_get_p2p_attr(ies->data, ies->len,
 				    IEEE80211_P2P_ATTR_ABSENCE_NOTICE,
 				    (u8 *)&noa_attr, sizeof(noa_attr));
 	if (ret > 0) {
-		param->tsf_lo = cpu_to_le32(ies_tsf);
+		param->tsf_lo = cpu_to_le32(ies->tsf);
 		param->noa_enabled = 1;
 		param->idx = noa_attr.index;
 		if (noa_attr.oppps_ctwindow & IEEE80211_P2P_OPPPS_ENABLE_BIT) {
@@ -458,7 +444,7 @@ void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 	}
 	wmm_ie = cfg80211_find_vendor_ie(WLAN_OUI_MICROSOFT,
 					 WLAN_OUI_TYPE_MICROSOFT_WMM,
-					 ies_data, ies_len);
+					 ies->data, ies->len);
 	if (wmm_ie) {
 		struct ieee80211_wmm_param_ie *ie;
 
@@ -473,13 +459,13 @@ void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 
 	wpa_ie = cfg80211_find_vendor_ie(WLAN_OUI_MICROSOFT,
 					 WLAN_OUI_TYPE_MICROSOFT_WPA,
-					 ies_data, ies_len);
+					 ies->data, ies->len);
 	if (wpa_ie) {
 		param->mode_802_11i = 1;
 		param->rsn_found = true;
 	}
 
-	rsn_ie = cfg80211_find_ie(WLAN_EID_RSN, ies_data, ies_len);
+	rsn_ie = cfg80211_find_ie(WLAN_EID_RSN, ies->data, ies->len);
 	if (rsn_ie) {
 		int rsn_ie_len = sizeof(struct element) + rsn_ie[1];
 		int offset = 8;
@@ -513,7 +499,6 @@ void *wilc_parse_join_bss_param(struct cfg80211_bss *bss,
 			param->akm_suites[i] = crypto->akm_suites[i] & 0xFF;
 	}
 
-	kfree(ies_data);
 	return (void *)param;
 }
 
@@ -821,15 +806,15 @@ static void wilc_hif_pack_sta_param(u8 *cur_byte, const u8 *mac,
 	put_unaligned_le16(params->aid, cur_byte);
 	cur_byte += 2;
 
-	*cur_byte++ = params->supported_rates_len;
-	if (params->supported_rates_len > 0)
-		memcpy(cur_byte, params->supported_rates,
-		       params->supported_rates_len);
-	cur_byte += params->supported_rates_len;
+	*cur_byte++ = params->link_sta_params.supported_rates_len;
+	if (params->link_sta_params.supported_rates_len > 0)
+		memcpy(cur_byte, params->link_sta_params.supported_rates,
+		       params->link_sta_params.supported_rates_len);
+	cur_byte += params->link_sta_params.supported_rates_len;
 
-	if (params->ht_capa) {
+	if (params->link_sta_params.ht_capa) {
 		*cur_byte++ = true;
-		memcpy(cur_byte, params->ht_capa,
+		memcpy(cur_byte, params->link_sta_params.ht_capa,
 		       sizeof(struct ieee80211_ht_cap));
 	} else {
 		*cur_byte++ = false;
@@ -1296,6 +1281,23 @@ int wilc_get_mac_address(struct wilc_vif *vif, u8 *mac_addr)
 	wid.val = mac_addr;
 
 	result = wilc_send_config_pkt(vif, WILC_GET_CFG, &wid, 1);
+	if (result)
+		netdev_err(vif->ndev, "Failed to get mac address\n");
+
+	return result;
+}
+
+int wilc_set_mac_address(struct wilc_vif *vif, u8 *mac_addr)
+{
+	struct wid wid;
+	int result;
+
+	wid.id = WID_MAC_ADDR;
+	wid.type = WID_STR;
+	wid.size = ETH_ALEN;
+	wid.val = mac_addr;
+
+	result = wilc_send_config_pkt(vif, WILC_SET_CFG, &wid, 1);
 	if (result)
 		netdev_err(vif->ndev, "Failed to get mac address\n");
 
@@ -1818,7 +1820,8 @@ int wilc_add_station(struct wilc_vif *vif, const u8 *mac,
 
 	wid.id = WID_ADD_STA;
 	wid.type = WID_BIN;
-	wid.size = WILC_ADD_STA_LENGTH + params->supported_rates_len;
+	wid.size = WILC_ADD_STA_LENGTH +
+		   params->link_sta_params.supported_rates_len;
 	wid.val = kmalloc(wid.size, GFP_KERNEL);
 	if (!wid.val)
 		return -ENOMEM;
@@ -1903,7 +1906,8 @@ int wilc_edit_station(struct wilc_vif *vif, const u8 *mac,
 
 	wid.id = WID_EDIT_STA;
 	wid.type = WID_BIN;
-	wid.size = WILC_ADD_STA_LENGTH + params->supported_rates_len;
+	wid.size = WILC_ADD_STA_LENGTH +
+		   params->link_sta_params.supported_rates_len;
 	wid.val = kmalloc(wid.size, GFP_KERNEL);
 	if (!wid.val)
 		return -ENOMEM;

@@ -151,7 +151,7 @@ static int vm_finalize_features(struct virtio_device *vdev)
 	/* Give virtio_ring a chance to accept features. */
 	vring_transport_features(vdev);
 
-	/* Make sure there is are no mixed devices */
+	/* Make sure there are no mixed devices */
 	if (vm_dev->version == 2 &&
 			!__virtio_test_bit(vdev, VIRTIO_F_VERSION_1)) {
 		dev_err(&vdev->dev, "New virtio-mmio devices (version 2) must provide VIRTIO_F_VERSION_1 feature!\n");
@@ -506,6 +506,9 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	if (err)
 		return err;
 
+	if (of_property_read_bool(vm_dev->pdev->dev.of_node, "wakeup-source"))
+		enable_irq_wake(irq);
+
 	for (i = 0; i < nvqs; ++i) {
 		if (!names[i]) {
 			vqs[i] = NULL;
@@ -594,7 +597,8 @@ static int virtio_mmio_restore(struct device *dev)
 }
 
 static const struct dev_pm_ops virtio_mmio_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(virtio_mmio_freeze, virtio_mmio_restore)
+	.freeze		= virtio_mmio_freeze,
+	.restore	= virtio_mmio_restore,
 };
 #endif
 
@@ -763,14 +767,14 @@ static void virtio_unmap_page(struct device *dev, dma_addr_t dev_addr,
 			size_t size, enum dma_data_direction dir,
 			unsigned long attrs)
 {
-	BUG_ON(!is_swiotlb_buffer(dev_addr));
+	BUG_ON(!is_swiotlb_buffer(dev, dev_addr));
 
-	swiotlb_tbl_unmap_single(dev, dev_addr, size, size, dir, attrs);
+	swiotlb_tbl_unmap_single(dev, dev_addr, size, dir, attrs);
 }
 
 size_t virtio_max_mapping_size(struct device *dev)
 {
-	return SZ_4K;
+	return SZ_2K;
 }
 
 static const struct dma_map_ops virtio_dma_ops = {
@@ -1108,8 +1112,10 @@ static struct platform_driver virtio_mmio_driver = {
 		.name	= "virtio-mmio",
 		.of_match_table	= virtio_mmio_match,
 		.acpi_match_table = ACPI_PTR(virtio_mmio_acpi_match),
-#if IS_ENABLED(CONFIG_PM_SLEEP) && !IS_ENABLED(CONFIG_VIRTIO_MMIO_SWIOTLB)
-		.pm = &virtio_mmio_pm_ops,
+#ifdef CONFIG_PM_SLEEP
+#ifndef CONFIG_VIRTIO_MMIO_SWIOTLB
+		.pm     = &virtio_mmio_pm_ops,
+#endif
 #endif
 	},
 };

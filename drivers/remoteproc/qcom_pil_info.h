@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ */
 #ifndef __QCOM_PIL_INFO_H__
 #define __QCOM_PIL_INFO_H__
 

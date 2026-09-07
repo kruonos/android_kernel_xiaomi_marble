@@ -22,18 +22,12 @@
  */
 #include <asm/div64.h>
 
-enum ppevvmath_constants {
-	/* We multiply all original integers with 2^SHIFT_AMOUNT to get the fInt representation */
-	SHIFT_AMOUNT	= 16,
+#define SHIFT_AMOUNT 16 /* We multiply all original integers with 2^SHIFT_AMOUNT to get the fInt representation */
 
-	/* Change this value to change the number of decimal places in the final output - 5 is a good default */
-	PRECISION	=  5,
+#define PRECISION 5 /* Change this value to change the number of decimal places in the final output - 5 is a good default */
 
-	SHIFTED_2	= (2 << SHIFT_AMOUNT),
-
-	/* 32767 - Might change in the future */
-	MAX		= (1 << (SHIFT_AMOUNT - 1)) - 1,
-};
+#define SHIFTED_2 (2 << SHIFT_AMOUNT)
+#define MAX (1 << (SHIFT_AMOUNT - 1)) - 1 /* 32767 - Might change in the future */
 
 /* -------------------------------------------------------------------------------
  * NEW TYPE - fINT
@@ -339,13 +333,13 @@ static fInt fMultiply (fInt X, fInt Y) /* Uses 64-bit integers (int64_t) */
 {
 	fInt Product;
 	int64_t tempProduct;
+
+	/*The following is for a very specific common case: Non-zero number with ONLY fractional portion*/
+	/* TEMPORARILY DISABLED - CAN BE USED TO IMPROVE PRECISION
 	bool X_LessThanOne, Y_LessThanOne;
 
 	X_LessThanOne = (X.partial.real == 0 && X.partial.decimal != 0 && X.full >= 0);
 	Y_LessThanOne = (Y.partial.real == 0 && Y.partial.decimal != 0 && Y.full >= 0);
-
-	/*The following is for a very specific common case: Non-zero number with ONLY fractional portion*/
-	/* TEMPORARILY DISABLED - CAN BE USED TO IMPROVE PRECISION
 
 	if (X_LessThanOne && Y_LessThanOne) {
 		Product.full = X.full * Y.full;

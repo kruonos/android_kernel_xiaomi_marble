@@ -489,6 +489,8 @@ struct dpaa2_eth_trap_data {
 	struct dpaa2_eth_priv *priv;
 };
 
+#define DPAA2_ETH_DEFAULT_COPYBREAK	512
+
 /* Driver private data */
 struct dpaa2_eth_priv {
 	struct net_device *net_dev;
@@ -504,15 +506,12 @@ struct dpaa2_eth_priv {
 	u8 num_channels;
 	struct dpaa2_eth_channel *channel[DPAA2_ETH_MAX_DPCONS];
 	struct dpaa2_eth_sgt_cache __percpu *sgt_cache;
-	unsigned long features;
+
 	struct dpni_attr dpni_attrs;
 	u16 dpni_ver_major;
 	u16 dpni_ver_minor;
 	u16 tx_data_offset;
-	void __iomem *onestep_reg_base;
-	u8 ptp_correction_off;
-	void (*dpaa2_set_onestep_params_cb)(struct dpaa2_eth_priv *priv,
-					    u32 offset, u8 udp);
+
 	struct fsl_mc_device *dpbp_dev;
 	u16 rx_buf_size;
 	u16 bpid;
@@ -572,6 +571,8 @@ struct dpaa2_eth_priv {
 	struct devlink *devlink;
 	struct dpaa2_eth_trap_data *trap_data;
 	struct devlink_port devlink_port;
+
+	u32 rx_copybreak;
 };
 
 struct dpaa2_eth_devlink_priv {
@@ -650,13 +651,6 @@ enum dpaa2_eth_rx_dist {
 #define DPAA2_ETH_DIST_L4DST		BIT(8)
 #define DPAA2_ETH_DIST_ALL		(~0ULL)
 
-#define DPNI_PTP_ONESTEP_VER_MAJOR 8
-#define DPNI_PTP_ONESTEP_VER_MINOR 2
-#define DPAA2_ETH_FEATURE_ONESTEP_CFG_DIRECT BIT(0)
-#define DPAA2_PTP_SINGLE_STEP_ENABLE	BIT(31)
-#define DPAA2_PTP_SINGLE_STEP_CH	BIT(7)
-#define DPAA2_PTP_SINGLE_CORRECTION_OFF(v) ((v) << 8)
-
 #define DPNI_PAUSE_VER_MAJOR		7
 #define DPNI_PAUSE_VER_MINOR		13
 #define dpaa2_eth_has_pause_support(priv)			\
@@ -707,7 +701,9 @@ static inline unsigned int dpaa2_eth_rx_head_room(struct dpaa2_eth_priv *priv)
 
 static inline bool dpaa2_eth_is_type_phy(struct dpaa2_eth_priv *priv)
 {
-	if (priv->mac && priv->mac->attr.link_type == DPMAC_LINK_TYPE_PHY)
+	if (priv->mac &&
+	    (priv->mac->attr.link_type == DPMAC_LINK_TYPE_PHY ||
+	     priv->mac->attr.link_type == DPMAC_LINK_TYPE_BACKPLANE))
 		return true;
 
 	return false;

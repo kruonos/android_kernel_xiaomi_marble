@@ -262,6 +262,10 @@ static int hash_accept(struct socket *sock, struct socket *newsock, int flags,
 		return err;
 
 	err = crypto_ahash_import(&ctx2->req, state);
+	if (err) {
+		sock_orphan(sk2);
+		sock_put(sk2);
+	}
 
 	return err;
 }
@@ -423,8 +427,9 @@ static int hash_accept_parent_nokey(void *private, struct sock *sk)
 	if (!ctx)
 		return -ENOMEM;
 
-	memset(ctx, 0, len);
+	ctx->result = NULL;
 	ctx->len = len;
+	ctx->more = false;
 	crypto_init_wait(&ctx->wait);
 
 	ask->private = ctx;

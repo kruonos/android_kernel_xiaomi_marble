@@ -62,7 +62,6 @@ unsigned char turbo_update_value;
 unsigned char update_hwp_epp;
 unsigned char update_hwp_min;
 unsigned char update_hwp_max;
-unsigned char hwp_limits_done_via_sysfs;
 unsigned char update_hwp_desired;
 unsigned char update_hwp_window;
 unsigned char update_hwp_use_pkg;
@@ -91,6 +90,9 @@ unsigned int has_hwp_epp;	/* IA32_HWP_REQUEST[bits 31:24] */
 unsigned int has_hwp_request_pkg;	/* IA32_HWP_REQUEST_PKG */
 
 unsigned int bdx_highest_ratio;
+
+#define PATH_TO_CPU "/sys/devices/system/cpu/"
+#define SYSFS_PATH_MAX 255
 
 /*
  * maintain compatibility with original implementation, but don't document it:
@@ -628,7 +630,7 @@ void cmdline(int argc, char **argv)
  */
 FILE *fopen_or_die(const char *path, const char *mode)
 {
-	FILE *filep = fopen(path, mode);
+	FILE *filep = fopen(path, "r");
 
 	if (!filep)
 		err(1, "%s: open failed", path);
@@ -642,7 +644,7 @@ void err_on_hypervisor(void)
 	char *buffer;
 
 	/* On VMs /proc/cpuinfo contains a "flags" entry for hypervisor */
-	cpuinfo = fopen_or_die("/proc/cpuinfo", "r");
+	cpuinfo = fopen_or_die("/proc/cpuinfo", "ro");
 
 	buffer = malloc(4096);
 	if (!buffer) {
@@ -722,6 +724,48 @@ int put_msr(int cpu, int offset, unsigned long long new_msr)
 	return 0;
 }
 
+static unsigned int read_sysfs(const char *path, char *buf, size_t buflen)
+{
+	ssize_t numread;
+	int fd;
+
+	fd = open(path, O_RDONLY);
+	if (fd == -1)
+		return 0;
+
+	numread = read(fd, buf, buflen - 1);
+	if (numread < 1) {
+		close(fd);
+		return 0;
+	}
+
+	buf[numread] = '\0';
+	close(fd);
+
+	return (unsigned int) numread;
+}
+
+static unsigned int write_sysfs(const char *path, char *buf, size_t buflen)
+{
+	ssize_t numwritten;
+	int fd;
+
+	fd = open(path, O_WRONLY);
+	if (fd == -1)
+		return 0;
+
+	numwritten = write(fd, buf, buflen - 1);
+	if (numwritten < 1) {
+		perror("write failed\n");
+		close(fd);
+		return -1;
+	}
+
+	close(fd);
+
+	return (unsigned int) numwritten;
+}
+
 void print_hwp_cap(int cpu, struct msr_hwp_cap *cap, char *str)
 {
 	if (cpu != -1)
@@ -799,17 +843,61 @@ void write_hwp_request(int cpu, struct msr_hwp_request *hwp_req, unsigned int ms
 	put_msr(cpu, msr_offset, msr);
 }
 
+static int get_epb(int cpu)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[3];
+	char *endp;
+	long val;
+
+	if (!has_epb)
+		return -1;
+
+	snprintf(path, sizeof(path), PATH_TO_CPU "cpu%u/power/energy_perf_bias", cpu);
+
+	if (!read_sysfs(path, linebuf, 3))
+		return -1;
+
+	val = strtol(linebuf, &endp, 0);
+	if (endp == linebuf || errno == ERANGE)
+		return -1;
+
+	return (int)val;
+}
+
+static int set_epb(int cpu, int val)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[3];
+	char *endp;
+	int ret;
+
+	if (!has_epb)
+		return -1;
+
+	snprintf(path, sizeof(path), PATH_TO_CPU "cpu%u/power/energy_perf_bias", cpu);
+	snprintf(linebuf, sizeof(linebuf), "%d", val);
+
+	ret = write_sysfs(path, linebuf, 3);
+	if (ret <= 0)
+		return -1;
+
+	val = strtol(linebuf, &endp, 0);
+	if (endp == linebuf || errno == ERANGE)
+		return -1;
+
+	return (int)val;
+}
+
 int print_cpu_msrs(int cpu)
 {
-	unsigned long long msr;
 	struct msr_hwp_request req;
 	struct msr_hwp_cap cap;
+	int epb;
 
-	if (has_epb) {
-		get_msr(cpu, MSR_IA32_ENERGY_PERF_BIAS, &msr);
-
-		printf("cpu%d: EPB %u\n", cpu, (unsigned int) msr);
-	}
+	epb = get_epb(cpu);
+	if (epb >= 0)
+		printf("cpu%d: EPB %u\n", cpu, (unsigned int) epb);
 
 	if (!has_hwp)
 		return 0;
@@ -863,10 +951,8 @@ int ratio_2_sysfs_khz(int ratio)
 }
 /*
  * If HWP is enabled and cpufreq sysfs attribtes are present,
- * then update via sysfs. The intel_pstate driver may modify (clip)
- * this request, say, when HWP_CAP is outside of PLATFORM_INFO limits,
- * and the driver-chosen value takes precidence.
- *
+ * then update sysfs, so that it will not become
+ * stale when we write to MSRs.
  * (intel_pstate's max_perf_pct and min_perf_pct will follow cpufreq,
  *  so we don't have to touch that.)
  */
@@ -920,8 +1006,6 @@ int update_sysfs(int cpu)
 
 	if (update_hwp_max)
 		update_cpufreq_scaling_freq(1, cpu, req_update.hwp_max);
-
-	hwp_limits_done_via_sysfs = 1;
 
 	return 0;
 }
@@ -1001,10 +1085,10 @@ int update_hwp_request(int cpu)
 	if (debug)
 		print_hwp_request(cpu, &req, "old: ");
 
-	if (update_hwp_min && !hwp_limits_done_via_sysfs)
+	if (update_hwp_min)
 		req.hwp_min = req_update.hwp_min;
 
-	if (update_hwp_max && !hwp_limits_done_via_sysfs)
+	if (update_hwp_max)
 		req.hwp_max = req_update.hwp_max;
 
 	if (update_hwp_desired)
@@ -1082,18 +1166,13 @@ int update_hwp_request_pkg(int pkg)
 
 int enable_hwp_on_cpu(int cpu)
 {
-	unsigned long long old_msr, new_msr;
+	unsigned long long msr;
 
-	get_msr(cpu, MSR_PM_ENABLE, &old_msr);
-
-	if (old_msr & 1)
-		return 0;	/* already enabled */
-
-	new_msr = old_msr | 1;
-	put_msr(cpu, MSR_PM_ENABLE, new_msr);
+	get_msr(cpu, MSR_PM_ENABLE, &msr);
+	put_msr(cpu, MSR_PM_ENABLE, 1);
 
 	if (verbose)
-		printf("cpu%d: MSR_PM_ENABLE old: %llX new: %llX\n", cpu, old_msr, new_msr);
+		printf("cpu%d: MSR_PM_ENABLE old: %d new: %d\n", cpu, (unsigned int) msr, 1);
 
 	return 0;
 }
@@ -1101,15 +1180,15 @@ int enable_hwp_on_cpu(int cpu)
 int update_cpu_msrs(int cpu)
 {
 	unsigned long long msr;
-
+	int epb;
 
 	if (update_epb) {
-		get_msr(cpu, MSR_IA32_ENERGY_PERF_BIAS, &msr);
-		put_msr(cpu, MSR_IA32_ENERGY_PERF_BIAS, new_epb);
+		epb = get_epb(cpu);
+		set_epb(cpu, new_epb);
 
 		if (verbose)
 			printf("cpu%d: ENERGY_PERF_BIAS old: %d new: %d\n",
-				cpu, (unsigned int) msr, (unsigned int) new_epb);
+				cpu, epb, (unsigned int) new_epb);
 	}
 
 	if (update_turbo) {
@@ -1162,7 +1241,6 @@ unsigned int get_pkg_num(int cpu)
 	retval = fscanf(fp, "%d\n", &pkg);
 	if (retval != 1)
 		errx(1, "%s: failed to parse", pathname);
-	fclose(fp);
 	return pkg;
 }
 

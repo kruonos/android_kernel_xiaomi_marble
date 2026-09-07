@@ -490,51 +490,6 @@ int usb_interface_id(struct usb_configuration *config,
 }
 EXPORT_SYMBOL_GPL(usb_interface_id);
 
-#ifdef CONFIG_USB_FUNC_WAKEUP_SUPPORTED
-int usb_func_wakeup(struct usb_function *func)
-{
-	int ret, id;
-	unsigned long flags;
-
-	if (!func || !func->config || !func->config->cdev ||
-		!func->config->cdev->gadget)
-		return -EINVAL;
-
-	DBG(func->config->cdev, "%s function wakeup\n", func->name);
-
-	spin_lock_irqsave(&func->config->cdev->lock, flags);
-
-	for (id = 0; id < MAX_CONFIG_INTERFACES; id++)
-		if (func->config->interface[id] == func)
-			break;
-
-	if (id == MAX_CONFIG_INTERFACES) {
-		ERROR(func->config->cdev, "Invalid function id:%d\n", id);
-		ret = -EINVAL;
-		goto err;
-	}
-
-	ret = usb_gadget_func_wakeup(func->config->cdev->gadget, id);
-
-	if (ret == -EAGAIN) {
-		DBG(func->config->cdev,
-			"Function wakeup for %s could not complete due to suspend state. Delayed until after bus resume.\n",
-			func->name ? func->name : "");
-		ret = 0;
-	} else if (ret < 0 && ret != -ENOTSUPP) {
-		ERROR(func->config->cdev,
-			"Failed to wake function %s from suspend state. ret=%d. Canceling USB request.\n",
-			func->name ? func->name : "", ret);
-	}
-
-err:
-	spin_unlock_irqrestore(&func->config->cdev->lock, flags);
-
-	return ret;
-}
-EXPORT_SYMBOL(usb_func_wakeup);
-#endif
-
 static u8 encode_bMaxPower(enum usb_device_speed speed,
 		struct usb_configuration *c)
 {
@@ -1004,11 +959,10 @@ static int set_config(struct usb_composite_dev *cdev,
 	else
 		power = min(power, 900U);
 done:
-	if (power > USB_SELF_POWER_VBUS_MAX_DRAW ||
-	    (c && !(c->bmAttributes & USB_CONFIG_ATT_SELFPOWER)))
-		usb_gadget_clear_selfpowered(gadget);
-	else
+	if (power <= USB_SELF_POWER_VBUS_MAX_DRAW)
 		usb_gadget_set_selfpowered(gadget);
+	else
+		usb_gadget_clear_selfpowered(gadget);
 
 	usb_gadget_vbus_draw(gadget, power);
 	if (result >= 0 && cdev->delayed_status)
@@ -1074,6 +1028,10 @@ int usb_add_config(struct usb_composite_dev *cdev,
 		goto done;
 
 	status = bind(config);
+
+	if (status == 0)
+		status = usb_gadget_check_config(cdev->gadget);
+
 	if (status < 0) {
 		while (!list_empty(&config->functions)) {
 			struct usb_function		*f;
@@ -2014,18 +1972,6 @@ unknown:
 			memset(buf, 0, w_length);
 			buf[5] = 0x01;
 			switch (ctrl->bRequestType & USB_RECIP_MASK) {
-			/*
-			 * The Microsoft CompatID OS Descriptor Spec(w_index = 0x4) and
-			 * Extended Prop OS Desc Spec(w_index = 0x5) state that the
-			 * HighByte of wValue is the InterfaceNumber and the LowByte is
-			 * the PageNumber. This high/low byte ordering is incorrectly
-			 * documented in the Spec. USB analyzer output on the below
-			 * request packets show the high/low byte inverted i.e LowByte
-			 * is the InterfaceNumber and the HighByte is the PageNumber.
-			 * Since we dont support >64KB CompatID/ExtendedProp descriptors,
-			 * PageNumber is set to 0. Hence verify that the HighByte is 0
-			 * for below two cases.
-			 */
 			case USB_RECIP_DEVICE:
 				if (w_index != 0x4 || (w_value >> 8))
 					break;
@@ -2347,11 +2293,6 @@ int composite_os_desc_req_prepare(struct usb_composite_dev *cdev,
 	if (!cdev->os_desc_req->buf) {
 		ret = -ENOMEM;
 		usb_ep_free_request(ep0, cdev->os_desc_req);
-		/*
-		 * Set os_desc_req to NULL so that composite_dev_cleanup()
-		 * will not try to free it again.
-		 */
-		cdev->os_desc_req = NULL;
 		goto end;
 	}
 	cdev->os_desc_req->context = cdev;
@@ -2477,10 +2418,7 @@ void composite_suspend(struct usb_gadget *gadget)
 
 	cdev->suspended = 1;
 
-	if (cdev->config &&
-	    cdev->config->bmAttributes & USB_CONFIG_ATT_SELFPOWER)
-		usb_gadget_set_selfpowered(gadget);
-
+	usb_gadget_set_selfpowered(gadget);
 	usb_gadget_vbus_draw(gadget, 2);
 }
 
@@ -2509,11 +2447,8 @@ void composite_resume(struct usb_gadget *gadget)
 		else
 			maxpower = min(maxpower, 900U);
 
-		if (maxpower > USB_SELF_POWER_VBUS_MAX_DRAW ||
-		    !(cdev->config->bmAttributes & USB_CONFIG_ATT_SELFPOWER))
+		if (maxpower > USB_SELF_POWER_VBUS_MAX_DRAW)
 			usb_gadget_clear_selfpowered(gadget);
-		else
-			usb_gadget_set_selfpowered(gadget);
 
 		usb_gadget_vbus_draw(gadget, maxpower);
 	} else {

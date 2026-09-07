@@ -49,6 +49,7 @@ extern unsigned long saved_video_mode;
 extern void reserve_standard_io_resources(void);
 extern void i386_reserve_resources(void);
 extern unsigned long __startup_64(unsigned long physaddr, struct boot_params *bp);
+extern unsigned long __startup_secondary_64(void);
 extern void startup_64_setup_env(unsigned long physbase);
 extern void early_setup_idt(void);
 extern void __init do_early_exception(struct pt_regs *regs, int trapnr);
@@ -117,11 +118,6 @@ void *extend_brk(size_t size, size_t align);
 #define RESERVE_BRK(name, size)					\
 	__section(".bss..brk") __aligned(1) __used	\
 	static char __brk_##name[size]
-
-/* Helper for reserving space for arrays of things */
-#define RESERVE_BRK_ARRAY(type, name, entries)		\
-	type *name;					\
-	RESERVE_BRK(name, sizeof(type) * entries)
 
 extern void probe_roms(void);
 #ifdef __i386__

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/irqdomain.h>
 #include <linux/delay.h>
@@ -17,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/wait.h>
 #include <linux/reboot.h>
+#include <linux/panic_notifier.h>
 #include <linux/qcom_scm.h>
 #include <soc/qcom/minidump.h>
 #include <soc/qcom/watchdog.h>
@@ -27,34 +29,16 @@
 #include <linux/irq.h>
 #include <linux/sort.h>
 #include <linux/kernel_stat.h>
-#include <linux/irq_cpustat.h>
 #include <linux/kallsyms.h>
 #include <linux/kdebug.h>
-#include <linux/nmi.h>
-#include <linux/sched/debug.h>
+#include <asm/hardirq.h>
+#include <linux/suspend.h>
+#include <linux/notifier.h>
 
 #define MASK_SIZE        32
 #define COMPARE_RET      -1
 
 typedef int (*compare_t) (const void *lhs, const void *rhs);
-
-#ifdef CONFIG_FIRE_WATCHDOG
-static int wdog_fire;
-static int wdog_fire_set(const char *val, const struct kernel_param *kp);
-module_param_call(wdog_fire, wdog_fire_set, param_get_int,
-		&wdog_fire, 0644);
-
-static int wdog_fire_set(const char *val, const struct kernel_param *kp)
-{
-	printk(KERN_INFO "trigger wdog_fire_set\n");
-	local_irq_disable();
-	while (1)
-	;
-
-	return 0;
-}
-#endif
-
 static struct msm_watchdog_data *wdog_data;
 
 static void qcom_wdt_dump_cpu_alive_mask(struct msm_watchdog_data *wdog_dd)
@@ -124,7 +108,7 @@ out:
 	return pivot;
 }
 
-static void __maybe_unused print_irq_stat(struct msm_watchdog_data *wdog_dd)
+static void print_irq_stat(struct msm_watchdog_data *wdog_dd)
 {
 	int index;
 	int cpu, ipi_nr;
@@ -265,7 +249,7 @@ static void compute_irq_stat(struct work_struct *work)
 		}
 	}
 
-	// print_irq_stat(wdog_dd);
+	print_irq_stat(wdog_dd);
 	atomic_xchg(&wdog_dd->irq_counts_running, 0);
 }
 
@@ -277,6 +261,22 @@ static void queue_irq_counts_work(struct work_struct *irq_counts_work)
 static void queue_irq_counts_work(struct work_struct *irq_counts_work) { }
 static void compute_irq_stat(struct work_struct *work) { }
 #endif
+
+static int qcom_wdt_hibernation_notifier(struct notifier_block *nb,
+				unsigned long event, void *dummy)
+{
+	if (event == PM_HIBERNATION_PREPARE || ((event == PM_SUSPEND_PREPARE)
+				&& pm_suspend_via_firmware()))
+		wdog_data->hibernate = true;
+	else if (event == PM_POST_HIBERNATION || ((event == PM_POST_SUSPEND)
+				&& pm_suspend_via_firmware()))
+		wdog_data->hibernate = false;
+	return NOTIFY_OK;
+}
+
+static struct notifier_block qcom_wdt_notif_block = {
+	.notifier_call = qcom_wdt_hibernation_notifier,
+};
 
 #ifdef CONFIG_PM_SLEEP
 /**
@@ -306,6 +306,10 @@ int qcom_wdt_pet_suspend(struct device *dev)
 	wdog_data->ops->reset_wdt(wdog_data);
 	del_timer_sync(&wdog_data->pet_timer);
 	if (wdog_data->wakeup_irq_enable) {
+		if (wdog_data->hibernate) {
+			wdog_data->ops->disable_wdt(wdog_data);
+			wdog_data->enabled = false;
+		}
 		wdog_data->last_pet = sched_clock();
 		return 0;
 	}
@@ -328,6 +332,7 @@ EXPORT_SYMBOL(qcom_wdt_pet_suspend);
  */
 int qcom_wdt_pet_resume(struct device *dev)
 {
+	uint32_t val;
 	struct msm_watchdog_data *wdog_data =
 			(struct msm_watchdog_data *)dev_get_drvdata(dev);
 	unsigned long delay_time = 0;
@@ -335,6 +340,7 @@ int qcom_wdt_pet_resume(struct device *dev)
 	if (!wdog_data)
 		return 0;
 
+	val = BIT(EN);
 	if (wdog_data->user_pet_enabled) {
 		delay_time = msecs_to_jiffies(wdog_data->bark_time + 3 * 1000);
 		wdog_data->user_pet_timer.expires = jiffies + delay_time;
@@ -348,12 +354,19 @@ int qcom_wdt_pet_resume(struct device *dev)
 	wdog_data->freeze_in_progress = false;
 	spin_unlock(&wdog_data->freeze_lock);
 	if (wdog_data->wakeup_irq_enable) {
+		if (wdog_data->hibernate) {
+			wdog_data->ops->set_bark_time(wdog_data->bark_time, wdog_data);
+			wdog_data->ops->set_bite_time(wdog_data->bark_time + 3 * 1000, wdog_data);
+			val |= BIT(UNMASKED_INT_EN);
+			wdog_data->ops->enable_wdt(val, wdog_data);
+			wdog_data->enabled = true;
+		}
 		wdog_data->ops->reset_wdt(wdog_data);
 		wdog_data->last_pet = sched_clock();
 		return 0;
 	}
 
-	wdog_data->ops->enable_wdt(1, wdog_data);
+	wdog_data->ops->enable_wdt(val, wdog_data);
 	wdog_data->ops->reset_wdt(wdog_data);
 	wdog_data->enabled = true;
 	wdog_data->last_pet = sched_clock();
@@ -799,27 +812,6 @@ void qcom_wdt_trigger_bite(void)
 }
 EXPORT_SYMBOL(qcom_wdt_trigger_bite);
 
-void show_state_filter_wdt(unsigned long state_filter)
-{
-	struct task_struct *g, *p;
-
-	rcu_read_lock();
-	for_each_process_thread(g, p) {
-		/*
-		 * reset the NMI-timeout, listing all files on a slow
-		 * console might take a lot of time:
-		 * Also, reset softlockup watchdogs on all CPUs, because
-		 * another CPU might be blocked waiting for us to process
-		 * an IPI.
-		 */
-		touch_nmi_watchdog();
-		//touch_all_softlockup_watchdogs();
-		if (p->state == state_filter)
-			sched_show_task(p);
-	}
-	rcu_read_unlock();
-}
-
 static irqreturn_t qcom_wdt_bark_handler(int irq, void *dev_id)
 {
 	struct msm_watchdog_data *wdog_dd = dev_id;
@@ -827,22 +819,19 @@ static irqreturn_t qcom_wdt_bark_handler(int irq, void *dev_id)
 	unsigned long long t = sched_clock();
 
 	nanosec_rem = do_div(t, 1000000000);
-	dev_err(wdog_dd->dev, "QCOM Apps Watchdog bark! Now = %lu.%06lu\n",
+	dev_info(wdog_dd->dev, "QCOM Apps Watchdog bark! Now = %lu.%06lu\n",
 			(unsigned long) t, nanosec_rem / 1000);
 
 	nanosec_rem = do_div(wdog_dd->last_pet, 1000000000);
-	dev_err(wdog_dd->dev, "QCOM Apps Watchdog last pet at %lu.%06lu\n",
+	dev_info(wdog_dd->dev, "QCOM Apps Watchdog last pet at %lu.%06lu\n",
 			(unsigned long) wdog_dd->last_pet, nanosec_rem / 1000);
-
-	console_verbose();
-	show_state_filter_wdt(TASK_UNINTERRUPTIBLE);
-
 	if (wdog_dd->do_ipi_ping)
 		qcom_wdt_dump_cpu_alive_mask(wdog_dd);
 
 	if (wdog_dd->freeze_in_progress)
 		dev_info(wdog_dd->dev, "Suspend in progress\n");
 
+	md_dump_process();
 	qcom_wdt_trigger_bite();
 
 	return IRQ_HANDLED;
@@ -907,11 +896,17 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 			return -EINVAL;
 		}
 	}
+
+	wdog_data->hibernate = false;
+	ret = register_pm_notifier(&qcom_wdt_notif_block);
+	if (ret)
+		return ret;
+
 	INIT_WORK(&wdog_dd->irq_counts_work, compute_irq_stat);
 	atomic_set(&wdog_dd->irq_counts_running, 0);
 	delay_time = msecs_to_jiffies(wdog_dd->pet_time);
 	wdog_dd->ops->set_bark_time(wdog_dd->bark_time, wdog_dd);
-	wdog_dd->ops->set_bite_time(wdog_dd->bark_time + 10 * 1000, wdog_dd);
+	wdog_dd->ops->set_bite_time(wdog_dd->bark_time + 3 * 1000, wdog_dd);
 	wdog_dd->panic_blk.priority = INT_MAX - 1;
 	wdog_dd->panic_blk.notifier_call = qcom_wdt_panic_handler;
 	atomic_notifier_chain_register(&panic_notifier_list,
@@ -974,8 +969,8 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 
 static void qcom_wdt_dump_pdata(struct msm_watchdog_data *pdata)
 {
-	dev_err(pdata->dev, "wdog bark_time %d", pdata->bark_time);
-	dev_err(pdata->dev, "wdog pet_time %d", pdata->pet_time);
+	dev_dbg(pdata->dev, "wdog bark_time %d", pdata->bark_time);
+	dev_dbg(pdata->dev, "wdog pet_time %d", pdata->pet_time);
 	dev_dbg(pdata->dev, "wdog perform ipi ping %d", pdata->do_ipi_ping);
 	dev_dbg(pdata->dev, "wdog base address is 0x%lx\n", (unsigned long)
 								pdata->base);

@@ -13,6 +13,7 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter/nf_tables.h>
 #include <net/netfilter/nf_tables.h>
+#include <net/netfilter/nf_tables_offload.h>
 
 struct nft_counter {
 	s64		bytes;
@@ -60,7 +61,7 @@ static int nft_counter_do_init(const struct nlattr * const tb[],
 	struct nft_counter __percpu *cpu_stats;
 	struct nft_counter *this_cpu;
 
-	cpu_stats = alloc_percpu(struct nft_counter);
+	cpu_stats = alloc_percpu_gfp(struct nft_counter, GFP_KERNEL_ACCOUNT);
 	if (cpu_stats == NULL)
 		return -ENOMEM;
 
@@ -105,16 +106,11 @@ static void nft_counter_reset(struct nft_counter_percpu_priv *priv,
 			      struct nft_counter *total)
 {
 	struct nft_counter *this_cpu;
-	seqcount_t *myseq;
 
 	local_bh_disable();
 	this_cpu = this_cpu_ptr(priv->counter);
-	myseq = this_cpu_ptr(&nft_counter_seq);
-
-	write_seqcount_begin(myseq);
 	this_cpu->packets -= total->packets;
 	this_cpu->bytes -= total->bytes;
-	write_seqcount_end(myseq);
 	local_bh_enable();
 }
 
@@ -229,7 +225,7 @@ static void nft_counter_destroy(const struct nft_ctx *ctx,
 	nft_counter_do_destroy(priv);
 }
 
-static int nft_counter_clone(struct nft_expr *dst, const struct nft_expr *src, gfp_t gfp)
+static int nft_counter_clone(struct nft_expr *dst, const struct nft_expr *src)
 {
 	struct nft_counter_percpu_priv *priv = nft_expr_priv(src);
 	struct nft_counter_percpu_priv *priv_clone = nft_expr_priv(dst);
@@ -239,7 +235,7 @@ static int nft_counter_clone(struct nft_expr *dst, const struct nft_expr *src, g
 
 	nft_counter_fetch(priv, &total);
 
-	cpu_stats = alloc_percpu_gfp(struct nft_counter, gfp);
+	cpu_stats = alloc_percpu_gfp(struct nft_counter, GFP_ATOMIC);
 	if (cpu_stats == NULL)
 		return -ENOMEM;
 
@@ -253,6 +249,32 @@ static int nft_counter_clone(struct nft_expr *dst, const struct nft_expr *src, g
 	return 0;
 }
 
+static int nft_counter_offload(struct nft_offload_ctx *ctx,
+			       struct nft_flow_rule *flow,
+			       const struct nft_expr *expr)
+{
+	/* No specific offload action is needed, but report success. */
+	return 0;
+}
+
+static void nft_counter_offload_stats(struct nft_expr *expr,
+				      const struct flow_stats *stats)
+{
+	struct nft_counter_percpu_priv *priv = nft_expr_priv(expr);
+	struct nft_counter *this_cpu;
+	seqcount_t *myseq;
+
+	preempt_disable();
+	this_cpu = this_cpu_ptr(priv->counter);
+	myseq = this_cpu_ptr(&nft_counter_seq);
+
+	write_seqcount_begin(myseq);
+	this_cpu->packets += stats->pkts;
+	this_cpu->bytes += stats->bytes;
+	write_seqcount_end(myseq);
+	preempt_enable();
+}
+
 static struct nft_expr_type nft_counter_type;
 static const struct nft_expr_ops nft_counter_ops = {
 	.type		= &nft_counter_type,
@@ -263,6 +285,8 @@ static const struct nft_expr_ops nft_counter_ops = {
 	.destroy_clone	= nft_counter_destroy,
 	.dump		= nft_counter_dump,
 	.clone		= nft_counter_clone,
+	.offload	= nft_counter_offload,
+	.offload_stats	= nft_counter_offload_stats,
 };
 
 static struct nft_expr_type nft_counter_type __read_mostly = {

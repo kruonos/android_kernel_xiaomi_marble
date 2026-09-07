@@ -184,9 +184,9 @@ static int ads124s_reset(struct iio_dev *indio_dev)
 	struct ads124s_private *priv = iio_priv(indio_dev);
 
 	if (priv->reset_gpio) {
-		gpiod_set_value_cansleep(priv->reset_gpio, 0);
+		gpiod_set_value(priv->reset_gpio, 0);
 		udelay(200);
-		gpiod_set_value_cansleep(priv->reset_gpio, 1);
+		gpiod_set_value(priv->reset_gpio, 1);
 	} else {
 		return ads124s_write_cmd(indio_dev, ADS124S08_CMD_RESET);
 	}
@@ -326,8 +326,6 @@ static int ads124s_probe(struct spi_device *spi)
 		dev_info(&spi->dev, "Reset GPIO not defined\n");
 
 	ads124s_priv->chip_info = &ads124s_chip_info_tbl[spi_id->driver_data];
-
-	spi_set_drvdata(spi, indio_dev);
 
 	ads124s_priv->spi = spi;
 

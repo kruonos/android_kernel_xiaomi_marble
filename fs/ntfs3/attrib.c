@@ -242,7 +242,7 @@ int attr_make_nonresident(struct ntfs_inode *ni, struct ATTRIB *attr,
 	struct ntfs_sb_info *sbi;
 	struct ATTRIB *attr_s;
 	struct MFT_REC *rec;
-	u32 used, asize, rsize, aoff;
+	u32 used, asize, rsize, aoff, align;
 	bool is_data;
 	CLST len, alen;
 	char *next;
@@ -263,13 +263,10 @@ int attr_make_nonresident(struct ntfs_inode *ni, struct ATTRIB *attr,
 	rsize = le32_to_cpu(attr->res.data_size);
 	is_data = attr->type == ATTR_DATA && !attr->name_len;
 
-	/* len - how many clusters required to store 'rsize' bytes */
-	if (is_attr_compressed(attr)) {
-		u8 shift = sbi->cluster_bits + NTFS_LZNT_CUNIT;
-		len = ((rsize + (1u << shift) - 1) >> shift) << NTFS_LZNT_CUNIT;
-	} else {
-		len = bytes_to_cluster(sbi, rsize);
-	}
+	align = sbi->cluster_size;
+	if (is_attr_compressed(attr))
+		align <<= COMPRESSION_UNIT;
+	len = (rsize + align - 1) >> sbi->cluster_bits;
 
 	run_init(run);
 
@@ -1192,28 +1189,19 @@ int attr_load_runs_range(struct ntfs_inode *ni, enum ATTR_TYPE type,
 	CLST vcn = from >> cluster_bits;
 	CLST vcn_last = (to - 1) >> cluster_bits;
 	CLST lcn, clen;
-	int err = 0;
-	int retry = 0;
+	int err;
 
 	for (vcn = from >> cluster_bits; vcn <= vcn_last; vcn += clen) {
 		if (!run_lookup_entry(run, vcn, &lcn, &clen, NULL)) {
-			if (retry != 0) { /* Next run_lookup_entry(vcn) also failed. */
-				err = -EINVAL;
-				break;
-			}
 			err = attr_load_runs_vcn(ni, type, name, name_len, run,
 						 vcn);
 			if (err)
-				break;
-
+				return err;
 			clen = 0; /* Next run_lookup_entry(vcn) must be success. */
-			retry++;
 		}
-		else
-			retry = 0;
 	}
 
-	return err;
+	return 0;
 }
 
 #ifdef CONFIG_NTFS3_LZX_XPRESS
@@ -1574,7 +1562,6 @@ repack:
 
 	attr_b->nres.total_size = cpu_to_le64(total_size);
 	inode_set_bytes(&ni->vfs_inode, total_size);
-	ni->ni_flags |= NI_FLAG_UPDATE_PARENT;
 
 	mi_b->dirty = true;
 	mark_inode_dirty(&ni->vfs_inode);
@@ -1596,10 +1583,8 @@ repack:
 			le_b = NULL;
 			attr_b = ni_find_attr(ni, NULL, &le_b, ATTR_DATA, NULL,
 					      0, NULL, &mi_b);
-			if (!attr_b) {
-				err = -ENOENT;
-				goto out;
-			}
+			if (!attr_b)
+				return -ENOENT;
 
 			attr = attr_b;
 			le = le_b;
@@ -1680,15 +1665,13 @@ ins_ext:
 ok:
 	run_truncate_around(run, vcn);
 out:
-	if (attr_b) {
-		if (new_valid > data_size)
-			new_valid = data_size;
+	if (new_valid > data_size)
+		new_valid = data_size;
 
-		valid_size = le64_to_cpu(attr_b->nres.valid_size);
-		if (new_valid != valid_size) {
-			attr_b->nres.valid_size = cpu_to_le64(valid_size);
-			mi_b->dirty = true;
-		}
+	valid_size = le64_to_cpu(attr_b->nres.valid_size);
+	if (new_valid != valid_size) {
+		attr_b->nres.valid_size = cpu_to_le64(valid_size);
+		mi_b->dirty = true;
 	}
 
 	return err;

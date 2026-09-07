@@ -143,14 +143,13 @@ static int gio_device_probe(struct device *dev)
 	return error;
 }
 
-static int gio_device_remove(struct device *dev)
+static void gio_device_remove(struct device *dev)
 {
 	struct gio_device *gio_dev = to_gio_device(dev);
 	struct gio_driver *drv = to_gio_driver(dev->driver);
 
 	if (dev->driver && drv->remove)
 		drv->remove(gio_dev);
-	return 0;
 }
 
 static void gio_device_shutdown(struct device *dev)
@@ -372,8 +371,7 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 		gio_dev->resource.flags = IORESOURCE_MEM;
 		gio_dev->irq = irq;
 		dev_set_name(&gio_dev->dev, "%d", slotno);
-		if (gio_device_register(gio_dev))
-			gio_dev_put(gio_dev);
+		gio_device_register(gio_dev);
 	} else
 		printk(KERN_INFO "GIO: slot %d : Empty\n", slotno);
 }

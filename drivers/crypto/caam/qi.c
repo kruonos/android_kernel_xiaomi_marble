@@ -115,12 +115,12 @@ int caam_qi_enqueue(struct device *qidev, struct caam_drv_req *req)
 	qm_fd_addr_set64(&fd, addr);
 
 	do {
-		refcount_inc(&req->drv_ctx->refcnt);
 		ret = qman_enqueue(req->drv_ctx->req_fq, &fd);
-		if (likely(!ret))
+		if (likely(!ret)) {
+			refcount_inc(&req->drv_ctx->refcnt);
 			return 0;
+		}
 
-		refcount_dec(&req->drv_ctx->refcnt);
 		if (ret != -EBUSY)
 			break;
 		num_retries++;
@@ -545,14 +545,10 @@ static void cgr_cb(struct qman_portal *qm, struct qman_cgr *cgr, int congested)
 	}
 }
 
-static int caam_qi_napi_schedule(struct qman_portal *p, struct caam_napi *np)
+static int caam_qi_napi_schedule(struct qman_portal *p, struct caam_napi *np,
+				 bool sched_napi)
 {
-	/*
-	 * In case of threaded ISR, for RT kernels in_irq() does not return
-	 * appropriate value, so use in_serving_softirq to distinguish between
-	 * softirq and irq contexts.
-	 */
-	if (unlikely(in_irq() || !in_serving_softirq())) {
+	if (sched_napi) {
 		/* Disable QMan IRQ source and invoke NAPI */
 		qman_p_irqsource_remove(p, QM_PIRQ_DQRI);
 		np->p = p;
@@ -564,7 +560,8 @@ static int caam_qi_napi_schedule(struct qman_portal *p, struct caam_napi *np)
 
 static enum qman_cb_dqrr_result caam_rsp_fq_dqrr_cb(struct qman_portal *p,
 						    struct qman_fq *rsp_fq,
-						    const struct qm_dqrr_entry *dqrr)
+						    const struct qm_dqrr_entry *dqrr,
+						    bool sched_napi)
 {
 	struct caam_napi *caam_napi = raw_cpu_ptr(&pcpu_qipriv.caam_napi);
 	struct caam_drv_req *drv_req;
@@ -573,7 +570,7 @@ static enum qman_cb_dqrr_result caam_rsp_fq_dqrr_cb(struct qman_portal *p,
 	struct caam_drv_private *priv = dev_get_drvdata(qidev);
 	u32 status;
 
-	if (caam_qi_napi_schedule(p, caam_napi))
+	if (caam_qi_napi_schedule(p, caam_napi, sched_napi))
 		return qman_cb_dqrr_stop;
 
 	fd = &dqrr->fd;
@@ -768,7 +765,7 @@ int caam_qi_init(struct platform_device *caam_pdev)
 
 	caam_debugfs_qi_init(ctrlpriv);
 
-	err = devm_add_action_or_reset(qidev, caam_qi_shutdown, qidev);
+	err = devm_add_action_or_reset(qidev, caam_qi_shutdown, ctrlpriv);
 	if (err)
 		return err;
 

@@ -21,16 +21,16 @@ struct qcom_secure_system_heap {
 #ifdef CONFIG_QCOM_DMABUF_HEAPS_SYSTEM_SECURE
 void qcom_secure_system_heap_create(const char *name, const char *secure_system_alias,
 				    int vmid);
-int qcom_secure_system_freeze(void);
-int qcom_secure_system_restore(void);
+int qcom_secure_system_heap_freeze(void);
+int qcom_secure_system_heap_restore(void);
 #else
 static void qcom_secure_system_heap_create(const char *name, const char *secure_system_alias,
 					   int vmid)
 {
 
 }
-static inline int qcom_secure_system_freeze(void) { return 0; }
-static inline int qcom_secure_system_restore(void) { return 0; }
+static inline int qcom_secure_system_heap_freeze(void) { return 0; }
+static inline int qcom_secure_system_heap_restore(void) { return 0; }
 #endif
 
 #endif /* _QCOM_SECURE_SYSTEM_HEAP_H */

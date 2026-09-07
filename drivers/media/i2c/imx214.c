@@ -20,9 +20,7 @@
 #include <media/v4l2-subdev.h>
 
 #define IMX214_DEFAULT_CLK_FREQ	24000000
-#define IMX214_DEFAULT_LINK_FREQ	600000000
-/* Keep wrong link frequency for backward compatibility */
-#define IMX214_DEFAULT_LINK_FREQ_LEGACY	480000000
+#define IMX214_DEFAULT_LINK_FREQ 480000000
 #define IMX214_DEFAULT_PIXEL_RATE ((IMX214_DEFAULT_LINK_FREQ * 8LL) / 10)
 #define IMX214_FPS 30
 #define IMX214_MBUS_CODE MEDIA_BUS_FMT_SRGGB10_1X10
@@ -476,7 +474,7 @@ static int __maybe_unused imx214_power_off(struct device *dev)
 }
 
 static int imx214_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index > 0)
@@ -488,7 +486,7 @@ static int imx214_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int imx214_enum_frame_size(struct v4l2_subdev *subdev,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->code != IMX214_MBUS_CODE)
@@ -536,13 +534,13 @@ static const struct v4l2_subdev_core_ops imx214_core_ops = {
 
 static struct v4l2_mbus_framefmt *
 __imx214_get_pad_format(struct imx214 *imx214,
-			struct v4l2_subdev_pad_config *cfg,
+			struct v4l2_subdev_state *sd_state,
 			unsigned int pad,
 			enum v4l2_subdev_format_whence which)
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		return v4l2_subdev_get_try_format(&imx214->sd, cfg, pad);
+		return v4l2_subdev_get_try_format(&imx214->sd, sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &imx214->fmt;
 	default:
@@ -551,13 +549,14 @@ __imx214_get_pad_format(struct imx214 *imx214,
 }
 
 static int imx214_get_format(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
+			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_format *format)
 {
 	struct imx214 *imx214 = to_imx214(sd);
 
 	mutex_lock(&imx214->mutex);
-	format->format = *__imx214_get_pad_format(imx214, cfg, format->pad,
+	format->format = *__imx214_get_pad_format(imx214, sd_state,
+						  format->pad,
 						  format->which);
 	mutex_unlock(&imx214->mutex);
 
@@ -565,12 +564,13 @@ static int imx214_get_format(struct v4l2_subdev *sd,
 }
 
 static struct v4l2_rect *
-__imx214_get_pad_crop(struct imx214 *imx214, struct v4l2_subdev_pad_config *cfg,
+__imx214_get_pad_crop(struct imx214 *imx214,
+		      struct v4l2_subdev_state *sd_state,
 		      unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		return v4l2_subdev_get_try_crop(&imx214->sd, cfg, pad);
+		return v4l2_subdev_get_try_crop(&imx214->sd, sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &imx214->crop;
 	default:
@@ -579,7 +579,7 @@ __imx214_get_pad_crop(struct imx214 *imx214, struct v4l2_subdev_pad_config *cfg,
 }
 
 static int imx214_set_format(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
+			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_format *format)
 {
 	struct imx214 *imx214 = to_imx214(sd);
@@ -589,7 +589,8 @@ static int imx214_set_format(struct v4l2_subdev *sd,
 
 	mutex_lock(&imx214->mutex);
 
-	__crop = __imx214_get_pad_crop(imx214, cfg, format->pad, format->which);
+	__crop = __imx214_get_pad_crop(imx214, sd_state, format->pad,
+				       format->which);
 
 	mode = v4l2_find_nearest_size(imx214_modes,
 				      ARRAY_SIZE(imx214_modes), width, height,
@@ -599,7 +600,7 @@ static int imx214_set_format(struct v4l2_subdev *sd,
 	__crop->width = mode->width;
 	__crop->height = mode->height;
 
-	__format = __imx214_get_pad_format(imx214, cfg, format->pad,
+	__format = __imx214_get_pad_format(imx214, sd_state, format->pad,
 					   format->which);
 	__format->width = __crop->width;
 	__format->height = __crop->height;
@@ -619,7 +620,7 @@ static int imx214_set_format(struct v4l2_subdev *sd,
 }
 
 static int imx214_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 	struct imx214 *imx214 = to_imx214(sd);
@@ -628,22 +629,22 @@ static int imx214_get_selection(struct v4l2_subdev *sd,
 		return -EINVAL;
 
 	mutex_lock(&imx214->mutex);
-	sel->r = *__imx214_get_pad_crop(imx214, cfg, sel->pad,
+	sel->r = *__imx214_get_pad_crop(imx214, sd_state, sel->pad,
 					sel->which);
 	mutex_unlock(&imx214->mutex);
 	return 0;
 }
 
 static int imx214_entity_init_cfg(struct v4l2_subdev *subdev,
-				  struct v4l2_subdev_pad_config *cfg)
+				  struct v4l2_subdev_state *sd_state)
 {
 	struct v4l2_subdev_format fmt = { };
 
-	fmt.which = cfg ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
+	fmt.which = sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 	fmt.format.width = imx214_modes[0].width;
 	fmt.format.height = imx214_modes[0].height;
 
-	imx214_set_format(subdev, cfg, &fmt);
+	imx214_set_format(subdev, sd_state, &fmt);
 
 	return 0;
 }
@@ -778,11 +779,9 @@ static int imx214_s_stream(struct v4l2_subdev *subdev, int enable)
 		return 0;
 
 	if (enable) {
-		ret = pm_runtime_get_sync(imx214->dev);
-		if (ret < 0) {
-			pm_runtime_put_noidle(imx214->dev);
+		ret = pm_runtime_resume_and_get(imx214->dev);
+		if (ret < 0)
 			return ret;
-		}
 
 		ret = imx214_start_streaming(imx214);
 		if (ret < 0)
@@ -812,7 +811,7 @@ static int imx214_g_frame_interval(struct v4l2_subdev *subdev,
 }
 
 static int imx214_enum_frame_interval(struct v4l2_subdev *subdev,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_frame_interval_enum *fie)
 {
 	const struct imx214_mode *mode;
@@ -893,25 +892,16 @@ static int imx214_parse_fwnode(struct device *dev)
 		goto done;
 	}
 
-	if (bus_cfg.nr_of_link_frequencies != 1)
-		dev_warn(dev, "Only one link-frequency supported, please review your DT. Continuing anyway\n");
-
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++) {
+	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
 		if (bus_cfg.link_frequencies[i] == IMX214_DEFAULT_LINK_FREQ)
 			break;
-		if (bus_cfg.link_frequencies[i] ==
-		    IMX214_DEFAULT_LINK_FREQ_LEGACY) {
-			dev_warn(dev,
-				 "link-frequencies %d not supported, please review your DT. Continuing anyway\n",
-				 IMX214_DEFAULT_LINK_FREQ);
-			break;
-		}
-	}
 
-	if (i == bus_cfg.nr_of_link_frequencies)
-		ret = dev_err_probe(dev, -EINVAL,
-				    "link-frequencies %d not supported, please review your DT\n",
-				    IMX214_DEFAULT_LINK_FREQ);
+	if (i == bus_cfg.nr_of_link_frequencies) {
+		dev_err(dev, "link-frequencies %d not supported, Please review your DT\n",
+			IMX214_DEFAULT_LINK_FREQ);
+		ret = -EINVAL;
+		goto done;
+	}
 
 done:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -1072,7 +1062,7 @@ static int imx214_probe(struct i2c_client *client)
 
 	imx214_entity_init_cfg(&imx214->sd, NULL);
 
-	ret = v4l2_async_register_subdev_sensor_common(&imx214->sd);
+	ret = v4l2_async_register_subdev_sensor(&imx214->sd);
 	if (ret < 0) {
 		dev_err(dev, "could not register v4l2 device\n");
 		goto free_entity;

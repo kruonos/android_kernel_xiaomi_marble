@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2015, 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -598,6 +599,14 @@ struct mdm_drv_data sdx_lemur = {
 	.fw = "sdx65m/xbl.elf",
 };
 
+struct mdm_drv_data sdx_pinn = {
+	.fw = "sdx75m/xbl_s.melf",
+};
+
+struct mdm_drv_data sdx_baagha = {
+	.fw = "sdx35m/xbl.elf",
+};
+
 struct esoc_compat compat_table[] = {
 	{
 		.name = "MDM9x55",
@@ -614,6 +623,14 @@ struct esoc_compat compat_table[] = {
 	{
 		.name = "SDXLEMUR",
 		.data = &sdx_lemur,
+	},
+	{
+		.name = "SDXPINN",
+		.data = &sdx_pinn,
+	},
+	{
+		.name = "SDXBAAGHA",
+		.data = &sdx_baagha,
 	},
 };
 

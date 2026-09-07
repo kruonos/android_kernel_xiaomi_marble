@@ -535,7 +535,14 @@ int ubi_io_sync_erase(struct ubi_device *ubi, int pnum, int torture)
 		return -EROFS;
 	}
 
-	if (ubi->nor_flash) {
+	/*
+	 * If the flash is ECC-ed then we have to erase the ECC block before we
+	 * can write to it. But the write is in preparation to an erase in the
+	 * first place. This means we cannot zero out EC and VID before the
+	 * erase and we just have to hope the flash starts erasing from the
+	 * start of the page.
+	 */
+	if (ubi->nor_flash && ubi->mtd->writesize == 1) {
 		err = nor_erase_prepare(ubi, pnum);
 		if (err)
 			return err;
@@ -906,12 +913,7 @@ static int validate_vid_hdr(const struct ubi_device *ubi,
 				ubi_err(ubi, "bad data_size");
 				goto bad;
 			}
-		} else if (lnum == used_ebs - 1) {
-			if (data_size == 0) {
-				ubi_err(ubi, "bad data_size at last LEB");
-				goto bad;
-			}
-		} else {
+		} else if (lnum > used_ebs - 1) {
 			ubi_err(ubi, "too high lnum");
 			goto bad;
 		}
@@ -1056,6 +1058,15 @@ int ubi_io_write_vid_hdr(struct ubi_device *ubi, int pnum,
 	dbg_io("write VID header to PEB %d", pnum);
 	ubi_assert(pnum >= 0 &&  pnum < ubi->peb_count);
 
+	/*
+	 * Re-erase the PEB before using it. This should minimize any issues
+	 * from decay of charge in this block.
+	 */
+	if (ubi->wl_is_inited) {
+		err = ubi_wl_re_erase_peb(ubi, pnum);
+		if (err)
+			return err;
+	}
 	err = self_check_peb_ec_hdr(ubi, pnum);
 	if (err)
 		return err;
@@ -1074,6 +1085,8 @@ int ubi_io_write_vid_hdr(struct ubi_device *ubi, int pnum,
 
 	err = ubi_io_write(ubi, p, pnum, ubi->vid_hdr_aloffset,
 			   ubi->vid_hdr_alsize);
+	if (!err && ubi->wl_is_inited)
+		ubi_wl_update_peb_sqnum(ubi, pnum, vid_hdr);
 	return err;
 }
 

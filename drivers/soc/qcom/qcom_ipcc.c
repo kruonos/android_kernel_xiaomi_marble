@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -10,9 +9,7 @@
 #include <linux/irqdomain.h>
 #include <linux/platform_device.h>
 #include <linux/mailbox_controller.h>
-#include <linux/msm_rtb.h>
 #include <dt-bindings/soc/qcom,ipcc.h>
-#include <linux/suspend.h>
 
 /* IPCC Register offsets */
 #define IPCC_REG_SEND_ID		0x0C
@@ -59,7 +56,6 @@ struct ipcc_protocol_data {
 struct ipcc_mbox_chan {
 	u16 client_id;
 	u16 signal_id;
-	u16 is_signal_enabled;
 	struct mbox_chan *chan;
 	struct ipcc_protocol_data *proto_data;
 };
@@ -86,7 +82,7 @@ static irqreturn_t qcom_ipcc_irq_fn(int irq, void *data)
 	int virq;
 
 	for (;;) {
-		packed_id = readl_no_log(proto_data->base + IPCC_REG_RECV_ID);
+		packed_id = readl(proto_data->base + IPCC_REG_RECV_ID);
 		if (packed_id == IPCC_NO_PENDING_IRQ)
 			break;
 
@@ -97,32 +93,13 @@ static irqreturn_t qcom_ipcc_irq_fn(int irq, void *data)
 			qcom_ipcc_get_client_id(packed_id),
 			qcom_ipcc_get_signal_id(packed_id), virq);
 
-		writel_no_log(packed_id,
+		writel(packed_id,
 				proto_data->base + IPCC_REG_RECV_SIGNAL_CLEAR);
 
 		generic_handle_irq(virq);
 	}
 
 	return IRQ_HANDLED;
-}
-
-static void qcom_ipcc_update_irq_status(struct ipcc_protocol_data *ipcc,
-		irq_hw_number_t hwirq, bool is_enabled)
-{
-	struct ipcc_mbox_chan *qcom_ipcc_chan_info;
-	int chan_id;
-
-	for (chan_id = 0; chan_id < ipcc->num_chans; chan_id++) {
-		qcom_ipcc_chan_info = ipcc->chans[chan_id].con_priv;
-		if (!qcom_ipcc_chan_info)
-			break;
-
-		if (qcom_ipcc_chan_info->client_id == FIELD_GET(IPCC_CLIENT_ID_MASK, hwirq) &&
-			qcom_ipcc_chan_info->signal_id == FIELD_GET(IPCC_SIGNAL_ID_MASK, hwirq)) {
-			qcom_ipcc_chan_info->is_signal_enabled = is_enabled;
-			break;
-		}
-	}
 }
 
 static void qcom_ipcc_mask_irq(struct irq_data *irqd)
@@ -138,8 +115,7 @@ static void qcom_ipcc_mask_irq(struct irq_data *irqd)
 		"%s: Disabling interrupts for: client_id: %u; signal_id: %u\n",
 		__func__, sender_client_id, sender_signal_id);
 
-	qcom_ipcc_update_irq_status(proto_data, hwirq, 0);
-	writel_no_log(hwirq, proto_data->base + IPCC_REG_RECV_SIGNAL_DISABLE);
+	writel(hwirq, proto_data->base + IPCC_REG_RECV_SIGNAL_DISABLE);
 }
 
 static void qcom_ipcc_unmask_irq(struct irq_data *irqd)
@@ -155,8 +131,7 @@ static void qcom_ipcc_unmask_irq(struct irq_data *irqd)
 		"%s: Enabling interrupts for: client_id: %u; signal_id: %u\n",
 		__func__, sender_client_id, sender_signal_id);
 
-	qcom_ipcc_update_irq_status(proto_data, hwirq, 1);
-	writel_no_log(hwirq, proto_data->base + IPCC_REG_RECV_SIGNAL_ENABLE);
+	writel(hwirq, proto_data->base + IPCC_REG_RECV_SIGNAL_ENABLE);
 }
 
 static struct irq_chip qcom_ipcc_irq_chip = {
@@ -214,7 +189,7 @@ static int qcom_ipcc_mbox_send_data(struct mbox_chan *chan, void *data)
 
 	packed_id = qcom_ipcc_get_packed_id(ipcc_mbox_chan->client_id,
 						ipcc_mbox_chan->signal_id);
-	writel_no_log(packed_id, proto_data->base + IPCC_REG_SEND_ID);
+	writel(packed_id, proto_data->base + IPCC_REG_SEND_ID);
 
 	return 0;
 }
@@ -328,72 +303,6 @@ static int qcom_ipcc_setup_mbox(struct ipcc_protocol_data *proto_data,
 	return mbox_controller_register(mbox);
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int qcom_ipcc_pm_suspend(struct device *dev)
-{
-	return 0;
-}
-
-static void qcom_ipcc_restore_unmask_irq(struct device *dev)
-{
-	struct ipcc_mbox_chan *qcom_ipcc_chan_info;
-	int chan_id;
-	u32 packed_id;
-	struct ipcc_protocol_data *ipcc = dev_get_drvdata(dev);
-
-	if (!ipcc || !ipcc->num_chans)
-		return;
-
-	for (chan_id = 0; chan_id < ipcc->num_chans; chan_id++) {
-		qcom_ipcc_chan_info = ipcc->chans[chan_id].con_priv;
-		if (!qcom_ipcc_chan_info)
-			break;
-
-		packed_id = qcom_ipcc_get_packed_id(qcom_ipcc_chan_info->client_id,
-				qcom_ipcc_chan_info->signal_id);
-		if (qcom_ipcc_chan_info->is_signal_enabled) {
-			dev_dbg(dev,
-				"%s: restore 0x%lx for client_id: %u signal_id: %u\n",
-				__func__, packed_id, qcom_ipcc_chan_info->client_id,
-				qcom_ipcc_chan_info->signal_id);
-			writel_relaxed(packed_id,
-				ipcc->base + IPCC_REG_RECV_SIGNAL_ENABLE);
-		}
-	}
-}
-
-static int qcom_ipcc_pm_resume(struct device *dev)
-{
-	int virq;
-	struct irq_desc *desc;
-	const char *name = "null";
-	u32 packed_id;
-	struct ipcc_protocol_data *proto_data = dev_get_drvdata(dev);
-
-	qcom_ipcc_restore_unmask_irq(dev);
-
-	packed_id = readl_no_log(proto_data->base + IPCC_REG_RECV_ID);
-	if (packed_id == IPCC_NO_PENDING_IRQ)
-		return 0;
-
-	virq = irq_find_mapping(proto_data->irq_domain, packed_id);
-	desc = irq_to_desc(virq);
-	if (desc == NULL)
-		name = "stray irq";
-	else if (desc->action && desc->action->name)
-		name = desc->action->name;
-
-	pr_warn("%s: %d triggered %s (client-id: %u; signal-id: %u\n",
-		__func__, virq, name, qcom_ipcc_get_client_id(packed_id),
-		qcom_ipcc_get_signal_id(packed_id));
-
-	return 0;
-}
-#else
-#define qcom_ipcc_pm_suspend NULL
-#define qcom_ipcc_pm_resume NULL
-#endif
-
 static int qcom_ipcc_probe(struct platform_device *pdev)
 {
 	struct ipcc_protocol_data *proto_data;
@@ -481,17 +390,12 @@ static const struct of_device_id qcom_ipcc_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, qcom_ipcc_of_match);
 
-static const struct dev_pm_ops qcom_ipcc_dev_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(qcom_ipcc_pm_suspend, qcom_ipcc_pm_resume)
-};
-
 static struct platform_driver qcom_ipcc_driver = {
 	.probe = qcom_ipcc_probe,
 	.remove = qcom_ipcc_remove,
 	.driver = {
 		.name = "qcom_ipcc",
 		.of_match_table = qcom_ipcc_of_match,
-		.pm = &qcom_ipcc_dev_pm_ops,
 	},
 };
 

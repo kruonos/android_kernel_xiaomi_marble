@@ -4,6 +4,11 @@ set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 KERNEL_DIR="${KERNEL_DIR:-${BASE_DIR}}"
 KERNEL_DIR="$(realpath -- "$KERNEL_DIR")"
+if ! grep -qx 'VERSION = 5' "$KERNEL_DIR/Makefile" ||
+   ! grep -qx 'PATCHLEVEL = 10' "$KERNEL_DIR/Makefile"; then
+	echo 'legacy 5.10 packaging disabled: 5.15 packaging is not validated' >&2
+	exit 1
+fi
 RELEASE_DIR="${RELEASE_DIR:-${KERNEL_DIR}/release}"
 TEMPLATE_DIR="${TEMPLATE_DIR:-${KERNEL_DIR}/consolidation/templates/known-good-ak3}"
 export TMPDIR="$(realpath -m -- "${KERNEL_DIR}/consolidation/scratch/package")"

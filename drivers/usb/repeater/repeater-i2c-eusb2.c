@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -18,7 +18,6 @@
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
 #include <linux/usb/repeater.h>
-#include <linux/usb/dwc3-msm.h>
 
 #define EUSB2_3P0_VOL_MIN			3075000 /* uV */
 #define EUSB2_3P0_VOL_MAX			3300000 /* uV */
@@ -90,8 +89,6 @@ struct eusb2_repeater {
 	struct gpio_desc		*reset_gpiod;
 	u32				*param_override_seq;
 	u8				param_override_seq_cnt;
-	u32				*param_override_seq_host;
-	u8				param_override_seq_cnt_host;
 };
 
 static const struct regmap_config eusb2_i2c_regmap = {
@@ -117,7 +114,7 @@ static int eusb2_i2c_read_reg(struct eusb2_repeater *er, u8 reg, u8 *val)
 	return 0;
 }
 
-static int eusb2_i2c_write_reg(struct eusb2_repeater *er, u8 reg, u32 val)
+static int eusb2_i2c_write_reg(struct eusb2_repeater *er, u8 reg, u8 val)
 {
 	int ret;
 
@@ -244,7 +241,7 @@ err_vdd18:
 	return ret;
 }
 
-static int eusb2_repeater_init(struct usb_repeater *ur, unsigned int flags)
+static int eusb2_repeater_init(struct usb_repeater *ur)
 {
 	struct eusb2_repeater *er =
 			container_of(ur, struct eusb2_repeater, ur);
@@ -268,18 +265,11 @@ static int eusb2_repeater_init(struct usb_repeater *ur, unsigned int flags)
 	dev_info(er->ur.dev, "eUSB2 repeater version = 0x%x ur->flags:0x%x\n", reg_val, ur->flags);
 
 	/* override init sequence using devicetree based values */
-	if (er->param_override_seq_cnt) {
-		if (flags & PHY_HOST_MODE) {
-			/*it's host, then write host eye params*/
-			eusb2_repeater_update_seq(er, er->param_override_seq_host,
-					er->param_override_seq_cnt_host);
-			dev_info(er->ur.dev, "eUSB2 repeater init host \n");
-		} else {
-			eusb2_repeater_update_seq(er, er->param_override_seq,
+	if (er->param_override_seq_cnt)
+		eusb2_repeater_update_seq(er, er->param_override_seq,
 					er->param_override_seq_cnt);
-			dev_info(er->ur.dev, "eUSB2 repeater init device!\n");
-		}
-	}
+
+	dev_info(er->ur.dev, "eUSB2 repeater init\n");
 
 	return 0;
 }
@@ -348,6 +338,11 @@ static int eusb2_repeater_i2c_probe(struct i2c_client *client)
 
 	er->dev = dev;
 	match = of_match_node(eusb2_repeater_id_table, dev->of_node);
+	if (!match) {
+		dev_err(dev, "eUSB2 repeater node not found.\n");
+		return -EINVAL;
+	}
+
 	er->chip = match->data;
 
 	er->regmap = devm_regmap_init_i2c(client, &eusb2_i2c_regmap);
@@ -415,36 +410,6 @@ static int eusb2_repeater_i2c_probe(struct i2c_client *client)
 		}
 	}
 
-	/*This is for host params. start*/
-	num_elem = of_property_count_elems_of_size(dev->of_node, "qcom,param-override-seq-host",
-				sizeof(*er->param_override_seq_host));
-	if (num_elem > 0) {
-		if (num_elem % 2) {
-			dev_err(dev, "invalid param_override_seq_len\n");
-			ret = -EINVAL;
-			goto err_probe;
-		}
-
-		er->param_override_seq_cnt_host = num_elem;
-		er->param_override_seq_host = devm_kcalloc(dev,
-				er->param_override_seq_cnt_host,
-				sizeof(*er->param_override_seq_host), GFP_KERNEL);
-		if (!er->param_override_seq_host) {
-			ret = -ENOMEM;
-			goto err_probe;
-		}
-
-		ret = of_property_read_u32_array(dev->of_node,
-				"qcom,param-override-seq-host",
-				er->param_override_seq_host,
-				er->param_override_seq_cnt_host);
-		if (ret) {
-			dev_err(dev, "qcom,param-override-seq-host read failed %d\n",
-									ret);
-			goto err_probe;
-		}
-	}
-	/*This is for host params. end*/
 
 	er->ur.dev = dev;
 
@@ -456,7 +421,6 @@ static int eusb2_repeater_i2c_probe(struct i2c_client *client)
 	ret = usb_add_repeater_dev(&er->ur);
 	if (ret)
 		goto err_probe;
-	pr_info("%s success.\n", __func__);
 
 	return 0;
 

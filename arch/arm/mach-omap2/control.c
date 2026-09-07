@@ -136,11 +136,6 @@ struct omap3_control_regs {
 static struct omap3_control_regs control_context;
 #endif /* CONFIG_ARCH_OMAP3 && CONFIG_PM */
 
-void __init omap2_set_globals_control(void __iomem *ctrl)
-{
-	omap2_ctrl_base = ctrl;
-}
-
 u8 omap_ctrl_readb(u16 offset)
 {
 	u32 val;
@@ -774,10 +769,8 @@ int __init omap2_control_base_init(void)
 		data = (struct control_init_data *)match->data;
 
 		mem = of_iomap(np, 0);
-		if (!mem) {
-			of_node_put(np);
+		if (!mem)
 			return -ENOMEM;
-		}
 
 		if (data->index == TI_CLKM_CTRL) {
 			omap2_ctrl_base = mem;
@@ -798,7 +791,7 @@ int __init omap2_control_base_init(void)
  */
 int __init omap_control_init(void)
 {
-	struct device_node *np, *scm_conf, *clocks_node;
+	struct device_node *np, *scm_conf;
 	const struct of_device_id *match;
 	const struct omap_prcm_init_data *data;
 	int ret;
@@ -817,27 +810,22 @@ int __init omap_control_init(void)
 		if (scm_conf) {
 			syscon = syscon_node_to_regmap(scm_conf);
 
-			if (IS_ERR(syscon)) {
-				ret = PTR_ERR(syscon);
-				goto err_put_scm_conf;
-			}
+			if (IS_ERR(syscon))
+				return PTR_ERR(syscon);
 
-			clocks_node = of_get_child_by_name(scm_conf, "clocks");
-			if (clocks_node) {
-				of_node_put(clocks_node);
+			if (of_get_child_by_name(scm_conf, "clocks")) {
 				ret = omap2_clk_provider_init(scm_conf,
 							      data->index,
 							      syscon, NULL);
 				if (ret)
-					goto err_put_scm_conf;
+					return ret;
 			}
-			of_node_put(scm_conf);
 		} else {
 			/* No scm_conf found, direct access */
 			ret = omap2_clk_provider_init(np, data->index, NULL,
 						      data->mem);
 			if (ret)
-				goto of_node_put;
+				return ret;
 		}
 	}
 
@@ -848,14 +836,6 @@ int __init omap_control_init(void)
 	}
 
 	return 0;
-
-err_put_scm_conf:
-	if (scm_conf)
-		of_node_put(scm_conf);
-of_node_put:
-	of_node_put(np);
-	return ret;
-
 }
 
 /**

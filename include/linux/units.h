@@ -2,7 +2,7 @@
 #ifndef _LINUX_UNITS_H
 #define _LINUX_UNITS_H
 
-#include <linux/kernel.h>
+#include <linux/math.h>
 
 /* Metric prefixes in accordance with Système international (d'unités) */
 #define PETA	1000000000000000ULL

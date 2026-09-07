@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
@@ -18,6 +19,7 @@
 
 #include "thermal_sensor_service_v02.h"
 #include "qmi_sensors.h"
+#include "thermal_zone_internal.h"
 
 #define QMI_SENS_DRIVER		"qmi-therm-sensors-v2"
 #define QMI_TS_RESP_TOUT	msecs_to_jiffies(100)
@@ -193,7 +195,7 @@ static int qmi_ts_request(struct qmi_sensor *qmi_sens,
 	memset(&req, 0, sizeof(req));
 	memset(&resp, 0, sizeof(resp));
 
-	strlcpy(req.sensor_id.sensor_id, qmi_sens->qmi_name,
+	strscpy(req.sensor_id.sensor_id, qmi_sens->qmi_name,
 		QMI_TS_SENSOR_ID_LENGTH_MAX_V02);
 	req.seq_num = 0;
 	if (send_current_temp_report) {
@@ -259,9 +261,17 @@ static int qmi_sensor_set_trips(void *data, int low, int high)
 	return ret;
 }
 
+static int qmi_sensor_tz_change_mode(void *data, enum thermal_device_mode mode)
+{
+	struct qmi_sensor *qmi_sens = (struct qmi_sensor *)data;
+
+	return qti_tz_change_mode(qmi_sens->tz_dev, mode);
+}
+
 static struct thermal_zone_of_device_ops qmi_sensor_ops = {
 	.get_temp = qmi_sensor_read,
 	.set_trips = qmi_sensor_set_trips,
+	.change_mode = qmi_sensor_tz_change_mode,
 };
 
 static struct qmi_msg_handler handlers[] = {
@@ -291,8 +301,8 @@ static int qmi_register_sensor_device(struct qmi_sensor *qmi_sens)
 		qmi_sens->tz_dev = NULL;
 		return ret;
 	}
-	pr_debug("Sensor register success for %s\n", qmi_sens->qmi_name);
 
+	pr_debug("Sensor register success for %s\n", qmi_sens->qmi_name);
 	return 0;
 }
 
@@ -541,7 +551,7 @@ static int of_get_qmi_ts_platform_data(struct device *dev)
 			of_property_read_string_index(subsys_np,
 					"qcom,qmi-sensor-names", sens_idx,
 					&qmi_name);
-			strlcpy(qmi_sens->qmi_name, qmi_name,
+			strscpy(qmi_sens->qmi_name, qmi_name,
 						QMI_CLIENT_NAME_LENGTH);
 			/* Check for supported qmi sensors */
 			for (i = 0; i < QMI_TS_MAX_NR; i++) {

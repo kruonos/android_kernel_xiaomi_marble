@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define KMSG_COMPONENT "QDSS diag bridge"
@@ -512,7 +512,7 @@ static int mhi_ch_open(struct qdss_bridge_drvdata *drvdata)
 	}
 	spin_unlock_bh(&drvdata->lock);
 
-	ret = mhi_prepare_for_transfer(drvdata->mhi_dev);
+	ret = mhi_prepare_for_transfer(drvdata->mhi_dev, 0);
 	if (ret) {
 		pr_err("Unable to open MHI channel\n");
 		return ret;
@@ -780,7 +780,7 @@ static int mhi_uci_open(struct inode *inode, struct file *filp)
 	}
 	spin_unlock_bh(&drvdata->lock);
 
-	ret = mhi_prepare_for_transfer(drvdata->mhi_dev);
+	ret = mhi_prepare_for_transfer(drvdata->mhi_dev, 0);
 	if (ret) {
 		pr_err("Error starting transfer channels\n");
 		return ret;

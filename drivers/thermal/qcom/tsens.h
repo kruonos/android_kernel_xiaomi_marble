@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015, 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021, 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __QCOM_TSENS_H__
@@ -14,6 +14,7 @@
 #define CAL_DEGC_PT2		120
 #define SLOPE_FACTOR		1000
 #define SLOPE_DEFAULT		3200
+#define TIMEOUT_US		100
 #define THRESHOLD_MAX_ADC_CODE	0x3ff
 #define THRESHOLD_MIN_ADC_CODE	0x0
 #define COLD_SENSOR_HW_ID	128
@@ -28,7 +29,8 @@ struct tsens_priv;
 
 /* IP version numbers in ascending order */
 enum tsens_ver {
-	VER_0_1 = 0,
+	VER_0 = 0,
+	VER_0_1,
 	VER_1_X,
 	VER_2_X,
 };
@@ -162,10 +164,10 @@ struct tsens_ops {
 		}					\
 	} while (0)
 
-#define TSENS_DBG_1(dev, msg, args...) do {		\
-		pr_debug("%s:" msg, __func__, args);	\
-		if ((dev) && (dev)->ipc_log1) {		\
-			ipc_log_string((dev)->ipc_log1,	\
+#define TSENS_DBG_1(priv, msg, args...) do {		\
+		dev_dbg((priv)->dev, "%s:" msg, __func__, args);	\
+		if ((priv) && (priv)->ipc_log1) {		\
+			ipc_log_string((priv)->ipc_log1,	\
 			"%s: " msg " [%s]\n",		\
 			__func__, args, current->comm);	\
 		}					\
@@ -588,10 +590,10 @@ struct tsens_context {
  * @ops: pointer to list of callbacks supported by this device
  * @debug_root: pointer to debugfs dentry for all tsens
  * @debug: pointer to debugfs dentry for tsens controller
- * @cold_sensor: pointer to cold sensor attached to this device
  * @ipc_log: pointer for first ipc log context id
  * @ipc_log1: pointer for second ipc log context id
  * @ipc_log2: pointer for third ipc log context id
+ * @cold_sensor: pointer to cold sensor attached to this device
  * @sensor: list of sensors attached to this device
  */
 struct tsens_priv {
@@ -610,17 +612,15 @@ struct tsens_priv {
 	const struct reg_field		*fields;
 	const struct tsens_ops		*ops;
 
-	/* add to save irq number to re-use it at runtime */
-	int				uplow_irq;
-	int				crit_irq;
-	int				cold_irq;
-
 	struct dentry			*debug_root;
 	struct dentry			*debug;
-	struct tsens_sensor		*cold_sensor;
 	void				*ipc_log;
 	void				*ipc_log1;
 	void				*ipc_log2;
+
+	/* add for save tsens data into minidump */
+	struct minidump_data		*tsens_md;
+	struct tsens_sensor		*cold_sensor;
 
 	struct tsens_sensor		sensor[];
 };
@@ -631,14 +631,12 @@ int init_common(struct tsens_priv *priv);
 int get_temp_tsens_valid(const struct tsens_sensor *s, int *temp);
 int get_temp_common(const struct tsens_sensor *s, int *temp);
 int get_cold_int_status(const struct tsens_sensor *s, bool *cold_status);
-int tsens_v2_tsens_suspend(struct tsens_priv *priv);
-int tsens_v2_tsens_resume(struct tsens_priv *priv);
 
 /* TSENS target */
 extern struct tsens_plat_data data_8960;
 
 /* TSENS v0.1 targets */
-extern struct tsens_plat_data data_8916, data_8939, data_8974;
+extern struct tsens_plat_data data_8916, data_8939, data_8974, data_9607;
 
 /* TSENS v1 targets */
 extern struct tsens_plat_data data_tsens_v1, data_8976, data_8956;

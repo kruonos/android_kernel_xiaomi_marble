@@ -166,12 +166,14 @@ static void cec_devnode_unregister(struct cec_adapter *adap)
 		mutex_unlock(&devnode->lock);
 		return;
 	}
-
-	list_for_each_entry(fh, &devnode->fhs, list)
-		wake_up_interruptible(&fh->wait);
-
 	devnode->registered = false;
 	devnode->unregistered = true;
+
+	mutex_lock(&devnode->lock_fhs);
+	list_for_each_entry(fh, &devnode->fhs, list)
+		wake_up_interruptible(&fh->wait);
+	mutex_unlock(&devnode->lock_fhs);
+
 	mutex_unlock(&devnode->lock);
 
 	mutex_lock(&adap->lock);
@@ -272,6 +274,7 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 
 	/* adap->devnode initialization */
 	INIT_LIST_HEAD(&adap->devnode.fhs);
+	mutex_init(&adap->devnode.lock_fhs);
 	mutex_init(&adap->devnode.lock);
 
 	adap->kthread = kthread_run(cec_thread_func, adap, "cec-%s", name);
@@ -430,7 +433,6 @@ static int __init cec_devnode_init(void)
 
 	ret = bus_register(&cec_bus_type);
 	if (ret < 0) {
-		debugfs_remove_recursive(top_cec_dir);
 		unregister_chrdev_region(cec_dev_t, CEC_NUM_DEVICES);
 		pr_warn("cec: bus_register failed\n");
 		return -EIO;

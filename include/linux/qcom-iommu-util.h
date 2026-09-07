@@ -10,26 +10,18 @@
 #include <linux/dma-mapping.h>
 #include <linux/iova.h>
 
-/* QCOM iommu domain attributes */
-#define EXTENDED_ATTR_BASE			(DOMAIN_ATTR_MAX + 16)
+#include <soc/qcom/secure_buffer.h>
 
-#define DOMAIN_ATTR_CONTEXT_BANK		(EXTENDED_ATTR_BASE + 0)
-#define DOMAIN_ATTR_NON_FATAL_FAULTS		(EXTENDED_ATTR_BASE + 1)
-#define DOMAIN_ATTR_S1_BYPASS			(EXTENDED_ATTR_BASE + 2)
-#define DOMAIN_ATTR_ATOMIC			(EXTENDED_ATTR_BASE + 3)
-#define DOMAIN_ATTR_SECURE_VMID			(EXTENDED_ATTR_BASE + 4)
-#define DOMAIN_ATTR_FAST			(EXTENDED_ATTR_BASE + 5)
-#define DOMAIN_ATTR_PGTBL_INFO			(EXTENDED_ATTR_BASE + 6)
-#define DOMAIN_ATTR_USE_UPSTREAM_HINT		(EXTENDED_ATTR_BASE + 7)
-#define DOMAIN_ATTR_EARLY_MAP			(EXTENDED_ATTR_BASE + 8)
-#define DOMAIN_ATTR_PAGE_TABLE_IS_COHERENT	(EXTENDED_ATTR_BASE + 9)
-#define DOMAIN_ATTR_PAGE_TABLE_FORCE_COHERENT	(EXTENDED_ATTR_BASE + 10)
-#define DOMAIN_ATTR_USE_LLC_NWA			(EXTENDED_ATTR_BASE + 11)
-#define DOMAIN_ATTR_SPLIT_TABLES		(EXTENDED_ATTR_BASE + 12)
-#define DOMAIN_ATTR_FAULT_MODEL_NO_CFRE		(EXTENDED_ATTR_BASE + 13)
-#define DOMAIN_ATTR_FAULT_MODEL_NO_STALL	(EXTENDED_ATTR_BASE + 14)
-#define DOMAIN_ATTR_FAULT_MODEL_HUPCF		(EXTENDED_ATTR_BASE + 15)
-#define DOMAIN_ATTR_EXTENDED_MAX		(EXTENDED_ATTR_BASE + 16)
+/* IOMMU fault behaviors */
+#define QCOM_IOMMU_FAULT_MODEL_NON_FATAL	BIT(0)
+#define QCOM_IOMMU_FAULT_MODEL_NO_CFRE		BIT(1)
+#define QCOM_IOMMU_FAULT_MODEL_NO_STALL		BIT(2)
+#define QCOM_IOMMU_FAULT_MODEL_HUPCF		BIT(3)
+
+/* IOMMU mapping configurations */
+#define QCOM_IOMMU_MAPPING_CONF_S1_BYPASS	BIT(0)
+#define QCOM_IOMMU_MAPPING_CONF_ATOMIC		BIT(1)
+#define QCOM_IOMMU_MAPPING_CONF_FAST		BIT(2)
 
 /* iommu transaction flags */
 /* 1 Write, 0 Read */
@@ -40,6 +32,12 @@
 #define QCOM_IOMMU_ATOS_TRANS_INST	BIT(2)
 /* Non secure unprivileged Data read operation */
 #define QCOM_IOMMU_ATOS_TRANS_DEFAULT	(0U)
+
+#ifndef IOMMU_SYS_CACHE
+/* Attributes are not supported, so render them ineffective. */
+#define IOMMU_SYS_CACHE		(0)
+#define IOMMU_SYS_CACHE_NWA	(0)
+#endif
 
 /* Use upstream device's bus attribute */
 #define IOMMU_USE_UPSTREAM_HINT	(IOMMU_SYS_CACHE)
@@ -93,7 +91,12 @@ struct qcom_iommu_ops {
 	int (*sid_switch)(struct device *dev, enum sid_switch_direction dir);
 	int (*get_fault_ids)(struct iommu_domain *domain,
 			struct qcom_iommu_fault_ids *ids);
+	int (*get_context_bank_nr)(struct iommu_domain *domain);
 	int (*get_asid_nr)(struct iommu_domain *domain);
+	int (*set_secure_vmid)(struct iommu_domain *domain, enum vmid vmid);
+	int (*set_fault_model)(struct iommu_domain *domain, int fault_model);
+	int (*enable_s1_translation)(struct iommu_domain *domain);
+	int (*get_mappings_configuration)(struct iommu_domain *domain);
 	struct iommu_ops iommu_ops;
 };
 #define to_qcom_iommu_ops(x) (container_of(x, struct qcom_iommu_ops, iommu_ops))
@@ -120,7 +123,17 @@ extern int qcom_iommu_get_fault_ids(struct iommu_domain *domain,
 				struct qcom_iommu_fault_ids *f_ids);
 extern int qcom_iommu_get_msi_size(struct device *dev, u32 *msi_size);
 
+int qcom_iommu_get_context_bank_nr(struct iommu_domain *domain);
+
 int qcom_iommu_get_asid_nr(struct iommu_domain *domain);
+
+int qcom_iommu_set_secure_vmid(struct iommu_domain *domain, enum vmid vmid);
+
+int qcom_iommu_set_fault_model(struct iommu_domain *domain, int fault_model);
+
+int qcom_iommu_enable_s1_translation(struct iommu_domain *domain);
+
+int qcom_iommu_get_mappings_configuration(struct iommu_domain *domain);
 
 #ifdef CONFIG_IOMMU_IO_PGTABLE_LPAE
 int __init qcom_arm_lpae_do_selftests(void);

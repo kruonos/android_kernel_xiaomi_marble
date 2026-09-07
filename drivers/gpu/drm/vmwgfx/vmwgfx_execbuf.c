@@ -32,6 +32,7 @@
 #include <drm/ttm/ttm_placement.h>
 #include "vmwgfx_so.h"
 #include "vmwgfx_binding.h"
+#include "vmwgfx_mksstat.h"
 
 #define VMW_RES_HT_ORDER 12
 
@@ -80,7 +81,8 @@ struct vmw_relocation {
  * with a NOP.
  * @vmw_res_rel_cond_nop: Conditional NOP relocation. If the resource id after
  * validation is -1, the command is replaced with a NOP. Otherwise no action.
- */
+ * @vmw_res_rel_max: Last value in the enum - used for error checking
+*/
 enum vmw_resource_relocation_type {
 	vmw_res_rel_normal,
 	vmw_res_rel_nop,
@@ -122,9 +124,11 @@ struct vmw_ctx_validation_info {
 /**
  * struct vmw_cmd_entry - Describe a command for the verifier
  *
+ * @func: Call-back to handle the command.
  * @user_allow: Whether allowed from the execbuf ioctl.
  * @gb_disable: Whether disabled if guest-backed objects are available.
  * @gb_enable: Whether enabled iff guest-backed objects are available.
+ * @cmd_name: Name of the command.
  */
 struct vmw_cmd_entry {
 	int (*func) (struct vmw_private *, struct vmw_sw_context *,
@@ -203,6 +207,7 @@ static void vmw_bind_dx_query_mob(struct vmw_sw_context *sw_context)
  *
  * @dev_priv: Pointer to the device private:
  * @sw_context: The command submission context
+ * @res: Pointer to the resource
  * @node: The validation node holding the context resource metadata
  */
 static int vmw_cmd_ctx_first_setup(struct vmw_private *dev_priv,
@@ -467,7 +472,7 @@ static int vmw_resource_context_res_add(struct vmw_private *dev_priv,
 	    vmw_res_type(ctx) == vmw_res_dx_context) {
 		for (i = 0; i < cotable_max; ++i) {
 			res = vmw_context_cotable(ctx, i);
-			if (IS_ERR_OR_NULL(res))
+			if (IS_ERR(res))
 				continue;
 
 			ret = vmw_execbuf_res_noctx_val_add(sw_context, res,
@@ -509,7 +514,7 @@ static int vmw_resource_context_res_add(struct vmw_private *dev_priv,
 /**
  * vmw_resource_relocation_add - Add a relocation to the relocation list
  *
- * @list: Pointer to head of relocation list.
+ * @sw_context: Pointer to the software context.
  * @res: The resource.
  * @offset: Offset into the command buffer currently being parsed where the id
  * that needs fixup is located. Granularity is one byte.
@@ -639,7 +644,7 @@ static int vmw_resources_reserve(struct vmw_sw_context *sw_context)
  * @converter: User-space visisble type specific information.
  * @id_loc: Pointer to the location in the command buffer currently being parsed
  * from where the user-space resource id handle is located.
- * @p_val: Pointer to pointer to resource validalidation node. Populated on
+ * @p_res: Pointer to pointer to resource validalidation node. Populated on
  * exit.
  */
 static int
@@ -707,7 +712,7 @@ vmw_cmd_res_check(struct vmw_private *dev_priv,
 }
 
 /**
- * vmw_rebind_dx_query - Rebind DX query associated with the context
+ * vmw_rebind_all_dx_query - Rebind DX query associated with the context
  *
  * @ctx_res: context the query belongs to
  *
@@ -724,15 +729,15 @@ static int vmw_rebind_all_dx_query(struct vmw_resource *ctx_res)
 	if (!dx_query_mob || dx_query_mob->dx_query_ctx)
 		return 0;
 
-	cmd = VMW_FIFO_RESERVE_DX(dev_priv, sizeof(*cmd), ctx_res->id);
+	cmd = VMW_CMD_CTX_RESERVE(dev_priv, sizeof(*cmd), ctx_res->id);
 	if (cmd == NULL)
 		return -ENOMEM;
 
 	cmd->header.id = SVGA_3D_CMD_DX_BIND_ALL_QUERY;
 	cmd->header.size = sizeof(cmd->body);
 	cmd->body.cid = ctx_res->id;
-	cmd->body.mobid = dx_query_mob->base.mem.start;
-	vmw_fifo_commit(dev_priv, sizeof(*cmd));
+	cmd->body.mobid = dx_query_mob->base.resource->start;
+	vmw_cmd_commit(dev_priv, sizeof(*cmd));
 
 	vmw_context_bind_dx_query(ctx_res, dx_query_mob);
 
@@ -1042,7 +1047,7 @@ static int vmw_query_bo_switch_prepare(struct vmw_private *dev_priv,
 
 	if (unlikely(new_query_bo != sw_context->cur_query_bo)) {
 
-		if (unlikely(new_query_bo->base.num_pages > 4)) {
+		if (unlikely(new_query_bo->base.resource->num_pages > 4)) {
 			VMW_DEBUG_USER("Query buffer too large.\n");
 			return -EINVAL;
 		}
@@ -1100,7 +1105,7 @@ static void vmw_query_bo_switch_commit(struct vmw_private *dev_priv,
 		BUG_ON(!ctx_entry->valid);
 		ctx = ctx_entry->res;
 
-		ret = vmw_fifo_emit_dummy_query(dev_priv, ctx->id);
+		ret = vmw_cmd_emit_dummy_query(dev_priv, ctx->id);
 
 		if (unlikely(ret != 0))
 			VMW_DEBUG_USER("Out of fifo space for dummy query.\n");
@@ -1136,7 +1141,7 @@ static void vmw_query_bo_switch_commit(struct vmw_private *dev_priv,
 }
 
 /**
- * vmw_translate_mob_pointer - Prepare to translate a user-space buffer handle
+ * vmw_translate_mob_ptr - Prepare to translate a user-space buffer handle
  * to a MOB id.
  *
  * @dev_priv: Pointer to a device private structure.
@@ -1191,7 +1196,7 @@ static int vmw_translate_mob_ptr(struct vmw_private *dev_priv,
 }
 
 /**
- * vmw_translate_guest_pointer - Prepare to translate a user-space buffer handle
+ * vmw_translate_guest_ptr - Prepare to translate a user-space buffer handle
  * to a valid SVGAGuestPtr
  *
  * @dev_priv: Pointer to a device private structure.
@@ -1272,8 +1277,6 @@ static int vmw_cmd_dx_define_query(struct vmw_private *dev_priv,
 		return -EINVAL;
 
 	cotable_res = vmw_context_cotable(ctx_node->ctx, SVGA_COTABLE_DXQUERY);
-	if (IS_ERR_OR_NULL(cotable_res))
-		return cotable_res ? PTR_ERR(cotable_res) : -EINVAL;
 	ret = vmw_cotable_notify(cotable_res, cmd->body.queryId);
 
 	return ret;
@@ -1520,7 +1523,6 @@ static int vmw_cmd_dma(struct vmw_private *dev_priv,
 		       SVGA3dCmdHeader *header)
 {
 	struct vmw_buffer_object *vmw_bo = NULL;
-	struct vmw_resource *res;
 	struct vmw_surface *srf = NULL;
 	VMW_DECLARE_CMD_VAR(*cmd, SVGA3dCmdSurfaceDMA);
 	int ret;
@@ -1544,7 +1546,7 @@ static int vmw_cmd_dma(struct vmw_private *dev_priv,
 		return ret;
 
 	/* Make sure DMA doesn't cross BO boundaries. */
-	bo_size = vmw_bo->base.num_pages * PAGE_SIZE;
+	bo_size = vmw_bo->base.base.size;
 	if (unlikely(cmd->body.guest.ptr.offset > bo_size)) {
 		VMW_DEBUG_USER("Invalid DMA offset.\n");
 		return -EINVAL;
@@ -1556,24 +1558,18 @@ static int vmw_cmd_dma(struct vmw_private *dev_priv,
 
 	dirty = (cmd->body.transfer == SVGA3D_WRITE_HOST_VRAM) ?
 		VMW_RES_DIRTY_SET : 0;
-	ret = vmw_cmd_res_check(dev_priv, sw_context, vmw_res_surface, dirty,
-				user_surface_converter, &cmd->body.host.sid,
-				NULL);
+	ret = vmw_cmd_res_check(dev_priv, sw_context, vmw_res_surface,
+				dirty, user_surface_converter,
+				&cmd->body.host.sid, NULL);
 	if (unlikely(ret != 0)) {
 		if (unlikely(ret != -ERESTARTSYS))
 			VMW_DEBUG_USER("could not find surface for DMA.\n");
 		return ret;
 	}
 
-	res = sw_context->res_cache[vmw_res_surface].res;
-	if (!res) {
-		VMW_DEBUG_USER("Invalid DMA surface.\n");
-		return -EINVAL;
-	}
+	srf = vmw_res_to_srf(sw_context->res_cache[vmw_res_surface].res);
 
-	srf = vmw_res_to_srf(res);
-	vmw_kms_cursor_snoop(srf, sw_context->fp->tfile, &vmw_bo->base,
-			     header);
+	vmw_kms_cursor_snoop(srf, sw_context->fp->tfile, &vmw_bo->base, header);
 
 	return 0;
 }
@@ -1709,7 +1705,7 @@ static int vmw_cmd_check_define_gmrfb(struct vmw_private *dev_priv,
  *
  * @dev_priv: Pointer to a device private struct.
  * @sw_context: The software context being used for this batch.
- * @val_node: The validation node representing the resource.
+ * @res: Pointer to the resource.
  * @buf_id: Pointer to the user-space backup buffer handle in the command
  * stream.
  * @backup_offset: Offset of backup into MOB.
@@ -2306,7 +2302,7 @@ static int vmw_cmd_dx_set_vertex_buffers(struct vmw_private *dev_priv,
 }
 
 /**
- * vmw_cmd_dx_ia_set_vertex_buffers - Validate
+ * vmw_cmd_dx_set_index_buffer - Validate
  * SVGA_3D_CMD_DX_IA_SET_INDEX_BUFFER command.
  *
  * @dev_priv: Pointer to a device private struct.
@@ -2345,7 +2341,7 @@ static int vmw_cmd_dx_set_index_buffer(struct vmw_private *dev_priv,
 }
 
 /**
- * vmw_cmd_dx_set_rendertarget - Validate SVGA_3D_CMD_DX_SET_RENDERTARGETS
+ * vmw_cmd_dx_set_rendertargets - Validate SVGA_3D_CMD_DX_SET_RENDERTARGETS
  * command
  *
  * @dev_priv: Pointer to a device private struct.
@@ -2362,7 +2358,7 @@ static int vmw_cmd_dx_set_rendertargets(struct vmw_private *dev_priv,
 		sizeof(SVGA3dRenderTargetViewId);
 	int ret;
 
-	if (num_rt_view > SVGA3D_MAX_SIMULTANEOUS_RENDER_TARGETS) {
+	if (num_rt_view > SVGA3D_DX_MAX_RENDER_TARGETS) {
 		VMW_DEBUG_USER("Invalid DX Rendertarget binding.\n");
 		return -EINVAL;
 	}
@@ -2400,7 +2396,7 @@ static int vmw_cmd_dx_clear_rendertarget_view(struct vmw_private *dev_priv,
 }
 
 /**
- * vmw_cmd_dx_clear_rendertarget_view - Validate
+ * vmw_cmd_dx_clear_depthstencil_view - Validate
  * SVGA_3D_CMD_DX_CLEAR_DEPTHSTENCIL_VIEW command
  *
  * @dev_priv: Pointer to a device private struct.
@@ -2459,8 +2455,6 @@ static int vmw_cmd_dx_view_define(struct vmw_private *dev_priv,
 		return ret;
 
 	res = vmw_context_cotable(ctx_node->ctx, vmw_view_cotables[view_type]);
-	if (IS_ERR_OR_NULL(res))
-		return res ? PTR_ERR(res) : -EINVAL;
 	ret = vmw_cotable_notify(res, cmd->defined_id);
 	if (unlikely(ret != 0))
 		return ret;
@@ -2513,7 +2507,7 @@ static int vmw_cmd_dx_set_so_targets(struct vmw_private *dev_priv,
 
 		binding.bi.ctx = ctx_node->ctx;
 		binding.bi.res = res;
-		binding.bi.bt = vmw_ctx_binding_so_target,
+		binding.bi.bt = vmw_ctx_binding_so_target;
 		binding.offset = cmd->targets[i].offset;
 		binding.size = cmd->targets[i].sizeInBytes;
 		binding.slot = i;
@@ -2546,8 +2540,8 @@ static int vmw_cmd_dx_so_define(struct vmw_private *dev_priv,
 
 	so_type = vmw_so_cmd_to_type(header->id);
 	res = vmw_context_cotable(ctx_node->ctx, vmw_so_cotables[so_type]);
-	if (IS_ERR_OR_NULL(res))
-		return res ? PTR_ERR(res) : -EINVAL;
+	if (IS_ERR(res))
+		return PTR_ERR(res);
 	cmd = container_of(header, typeof(*cmd), header);
 	ret = vmw_cotable_notify(res, cmd->defined_id);
 
@@ -2666,8 +2660,6 @@ static int vmw_cmd_dx_define_shader(struct vmw_private *dev_priv,
 		return -EINVAL;
 
 	res = vmw_context_cotable(ctx_node->ctx, SVGA_COTABLE_DXSHADER);
-	if (IS_ERR_OR_NULL(res))
-		return res ? PTR_ERR(res) : -EINVAL;
 	ret = vmw_cotable_notify(res, cmd->body.shaderId);
 	if (ret)
 		return ret;
@@ -2989,8 +2981,6 @@ static int vmw_cmd_dx_define_streamoutput(struct vmw_private *dev_priv,
 	}
 
 	res = vmw_context_cotable(ctx_node->ctx, SVGA_COTABLE_STREAMOUTPUT);
-	if (IS_ERR_OR_NULL(res))
-		return res ? PTR_ERR(res) : -EINVAL;
 	ret = vmw_cotable_notify(res, cmd->body.soid);
 	if (ret)
 		return ret;
@@ -3629,11 +3619,6 @@ static int vmw_cmd_check(struct vmw_private *dev_priv,
 
 
 	cmd_id = header->id;
-	if (header->size > SVGA_CMD_MAX_DATASIZE) {
-		VMW_DEBUG_USER("SVGA3D command: %d is too big.\n",
-			       cmd_id + SVGA_3D_CMD_BASE);
-		return -E2BIG;
-	}
 	*size = header->size + sizeof(SVGA3dCmdHeader);
 
 	cmd_id -= SVGA_3D_CMD_BASE;
@@ -3721,16 +3706,16 @@ static void vmw_apply_relocations(struct vmw_sw_context *sw_context)
 
 	list_for_each_entry(reloc, &sw_context->bo_relocations, head) {
 		bo = &reloc->vbo->base;
-		switch (bo->mem.mem_type) {
+		switch (bo->resource->mem_type) {
 		case TTM_PL_VRAM:
-			reloc->location->offset += bo->mem.start << PAGE_SHIFT;
+			reloc->location->offset += bo->resource->start << PAGE_SHIFT;
 			reloc->location->gmrId = SVGA_GMR_FRAMEBUFFER;
 			break;
 		case VMW_PL_GMR:
-			reloc->location->gmrId = bo->mem.start;
+			reloc->location->gmrId = bo->resource->start;
 			break;
 		case VMW_PL_MOB:
-			*reloc->mob_loc = bo->mem.start;
+			*reloc->mob_loc = bo->resource->start;
 			break;
 		default:
 			BUG();
@@ -3766,7 +3751,7 @@ static int vmw_resize_cmd_bounce(struct vmw_sw_context *sw_context,
 	return 0;
 }
 
-/**
+/*
  * vmw_execbuf_fence_commands - create and submit a command stream fence
  *
  * Creates a fence object and submits a command stream marker.
@@ -3789,7 +3774,7 @@ int vmw_execbuf_fence_commands(struct drm_file *file_priv,
 	/* p_handle implies file_priv. */
 	BUG_ON(p_handle != NULL && file_priv == NULL);
 
-	ret = vmw_fifo_send_fence(dev_priv, &sequence);
+	ret = vmw_cmd_send_fence(dev_priv, &sequence);
 	if (unlikely(ret != 0)) {
 		VMW_DEBUG_USER("Fence submission error. Syncing.\n");
 		synced = true;
@@ -3852,7 +3837,7 @@ vmw_execbuf_copy_fence_user(struct vmw_private *dev_priv,
 
 		fence_rep.handle = fence_handle;
 		fence_rep.seqno = fence->base.seqno;
-		vmw_update_seqno(dev_priv, &dev_priv->fifo);
+		vmw_update_seqno(dev_priv);
 		fence_rep.passed_seqno = dev_priv->last_read_seqno;
 	}
 
@@ -3897,10 +3882,10 @@ static int vmw_execbuf_submit_fifo(struct vmw_private *dev_priv,
 	void *cmd;
 
 	if (sw_context->dx_ctx_node)
-		cmd = VMW_FIFO_RESERVE_DX(dev_priv, command_size,
+		cmd = VMW_CMD_CTX_RESERVE(dev_priv, command_size,
 					  sw_context->dx_ctx_node->ctx->id);
 	else
-		cmd = VMW_FIFO_RESERVE(dev_priv, command_size);
+		cmd = VMW_CMD_RESERVE(dev_priv, command_size);
 
 	if (!cmd)
 		return -ENOMEM;
@@ -3909,7 +3894,7 @@ static int vmw_execbuf_submit_fifo(struct vmw_private *dev_priv,
 	memcpy(cmd, kernel_commands, command_size);
 	vmw_resource_relocations_apply(cmd, &sw_context->res_relocations);
 	vmw_resource_relocations_free(&sw_context->res_relocations);
-	vmw_fifo_commit(dev_priv, command_size);
+	vmw_cmd_commit(dev_priv, command_size);
 
 	return 0;
 }
@@ -3960,9 +3945,9 @@ static int vmw_execbuf_submit_cmdbuf(struct vmw_private *dev_priv,
  * On successful return, the function returns a pointer to the data in the
  * command buffer and *@header is set to non-NULL.
  *
- * If command buffers could not be used, the function will return the value of
- * @kernel_commands on function call. That value may be NULL. In that case, the
- * value of *@header will be set to NULL.
+ * @kernel_commands: If command buffers could not be used, the function will
+ * return the value of @kernel_commands on function call. That value may be
+ * NULL. In that case, the value of *@header will be set to NULL.
  *
  * If an error is encountered, the function will return a pointer error value.
  * If the function is interrupted by a signal while sleeping, it will return
@@ -4039,23 +4024,6 @@ static int vmw_execbuf_tie_context(struct vmw_private *dev_priv,
 	return 0;
 }
 
-/*
- * DMA fence callback to remove a seqno_waiter
- */
-struct seqno_waiter_rm_context {
-	struct dma_fence_cb base;
-	struct vmw_private *dev_priv;
-};
-
-static void seqno_waiter_rm_cb(struct dma_fence *f, struct dma_fence_cb *cb)
-{
-	struct seqno_waiter_rm_context *ctx =
-		container_of(cb, struct seqno_waiter_rm_context, base);
-
-	vmw_seqno_waiter_remove(ctx->dev_priv);
-	kfree(ctx);
-}
-
 int vmw_execbuf_process(struct drm_file *file_priv,
 			struct vmw_private *dev_priv,
 			void __user *user_commands, void *kernel_commands,
@@ -4084,11 +4052,7 @@ int vmw_execbuf_process(struct drm_file *file_priv,
 	}
 
 	if (throttle_us) {
-		ret = vmw_wait_lag(dev_priv, &dev_priv->fifo.marker_queue,
-				   throttle_us);
-
-		if (ret)
-			goto out_free_fence_fd;
+		VMW_DEBUG_USER("Throttling is no longer supported.\n");
 	}
 
 	kernel_commands = vmw_execbuf_cmdbuf(dev_priv, user_commands,
@@ -4247,17 +4211,8 @@ int vmw_execbuf_process(struct drm_file *file_priv,
 			fput(sync_file->file);
 			put_unused_fd(out_fence_fd);
 		} else {
-			struct seqno_waiter_rm_context *ctx;
 			/* Link the fence with the FD created earlier */
 			fd_install(out_fence_fd, sync_file->file);
-			ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
-			ctx->dev_priv = dev_priv;
-			vmw_seqno_waiter_add(dev_priv);
-			if (dma_fence_add_callback(&fence->base, &ctx->base,
-						   seqno_waiter_rm_cb) < 0) {
-				vmw_seqno_waiter_remove(dev_priv);
-				kfree(ctx);
-			}
 		}
 	}
 
@@ -4383,7 +4338,7 @@ void __vmw_execbuf_release_pinned_bo(struct vmw_private *dev_priv,
 
 	if (dev_priv->query_cid_valid) {
 		BUG_ON(fence != NULL);
-		ret = vmw_fifo_emit_dummy_query(dev_priv, dev_priv->query_cid);
+		ret = vmw_cmd_emit_dummy_query(dev_priv, dev_priv->query_cid);
 		if (ret)
 			goto out_no_emit;
 		dev_priv->query_cid_valid = false;
@@ -4448,6 +4403,9 @@ int vmw_execbuf_ioctl(struct drm_device *dev, void *data,
 	int ret;
 	struct dma_fence *in_fence = NULL;
 
+	MKS_STAT_TIME_DECL(MKSSTAT_KERN_EXECBUF);
+	MKS_STAT_TIME_PUSH(MKSSTAT_KERN_EXECBUF);
+
 	/*
 	 * Extend the ioctl argument while maintaining backwards compatibility:
 	 * We take different code paths depending on the value of arg->version.
@@ -4457,7 +4415,8 @@ int vmw_execbuf_ioctl(struct drm_device *dev, void *data,
 	if (unlikely(arg->version > DRM_VMW_EXECBUF_VERSION ||
 		     arg->version == 0)) {
 		VMW_DEBUG_USER("Incorrect execbuf version.\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto mksstats_out;
 	}
 
 	switch (arg->version) {
@@ -4477,17 +4436,14 @@ int vmw_execbuf_ioctl(struct drm_device *dev, void *data,
 
 		if (!in_fence) {
 			VMW_DEBUG_USER("Cannot get imported fence\n");
-			return -EINVAL;
+			ret = -EINVAL;
+			goto mksstats_out;
 		}
 
 		ret = vmw_wait_dma_fence(dev_priv->fman, in_fence);
 		if (ret)
 			goto out;
 	}
-
-	ret = ttm_read_lock(&dev_priv->reservation_sem, true);
-	if (unlikely(ret != 0))
-		return ret;
 
 	ret = vmw_execbuf_process(file_priv, dev_priv,
 				  (void __user *)(unsigned long)arg->commands,
@@ -4496,7 +4452,6 @@ int vmw_execbuf_ioctl(struct drm_device *dev, void *data,
 				  (void __user *)(unsigned long)arg->fence_rep,
 				  NULL, arg->flags);
 
-	ttm_read_unlock(&dev_priv->reservation_sem);
 	if (unlikely(ret != 0))
 		goto out;
 
@@ -4505,5 +4460,8 @@ int vmw_execbuf_ioctl(struct drm_device *dev, void *data,
 out:
 	if (in_fence)
 		dma_fence_put(in_fence);
+
+mksstats_out:
+	MKS_STAT_TIME_POP(MKSSTAT_KERN_EXECBUF);
 	return ret;
 }

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2016, 2019 Linaro Ltd
- * Copyright (c) 2018-2019, The Linux Foundation, All rights reserved.
  */
 
 #include <linux/io.h>
@@ -293,7 +292,7 @@ struct qcom_glink *qcom_glink_smem_register(struct device *parent,
 	*tx_pipe->head = 0;
 
 	glink = qcom_glink_native_probe(dev,
-					GLINK_FEATURE_INTENT_REUSE,
+					GLINK_FEATURE_INTENT_REUSE | GLINK_FEATURE_ZERO_COPY,
 					&rx_pipe->native, &tx_pipe->native,
 					false);
 	if (IS_ERR(glink)) {

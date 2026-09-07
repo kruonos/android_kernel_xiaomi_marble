@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
+ * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2019, Linaro Ltd
- * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <dt-bindings/power/qcom-aoss-qmp.h>
 #include <linux/clk-provider.h>
@@ -58,6 +58,14 @@ struct qmp_cooling_device {
 	bool state;
 };
 
+struct qmp_rx_client {
+	size_t rx_offset;
+	size_t rx_size;
+	void *rx_buf;
+	void *rx_priv;
+	qmp_rx_cb_t rx_cb;
+};
+
 /**
  * struct qmp - driver state for QMP implementation
  * @msgram: iomem referencing the message RAM used for communication
@@ -70,6 +78,7 @@ struct qmp_cooling_device {
  * @tx_lock: provides synchronization between multiple callers of qmp_send()
  * @qdss_clk: QDSS clock hw struct
  * @pd_data: genpd data
+ * @cooling_devs: thermal cooling devices
  */
 struct qmp {
 	void __iomem *msgram;
@@ -80,6 +89,8 @@ struct qmp {
 
 	size_t offset;
 	size_t size;
+
+	struct qmp_rx_client qmp_rx;
 
 	wait_queue_head_t event;
 
@@ -151,9 +162,20 @@ static int qmp_open(struct qmp *qmp)
 	qmp->offset = readl(qmp->msgram + QMP_DESC_MCORE_MBOX_OFFSET);
 	qmp->size = readl(qmp->msgram + QMP_DESC_MCORE_MBOX_SIZE);
 	if (!qmp->size) {
-		dev_err(qmp->dev, "invalid mailbox size\n");
+		dev_err(qmp->dev, "invalid tx mailbox size\n");
 		return -EINVAL;
 	}
+
+	qmp->qmp_rx.rx_offset = readl(qmp->msgram + QMP_DESC_UCORE_MBOX_OFFSET);
+	qmp->qmp_rx.rx_size = readl(qmp->msgram + QMP_DESC_UCORE_MBOX_SIZE);
+	if (!qmp->qmp_rx.rx_size) {
+		dev_err(qmp->dev, "invalid rx mailbox size\n");
+		return -EINVAL;
+	}
+
+	qmp->qmp_rx.rx_buf = devm_kzalloc(qmp->dev, qmp->qmp_rx.rx_size, GFP_KERNEL);
+	if (!qmp->qmp_rx.rx_buf)
+		return -ENOMEM;
 
 	/* Ack remote core's link state */
 	val = readl(qmp->msgram + QMP_DESC_UCORE_LINK_STATE);
@@ -213,8 +235,24 @@ static void qmp_close(struct qmp *qmp)
 static irqreturn_t qmp_intr(int irq, void *data)
 {
 	struct qmp *qmp = data;
+	u32 len;
 
 	AOSS_INFO("\n");
+
+	len = readl_relaxed(qmp->msgram + qmp->qmp_rx.rx_offset);
+	if (len && qmp->qmp_rx.rx_buf) {
+		len = ALIGN(len, 4);
+		if (WARN_ON(len + sizeof(u32) > qmp->qmp_rx.rx_size))
+			return IRQ_HANDLED;
+		__ioread32_copy(qmp->qmp_rx.rx_buf,
+				qmp->msgram + qmp->qmp_rx.rx_offset + sizeof(u32),
+				len / sizeof(u32));
+		if (qmp->qmp_rx.rx_cb)
+			qmp->qmp_rx.rx_cb(qmp->qmp_rx.rx_buf, qmp->qmp_rx.rx_priv, len);
+		writel_relaxed(0, qmp->msgram + qmp->qmp_rx.rx_offset);
+		qmp_kick(qmp);
+	}
+
 	wake_up_all(&qmp->event);
 
 	return IRQ_HANDLED;
@@ -224,6 +262,25 @@ static bool qmp_message_empty(struct qmp *qmp)
 {
 	return readl(qmp->msgram + qmp->offset) == 0;
 }
+
+int qmp_register_rx_cb(struct qmp *qmp, void *priv, qmp_rx_cb_t cb)
+{
+	if (!qmp) {
+		pr_err("Invalid qmp handle\n");
+		return -EINVAL;
+	}
+	AOSS_INFO("Registering RX callback\n");
+
+	qmp->qmp_rx.rx_priv = priv;
+
+	if (qmp->qmp_rx.rx_cb)
+		return -EINVAL;
+
+	qmp->qmp_rx.rx_cb = cb;
+
+	return 0;
+}
+EXPORT_SYMBOL(qmp_register_rx_cb);
 
 /**
  * qmp_send() - send a message to the AOSS
@@ -240,10 +297,9 @@ static bool qmp_message_empty(struct qmp *qmp)
 int qmp_send(struct qmp *qmp, const void *data, size_t len)
 {
 	long time_left;
-	size_t tlen;
 	int ret;
 
-	if (!qmp || !data)
+	if (WARN_ON(IS_ERR_OR_NULL(qmp) || !data))
 		return -EINVAL;
 
 	if (WARN_ON(len + sizeof(u32) > qmp->size))
@@ -260,9 +316,9 @@ int qmp_send(struct qmp *qmp, const void *data, size_t len)
 	writel(len, qmp->msgram + qmp->offset);
 
 	/* Read back len to confirm data written in message RAM */
-	tlen = readl(qmp->msgram + qmp->offset);
+	readl(qmp->msgram + qmp->offset);
 	qmp_kick(qmp);
-	AOSS_INFO("msg: %.*s\n", tlen, (char *)data);
+	AOSS_INFO("msg: %.*s\n", len, (char *)data);
 
 	time_left = wait_event_interruptible_timeout(qmp->event,
 						     qmp_message_empty(qmp), HZ);
@@ -271,12 +327,15 @@ int qmp_send(struct qmp *qmp, const void *data, size_t len)
 		ret = -ETIMEDOUT;
 
 		/* Clear message from buffer */
-		AOSS_INFO("timed out clearing msg: %.*s\n", tlen, (char *)data);
+		AOSS_INFO("timed out clearing msg: %.*s\n", len, (char *)data);
 		writel(0, qmp->msgram + qmp->offset);
+	} else if (time_left < 0) {
+		dev_err(qmp->dev, "wait error %d\n", time_left);
+		ret = time_left;
 	} else {
+		AOSS_INFO("ack: %.*s\n", len, (char *)data);
 		ret = 0;
 	}
-	AOSS_INFO("ack: %.*s\n", tlen, (char *)data);
 
 	mutex_unlock(&qmp->tx_lock);
 
@@ -556,20 +615,41 @@ struct qmp *qmp_get(struct device *dev)
 	struct qmp *qmp;
 
 	if (!dev || !dev->of_node)
-		return ERR_PTR(-ENODEV);
+		return ERR_PTR(-EINVAL);
 
 	np = of_parse_phandle(dev->of_node, "qcom,qmp", 0);
 	if (!np)
 		return ERR_PTR(-ENODEV);
 
 	pdev = of_find_device_by_node(np);
+	of_node_put(np);
 	if (!pdev)
 		return ERR_PTR(-EINVAL);
 
 	qmp = platform_get_drvdata(pdev);
-	return qmp ? qmp : ERR_PTR(-EPROBE_DEFER);
+
+	if (!qmp) {
+		put_device(&pdev->dev);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+	return qmp;
 }
 EXPORT_SYMBOL(qmp_get);
+
+/**
+ * qmp_put() - release a qmp handle
+ * @qmp: qmp handle obtained from qmp_get()
+ */
+void qmp_put(struct qmp *qmp)
+{
+	/*
+	 * Match get_device() inside of_find_device_by_node() in
+	 * qmp_get()
+	 */
+	if (!IS_ERR_OR_NULL(qmp))
+		put_device(qmp->dev);
+}
+EXPORT_SYMBOL(qmp_put);
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 static ssize_t aoss_dbg_write(struct file *file, const char __user *userstr,
@@ -580,13 +660,11 @@ static ssize_t aoss_dbg_write(struct file *file, const char __user *userstr,
 	int ret;
 
 	if (!len || len >= QMP_MSG_LEN)
-		return len;
+		return -EINVAL;
 
-	ret  = copy_from_user(buf, userstr, len);
-	if (ret) {
-		dev_err(qmp->dev, "copy from user failed, ret:%d\n", ret);
-		return len;
-	}
+	ret = copy_from_user(buf, userstr, len);
+	if (ret)
+		return -EFAULT;
 
 	ret = qmp_send(qmp, strim(buf), QMP_MSG_LEN);
 
@@ -715,14 +793,18 @@ static const struct dev_pm_ops aoss_qmp_mbox_pm_ops = {
 
 static const struct of_device_id qmp_dt_match[] = {
 	{ .compatible = "qcom,sc7180-aoss-qmp", },
+	{ .compatible = "qcom,sc7280-aoss-qmp", },
 	{ .compatible = "qcom,sdm845-aoss-qmp", },
 	{ .compatible = "qcom,sm8150-aoss-qmp", },
 	{ .compatible = "qcom,sm8250-aoss-qmp", },
+	{ .compatible = "qcom,sm8350-aoss-qmp", },
+	{ .compatible = "qcom,kalama-aoss-qmp", },
+	{ .compatible = "qcom,aoss-qmp", },
 	{ .compatible = "qcom,waipio-aoss-qmp", },
-	{ .compatible = "qcom,diwali-aoss-qmp", },
-	{ .compatible = "qcom,neo-aoss-qmp", },
-	{ .compatible = "qcom,anorak-aoss-qmp", },
-	{ .compatible = "qcom,ravelin-aoss-qmp", },
+	{ .compatible = "qcom,cinder-aoss-qmp", },
+	{ .compatible = "qcom,sdxpinn-aoss-qmp", },
+	{ .compatible = "qcom,sdxbaagha-aoss-qmp", },
+	{ .compatible = "qcom,kona-aoss-qmp", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, qmp_dt_match);
@@ -731,6 +813,7 @@ static struct platform_driver qmp_driver = {
 	.driver = {
 		.name		= "qcom_aoss_qmp",
 		.of_match_table	= qmp_dt_match,
+		.suppress_bind_attrs = true,
 		.pm = &aoss_qmp_mbox_pm_ops,
 	},
 	.probe = qmp_probe,

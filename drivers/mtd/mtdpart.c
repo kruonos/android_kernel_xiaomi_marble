@@ -31,6 +31,26 @@ static inline void free_partition(struct mtd_info *mtd)
 	kfree(mtd);
 }
 
+void part_fill_badblockstats(struct mtd_info *mtd)
+{
+	uint64_t offs = 0;
+	struct mtd_info *parent = mtd->parent;
+	struct mtd_info *master = mtd_get_master(parent);
+
+	if (master->_block_isbad) {
+		mtd->ecc_stats.badblocks = 0;
+		mtd->ecc_stats.bbtblocks = 0;
+
+		while (offs < mtd->part.size) {
+			if (mtd_block_isreserved(mtd, offs))
+				mtd->ecc_stats.bbtblocks++;
+			else if (mtd_block_isbad(mtd, offs))
+				mtd->ecc_stats.badblocks++;
+			offs += mtd->erasesize;
+		}
+	}
+}
+
 static struct mtd_info *allocate_partition(struct mtd_info *parent,
 					   const struct mtd_partition *part,
 					   int partno, uint64_t cur_offset)
@@ -196,31 +216,22 @@ static struct mtd_info *allocate_partition(struct mtd_info *parent,
 	child->ecc_strength = parent->ecc_strength;
 	child->bitflip_threshold = parent->bitflip_threshold;
 
-	if (master->_block_isbad) {
-		uint64_t offs = 0;
-
-		while (offs < child->part.size) {
-			if (mtd_block_isreserved(child, offs))
-				child->ecc_stats.bbtblocks++;
-			else if (mtd_block_isbad(child, offs))
-				child->ecc_stats.badblocks++;
-			offs += child->erasesize;
-		}
-	}
+#ifndef CONFIG_MTD_LAZYECCSTATS
+	part_fill_badblockstats(child);
+#endif
 
 out_register:
 	return child;
 }
 
-static ssize_t mtd_partition_offset_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static ssize_t offset_show(struct device *dev,
+			   struct device_attribute *attr, char *buf)
 {
 	struct mtd_info *mtd = dev_get_drvdata(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%lld\n", mtd->part.offset);
+	return sysfs_emit(buf, "%lld\n", mtd->part.offset);
 }
-
-static DEVICE_ATTR(offset, S_IRUGO, mtd_partition_offset_show, NULL);
+static DEVICE_ATTR_RO(offset);	/* mtd partition offset */
 
 static const struct attribute *mtd_partition_attrs[] = {
 	&dev_attr_offset.attr,
@@ -292,7 +303,7 @@ EXPORT_SYMBOL_GPL(mtd_add_partition);
 /**
  * __mtd_del_partition - delete MTD partition
  *
- * @priv: MTD structure to be deleted
+ * @mtd: MTD structure to be deleted
  *
  * This function must be called with the partitions mutex locked.
  */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2019, 2021 The Linux Foundation. All rights reserved.
  */
 #ifndef _IPC_LOGGING_PRIVATE_H
 #define _IPC_LOGGING_PRIVATE_H
@@ -136,9 +136,7 @@ enum {
 
 #define IPC_LOG_CONTEXT_MAGIC_NUM 0x25874452
 #define IPC_LOGGING_MAGIC_NUM 0x52784425
-#ifndef MIN
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
-#endif
 #define IS_MSG_TYPE(x) (((x) > TSV_TYPE_MSG_START) && \
 			((x) < TSV_TYPE_MSG_END))
 #define MAX_MSG_DECODED_SIZE (MAX_MSG_SIZE*4)

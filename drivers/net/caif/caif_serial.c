@@ -87,10 +87,9 @@ static void ldisc_tx_wakeup(struct tty_struct *tty);
 static inline void update_tty_status(struct ser_device *ser)
 {
 	ser->tty_status =
-		ser->tty->stopped << 5 |
-		ser->tty->flow_stopped << 3 |
-		ser->tty->packet << 2 |
-		ser->tty->port->low_latency << 1;
+		ser->tty->flow.stopped << 5 |
+		ser->tty->flow.tco_stopped << 3 |
+		ser->tty->ctrl.packet << 2;
 }
 static inline void debugfs_init(struct ser_device *ser, struct tty_struct *tty)
 {
@@ -160,7 +159,7 @@ static inline void debugfs_tx(struct ser_device *ser, const u8 *data, int size)
 #endif
 
 static void ldisc_receive(struct tty_struct *tty, const u8 *data,
-			char *flags, int count)
+			const char *flags, int count)
 {
 	struct sk_buff *skb = NULL;
 	struct ser_device *ser;
@@ -299,7 +298,6 @@ static void ser_release(struct work_struct *work)
 {
 	struct list_head list;
 	struct ser_device *ser, *tmp;
-	struct tty_struct *tty;
 
 	spin_lock(&ser_lock);
 	list_replace_init(&ser_release_list, &list);
@@ -308,12 +306,9 @@ static void ser_release(struct work_struct *work)
 	if (!list_empty(&list)) {
 		rtnl_lock();
 		list_for_each_entry_safe(ser, tmp, &list, node) {
-			tty = ser->tty;
 			dev_close(ser->dev);
 			unregister_netdevice(ser->dev);
 			debugfs_deinit(ser);
-			tty_kref_put(tty->link);
-			tty_kref_put(tty);
 		}
 		rtnl_unlock();
 	}
@@ -347,7 +342,6 @@ static int ldisc_open(struct tty_struct *tty)
 
 	ser = netdev_priv(dev);
 	ser->tty = tty_kref_get(tty);
-	tty_kref_get(tty->link);
 	ser->dev = dev;
 	debugfs_init(ser, tty);
 	tty->receive_room = N_TTY_BUF_SIZE;
@@ -356,7 +350,6 @@ static int ldisc_open(struct tty_struct *tty)
 	rtnl_lock();
 	result = register_netdevice(dev);
 	if (result) {
-		tty_kref_put(tty->link);
 		tty_kref_put(tty);
 		rtnl_unlock();
 		free_netdev(dev);
@@ -376,6 +369,8 @@ static void ldisc_close(struct tty_struct *tty)
 {
 	struct ser_device *ser = tty->disc_data;
 
+	tty_kref_put(ser->tty);
+
 	spin_lock(&ser_lock);
 	list_move(&ser->node, &ser_release_list);
 	spin_unlock(&ser_lock);
@@ -385,7 +380,7 @@ static void ldisc_close(struct tty_struct *tty)
 /* The line discipline structure. */
 static struct tty_ldisc_ops caif_ldisc = {
 	.owner =	THIS_MODULE,
-	.magic =	TTY_LDISC_MAGIC,
+	.num =		N_CAIF,
 	.name =		"n_caif",
 	.open =		ldisc_open,
 	.close =	ldisc_close,
@@ -393,18 +388,6 @@ static struct tty_ldisc_ops caif_ldisc = {
 	.write_wakeup =	ldisc_tx_wakeup
 };
 
-static int register_ldisc(void)
-{
-	int result;
-
-	result = tty_register_ldisc(N_CAIF, &caif_ldisc);
-	if (result < 0) {
-		pr_err("cannot register CAIF ldisc=%d err=%d\n", N_CAIF,
-			result);
-		return result;
-	}
-	return result;
-}
 static const struct net_device_ops netdev_ops = {
 	.ndo_open = caif_net_open,
 	.ndo_stop = caif_net_close,
@@ -447,7 +430,10 @@ static int __init caif_ser_init(void)
 {
 	int ret;
 
-	ret = register_ldisc();
+	ret = tty_register_ldisc(&caif_ldisc);
+	if (ret < 0)
+		pr_err("cannot register CAIF ldisc=%d err=%d\n", N_CAIF, ret);
+
 	debugfsdir = debugfs_create_dir("caif_serial", NULL);
 	return ret;
 }
@@ -459,7 +445,7 @@ static void __exit caif_ser_exit(void)
 	spin_unlock(&ser_lock);
 	ser_release(NULL);
 	cancel_work_sync(&ser_release_work);
-	tty_unregister_ldisc(N_CAIF);
+	tty_unregister_ldisc(&caif_ldisc);
 	debugfs_remove_recursive(debugfsdir);
 }
 

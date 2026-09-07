@@ -71,14 +71,6 @@
 #define MSR_SPEED		(1<<3)
 #define MSR_LINK		(1<<2)
 
-/* USB endpoints */
-enum rtl8150_usb_ep {
-	RTL8150_USB_EP_CONTROL = 0,
-	RTL8150_USB_EP_BULK_IN = 1,
-	RTL8150_USB_EP_BULK_OUT = 2,
-	RTL8150_USB_EP_INT_IN = 3,
-};
-
 /* Interrupt pipe data */
 #define INT_TSR			0x00
 #define INT_RSR			0x01
@@ -211,8 +203,6 @@ static int async_set_registers(rtl8150_t *dev, u16 indx, u16 size, u16 reg)
 		if (res == -ENODEV)
 			netif_device_detach(dev->netdev);
 		dev_err(&dev->udev->dev, "%s failed with %d\n", __func__, res);
-		kfree(req);
-		usb_free_urb(async_urb);
 	}
 	return res;
 }
@@ -272,7 +262,7 @@ static void set_ethernet_addr(rtl8150_t *dev)
 	ret = get_registers(dev, IDR, sizeof(node_id), node_id);
 
 	if (!ret) {
-		eth_hw_addr_set(dev->netdev, node_id);
+		ether_addr_copy(dev->netdev->dev_addr, node_id);
 	} else {
 		eth_hw_addr_random(dev->netdev);
 		netdev_notice(dev->netdev, "Assigned a random MAC address: %pM\n",
@@ -666,6 +656,7 @@ static void rtl8150_set_multicast(struct net_device *netdev)
 	rtl8150_t *dev = netdev_priv(netdev);
 	u16 rx_creg = 0x9e;
 
+	netif_stop_queue(netdev);
 	if (netdev->flags & IFF_PROMISC) {
 		rx_creg |= 0x0001;
 		dev_info(&netdev->dev, "%s: promiscuous mode\n", netdev->name);
@@ -679,6 +670,7 @@ static void rtl8150_set_multicast(struct net_device *netdev)
 		rx_creg &= 0x00fc;
 	}
 	async_set_registers(dev, RCR, sizeof(rx_creg), rx_creg);
+	netif_wake_queue(netdev);
 }
 
 static netdev_tx_t rtl8150_start_xmit(struct sk_buff *skb,
@@ -687,16 +679,9 @@ static netdev_tx_t rtl8150_start_xmit(struct sk_buff *skb,
 	rtl8150_t *dev = netdev_priv(netdev);
 	int count, res;
 
-	/* pad the frame and ensure terminating USB packet, datasheet 9.2.3 */
-	count = max(skb->len, ETH_ZLEN);
-	if (count % 64 == 0)
-		count++;
-	if (skb_padto(skb, count)) {
-		netdev->stats.tx_dropped++;
-		return NETDEV_TX_OK;
-	}
-
 	netif_stop_queue(netdev);
+	count = (skb->len < 60) ? 60 : skb->len;
+	count = (count & 0x3f) ? count : count + 1;
 	dev->tx_skb = skb;
 	usb_fill_bulk_urb(dev->tx_urb, dev->udev, usb_sndbulkpipe(dev->udev, 2),
 		      skb->data, count, write_bulk_callback, dev);
@@ -793,8 +778,7 @@ static int rtl8150_get_link_ksettings(struct net_device *netdev,
 				      struct ethtool_link_ksettings *ecmd)
 {
 	rtl8150_t *dev = netdev_priv(netdev);
-	short lpa = 0;
-	short bmcr = 0;
+	short lpa, bmcr;
 	u32 supported;
 
 	supported = (SUPPORTED_10baseT_Half |
@@ -838,7 +822,8 @@ static const struct ethtool_ops ops = {
 	.get_link_ksettings = rtl8150_get_link_ksettings,
 };
 
-static int rtl8150_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
+static int rtl8150_siocdevprivate(struct net_device *netdev, struct ifreq *rq,
+				  void __user *udata, int cmd)
 {
 	rtl8150_t *dev = netdev_priv(netdev);
 	u16 *data = (u16 *) & rq->ifr_ifru;
@@ -866,7 +851,7 @@ static int rtl8150_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 static const struct net_device_ops rtl8150_netdev_ops = {
 	.ndo_open		= rtl8150_open,
 	.ndo_stop		= rtl8150_close,
-	.ndo_do_ioctl		= rtl8150_ioctl,
+	.ndo_siocdevprivate	= rtl8150_siocdevprivate,
 	.ndo_start_xmit		= rtl8150_start_xmit,
 	.ndo_tx_timeout		= rtl8150_tx_timeout,
 	.ndo_set_rx_mode	= rtl8150_set_multicast,
@@ -881,13 +866,6 @@ static int rtl8150_probe(struct usb_interface *intf,
 	struct usb_device *udev = interface_to_usbdev(intf);
 	rtl8150_t *dev;
 	struct net_device *netdev;
-	static const u8 bulk_ep_addr[] = {
-		RTL8150_USB_EP_BULK_IN | USB_DIR_IN,
-		RTL8150_USB_EP_BULK_OUT | USB_DIR_OUT,
-		0};
-	static const u8 int_ep_addr[] = {
-		RTL8150_USB_EP_INT_IN | USB_DIR_IN,
-		0};
 
 	netdev = alloc_etherdev(sizeof(rtl8150_t));
 	if (!netdev)
@@ -899,13 +877,6 @@ static int rtl8150_probe(struct usb_interface *intf,
 	if (!dev->intr_buff) {
 		free_netdev(netdev);
 		return -ENOMEM;
-	}
-
-	/* Verify that all required endpoints are present */
-	if (!usb_check_bulk_endpoints(intf, bulk_ep_addr) ||
-	    !usb_check_int_endpoints(intf, int_ep_addr)) {
-		dev_err(&intf->dev, "couldn't find required endpoints\n");
-		goto out;
 	}
 
 	tasklet_setup(&dev->tl, rx_fixup);

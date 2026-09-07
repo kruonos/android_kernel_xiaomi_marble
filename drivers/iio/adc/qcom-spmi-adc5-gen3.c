@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, 2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/bitops.h>
@@ -19,11 +19,12 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/thermal.h>
+#include <linux/thermal_minidump.h>
 #include <linux/slab.h>
 #include <linux/iio/iio.h>
+#include <linux/iio/adc/qcom-vadc-common.h>
 
 #include <dt-bindings/iio/qcom,spmi-vadc.h>
-#include "qcom-vadc-common.h"
 
 static LIST_HEAD(adc_tm_device_list);
 
@@ -242,6 +243,7 @@ struct adc5_chip {
 	struct adc5_base_data		*base;
 	u16				debug_base;
 	unsigned int			num_sdams;
+	unsigned int                    num_interrupts;
 	unsigned int			nchannels;
 	struct adc5_channel_prop	*chan_props;
 	struct iio_chan_spec		*iio_chans;
@@ -253,23 +255,7 @@ struct adc5_chip {
 	struct list_head		list;
 	struct list_head		*device_list;
 	struct work_struct		tm_handler_work;
-};
-
-static const struct vadc_prescale_ratio adc5_prescale_ratios[] = {
-	{.num =  1, .den =  1},
-	{.num =  1, .den =  3},
-	{.num =  1, .den =  6},
-	{.num =  1, .den = 16},
-	{.num = 40, .den = 41},		/* PM7_SMB_TEMP */
-	/* Prescale ratios for current channels below */
-	{.num = 32, .den = 100},	/* IIN_FB, IIN_SMB */
-	{.num = 16, .den = 100},	/* ICHG_SMB */
-	{.num = 1280, .den = 4100},	/* IIN_SMB_new */
-	{.num = 640, .den = 4100},	/* ICHG_SMB_new */
-	{.num = 1000, .den = 305185},	/* ICHG_FB */
-	{.num = 1000, .den = 610370},	/* ICHG_FB_2X */
-	{.num = 1000, .den = 366220},	/* ICHG_FB ADC5_GEN3 */
-	{.num = 1000, .den = 732440}	/* ICHG_FB_2X ADC5_GEN3 */
+	struct minidump_data		*adc_md;
 };
 
 static int adc5_read(struct adc5_chip *adc, unsigned int sdam_index, u16 offset, u8 *data, int len)
@@ -293,22 +279,6 @@ static int adc5_write(struct adc5_chip *adc, unsigned int sdam_index, u16 offset
 			ret);
 
 	return ret;
-}
-
-static int adc5_prescaling_from_dt(u32 num, u32 den)
-{
-	unsigned int pre;
-
-	for (pre = 0; pre < ARRAY_SIZE(adc5_prescale_ratios); pre++) {
-		if (adc5_prescale_ratios[pre].num == num &&
-		    adc5_prescale_ratios[pre].den == den)
-			break;
-	}
-
-	if (pre == ARRAY_SIZE(adc5_prescale_ratios))
-		return -ENOENT;
-
-	return pre;
 }
 
 static int adc5_hw_settle_time_from_dt(u32 value,
@@ -433,7 +403,7 @@ static int adc5_gen3_configure(struct adc5_chip *adc,
 
 #define ADC5_GEN3_HS_DELAY_MIN_US		100
 #define ADC5_GEN3_HS_DELAY_MAX_US		110
-#define ADC5_GEN3_HS_RETRY_COUNT		20
+#define ADC5_GEN3_HS_RETRY_COUNT		150
 
 static int adc5_gen3_poll_wait_hs(struct adc5_chip *adc,
 				unsigned int sdam_index)
@@ -468,18 +438,16 @@ static int adc5_gen3_poll_wait_hs(struct adc5_chip *adc,
 	return 0;
 }
 
-#define ADC5_GEN3_CONV_TIMEOUT_MS	50
-#define ADC5_GEN3_POLL_ATTEMPTS		10
+#define ADC5_GEN3_CONV_TIMEOUT_MS	501
 
 static int adc5_gen3_do_conversion(struct adc5_chip *adc,
 			struct adc5_channel_prop *prop,
 			u16 *data_volt)
 {
-	int ret, i;
-	bool poll_eoc = false;
+	int ret;
 	unsigned long rc;
 	unsigned int time_pending_ms;
-	u8 val, eoc_status, sdam_index = prop->sdam_index;
+	u8 val, sdam_index = prop->sdam_index;
 
 	/* Reserve channel 0 of first SDAM for immediate conversions */
 	if (prop->adc_tm)
@@ -496,29 +464,10 @@ static int adc5_gen3_do_conversion(struct adc5_chip *adc,
 		goto unlock;
 	}
 
-	for (i = 0; i < ADC5_GEN3_POLL_ATTEMPTS; i++) {
-		/* Trying both polling and waiting for interrupt */
-		rc = wait_for_completion_timeout(&adc->complete,
-						msecs_to_jiffies(ADC5_GEN3_CONV_TIMEOUT_MS));
-		if (rc) {
-			pr_debug("Got EOC interrupt after %d polling attempts\n", i);
-			break;
-		}
-
-		/* CHAN0 is the preconfigured channel for immediate conversion */
-		ret = adc5_read(adc, 0, ADC5_GEN3_EOC_STS, &eoc_status, 1);
-		if (ret < 0) {
-			pr_err("adc read eoc status failed with %d\n", ret);
-			goto unlock;
-		}
-
-		if (eoc_status & ADC5_GEN3_EOC_CHAN_0) {
-			poll_eoc = true;
-			break;
-		}
-	}
-
-	if (!rc && !poll_eoc) {
+	/* No support for polling mode at present*/
+	rc = wait_for_completion_timeout(&adc->complete,
+					msecs_to_jiffies(ADC5_GEN3_CONV_TIMEOUT_MS));
+	if (!rc) {
 		pr_err("Reading ADC channel %s timed out\n",
 			prop->datasheet_name);
 		ret = -ETIMEDOUT;
@@ -527,7 +476,7 @@ static int adc5_gen3_do_conversion(struct adc5_chip *adc,
 
 	time_pending_ms = jiffies_to_msecs(rc);
 	pr_debug("ADC channel %s EOC took %u ms\n", prop->datasheet_name,
-		(i + 1) * ADC5_GEN3_CONV_TIMEOUT_MS - time_pending_ms);
+		ADC5_GEN3_CONV_TIMEOUT_MS - time_pending_ms);
 
 	ret = adc5_gen3_read_voltage_data(adc, data_volt, sdam_index);
 	if (ret < 0)
@@ -589,7 +538,7 @@ static int get_sdam_from_irq(struct adc5_chip *adc, int irq)
 {
 	int i;
 
-	for (i = 0; i < adc->num_sdams; i++) {
+	for (i = 0; i < adc->num_interrupts; i++) {
 		if (adc->base[i].irq == irq)
 			return i;
 	}
@@ -666,7 +615,9 @@ handler_end:
 static void tm_handler_work(struct work_struct *work)
 {
 	struct adc5_channel_prop *chan_prop;
-	u8 tm_status[2], buf[16], val;
+	u8 tm_status[2] = {0};
+	u8 buf[16] = {0};
+	u8 val;
 	int ret, i, sdam_index = -1;
 	struct adc5_chip *adc = container_of(work, struct adc5_chip,
 						tm_handler_work);
@@ -756,8 +707,7 @@ static void tm_handler_work(struct work_struct *work)
 			}
 		} else {
 			ret = qcom_adc5_hw_scale(chan_prop->scale_fn_type,
-				&adc5_prescale_ratios[chan_prop->prescale],
-				adc->data, code, &temp);
+				chan_prop->prescale, adc->data, code, &temp);
 
 			if (ret < 0) {
 				pr_err("Invalid temperature reading, ret=%d, code=0x%x\n",
@@ -811,8 +761,7 @@ static int adc5_gen3_read_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		ret = qcom_adc5_hw_scale(prop->scale_fn_type,
-			&adc5_prescale_ratios[prop->prescale],
-			adc->data,
+			prop->prescale, adc->data,
 			adc_code_volt, val);
 		if (ret < 0)
 			return ret;
@@ -864,10 +813,16 @@ int adc_tm_gen3_get_temp(void *data, int *temp)
 	if (ret < 0)
 		return ret;
 
-	return qcom_adc5_hw_scale(prop->scale_fn_type,
-		&adc5_prescale_ratios[prop->prescale],
-		adc->data,
+	ret = qcom_adc5_hw_scale(prop->scale_fn_type,
+		prop->prescale, adc->data,
 		adc_code_volt, temp);
+
+	/* Save temperature data to minidump */
+	if (prop->chip->adc_md != NULL && prop->tzd)
+		thermal_minidump_update_data(prop->chip->adc_md,
+			prop->tzd->type, temp);
+
+	return ret;
 }
 
 static int adc_tm5_gen3_configure(struct adc5_channel_prop *prop)
@@ -932,7 +887,7 @@ static int adc_tm5_gen3_set_trip_temp(void *data,
 					int low_temp, int high_temp)
 {
 	struct adc5_channel_prop *prop = data;
-	struct adc5_chip *adc = prop->chip;
+	struct adc5_chip *adc;
 	struct adc_tm_config tm_config;
 	int ret;
 
@@ -1283,7 +1238,7 @@ EXPORT_SYMBOL(adc_tm_channel_measure_gen3);
 int32_t adc_tm_disable_chan_meas_gen3(struct adc5_chip *chip,
 					struct adc_tm_param *param)
 {
-	int ret, i;
+	int ret = 0, i;
 	uint32_t dt_index = 0, v_channel;
 	struct adc_tm_client_info *client_info = NULL;
 
@@ -1422,21 +1377,21 @@ static const struct adc5_channels adc5_chans_pmic[ADC5_MAX_CHANNEL] = {
 						SCALE_HW_CALIB_DEFAULT)
 	[ADC5_GEN3_VBAT_SNS_QBG]	= ADC5_CHAN_VOLT("vbat_sns", 1,
 						SCALE_HW_CALIB_DEFAULT)
-	[ADC5_GEN3_AMUX3_THM]		= ADC5_CHAN_TEMP("smb_temp", 4,
+	[ADC5_GEN3_AMUX3_THM]		= ADC5_CHAN_TEMP("smb_temp", 9,
 						SCALE_HW_CALIB_PM7_SMB_TEMP)
 	[ADC5_GEN3_CHG_TEMP]		= ADC5_CHAN_TEMP("chg_temp", 0,
 						SCALE_HW_CALIB_PM7_CHG_TEMP)
-	[ADC5_GEN3_USB_SNS_V_16]	= ADC5_CHAN_TEMP("usb_sns_v_div_16", 3,
+	[ADC5_GEN3_USB_SNS_V_16]	= ADC5_CHAN_TEMP("usb_sns_v_div_16", 8,
 						SCALE_HW_CALIB_DEFAULT)
-	[ADC5_GEN3_VIN_DIV16_MUX]	= ADC5_CHAN_TEMP("vin_div_16", 3,
+	[ADC5_GEN3_VIN_DIV16_MUX]	= ADC5_CHAN_TEMP("vin_div_16", 8,
 						SCALE_HW_CALIB_DEFAULT)
-	[ADC5_GEN3_IIN_FB]		= ADC5_CHAN_CUR("iin_fb", 5,
+	[ADC5_GEN3_IIN_FB]		= ADC5_CHAN_CUR("iin_fb", 10,
 						SCALE_HW_CALIB_CUR)
-	[ADC5_GEN3_ICHG_SMB]		= ADC5_CHAN_CUR("ichg_smb", 8,
+	[ADC5_GEN3_ICHG_SMB]		= ADC5_CHAN_CUR("ichg_smb", 13,
 						SCALE_HW_CALIB_CUR)
-	[ADC5_GEN3_IIN_SMB]		= ADC5_CHAN_CUR("iin_smb", 7,
+	[ADC5_GEN3_IIN_SMB]		= ADC5_CHAN_CUR("iin_smb", 12,
 						SCALE_HW_CALIB_CUR)
-	[ADC5_GEN3_ICHG_FB]		= ADC5_CHAN_CUR("ichg_fb", 11,
+	[ADC5_GEN3_ICHG_FB]		= ADC5_CHAN_CUR("ichg_fb", 16,
 						SCALE_HW_CALIB_CUR_RAW)
 	[ADC5_GEN3_DIE_TEMP]		= ADC5_CHAN_TEMP("die_temp", 0,
 						SCALE_HW_CALIB_PMIC_THERM_PM7)
@@ -1521,7 +1476,7 @@ static int adc5_get_dt_channel_data(struct adc5_chip *adc,
 
 	ret = of_property_read_u32_array(node, "qcom,pre-scaling", varr, 2);
 	if (!ret) {
-		ret = adc5_prescaling_from_dt(varr[0], varr[1]);
+		ret = qcom_adc5_prescaling_from_dt(varr[0], varr[1]);
 		if (ret < 0) {
 			dev_err(dev, "%02x invalid pre-scaling <%d %d>\n",
 				chan, varr[0], varr[1]);
@@ -1727,6 +1682,10 @@ static int adc5_gen3_probe(struct platform_device *pdev)
 
 	adc->num_sdams = ret;
 
+	adc->num_interrupts = of_property_count_strings(node, "interrupt-names");
+	if (adc->num_interrupts < 0)
+		adc->num_interrupts = 0;
+
 	adc->base = devm_kcalloc(adc->dev, adc->num_sdams, sizeof(*adc->base), GFP_KERNEL);
 	if (!adc->base)
 		return -ENOMEM;
@@ -1737,7 +1696,9 @@ static int adc5_gen3_probe(struct platform_device *pdev)
 			return ret;
 
 		adc->base[i].base_addr = reg;
+	}
 
+	for (i = 0; i < adc->num_interrupts; i++) {
 		scnprintf(buf, sizeof(buf), "adc-sdam%d", i);
 		ret = of_irq_get_byname(node, buf);
 		if (ret < 0) {
@@ -1767,7 +1728,7 @@ static int adc5_gen3_probe(struct platform_device *pdev)
 		goto fail;
 	}
 
-	for (i = 0; i < adc->num_sdams; i++) {
+	for (i = 0; i < adc->num_interrupts; i++) {
 		ret = devm_request_irq(dev, adc->base[i].irq, adc5_gen3_isr,
 					0, adc->base[i].irq_name, adc);
 		if (ret < 0)
@@ -1777,6 +1738,8 @@ static int adc5_gen3_probe(struct platform_device *pdev)
 	ret = adc_tm_register_tzd(adc);
 	if (ret < 0)
 		goto fail;
+
+	adc->adc_md = thermal_minidump_register("adc5_gen3");
 
 	if (adc->n_tm_channels)
 		INIT_WORK(&adc->tm_handler_work, tm_handler_work);
@@ -1839,15 +1802,79 @@ static int adc5_gen3_exit(struct platform_device *pdev)
 
 	list_del(&adc->list);
 
+	thermal_minidump_unregister(adc->adc_md);
+
 	return 0;
 }
+
+static int adc5_gen3_freeze(struct device *dev)
+{
+	struct adc5_chip *adc = dev_get_drvdata(dev);
+	int i = 0;
+
+	mutex_lock(&adc->lock);
+
+	for (i = 0; i < adc->num_interrupts; i++)
+		devm_free_irq(dev, adc->base[i].irq, adc);
+
+	mutex_unlock(&adc->lock);
+
+	return 0;
+}
+
+static int adc5_gen3_restore(struct device *dev)
+{
+	struct adc5_chip *adc = dev_get_drvdata(dev);
+	int i = 0;
+	int ret = 0;
+
+	for (i = 0; i < adc->num_interrupts; i++) {
+		ret = devm_request_irq(dev, adc->base[i].irq, adc5_gen3_isr,
+				0, adc->base[i].irq_name, adc);
+		if (ret < 0)
+			return ret;
+	}
+
+	return ret;
+}
+
+static void adc5_gen3_shutdown(struct platform_device *pdev)
+{
+	struct adc5_chip *adc = platform_get_drvdata(pdev);
+	u8 data = 0;
+	int i, sdam_index;
+
+	for (i = 0; i < adc->num_interrupts; i++)
+		devm_free_irq(adc->dev, adc->base[i].irq, adc);
+
+	/* Disable all available channels */
+	for (i = 0; i < adc->num_sdams * 8; i++) {
+		sdam_index = i / 8;
+		data = MEAS_INT_DISABLE;
+		adc5_write(adc, sdam_index, ADC5_GEN3_TIMER_SEL, &data, 1);
+
+		/* To indicate there is an actual conversion request */
+		data = ADC5_GEN3_CHAN_CONV_REQ | (i - (sdam_index*8));
+		adc5_write(adc, sdam_index, ADC5_GEN3_PERPH_CH, &data, 1);
+
+		data = ADC5_GEN3_CONV_REQ_REQ;
+		adc5_write(adc, sdam_index, ADC5_GEN3_CONV_REQ, &data, 1);
+	}
+}
+
+static const struct dev_pm_ops adc5_gen3_pm_ops = {
+	.freeze = adc5_gen3_freeze,
+	.restore = adc5_gen3_restore,
+};
 
 static struct platform_driver adc5_gen3_driver = {
 	.driver = {
 		.name = "qcom-spmi-adc5-gen3",
 		.of_match_table = adc5_match_table,
+		.pm = &adc5_gen3_pm_ops,
 	},
 	.probe = adc5_gen3_probe,
+	.shutdown = adc5_gen3_shutdown,
 	.remove = adc5_gen3_exit,
 };
 module_platform_driver(adc5_gen3_driver);

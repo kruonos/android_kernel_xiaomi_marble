@@ -133,26 +133,6 @@ hugetlb_get_unmapped_area(struct file *file, unsigned long addr,
 
 static pte_t sun4u_hugepage_shift_to_tte(pte_t entry, unsigned int shift)
 {
-	unsigned long hugepage_size = _PAGE_SZ4MB_4U;
-
-	pte_val(entry) = pte_val(entry) & ~_PAGE_SZALL_4U;
-
-	switch (shift) {
-	case HPAGE_256MB_SHIFT:
-		hugepage_size = _PAGE_SZ256MB_4U;
-		pte_val(entry) |= _PAGE_PMD_HUGE;
-		break;
-	case HPAGE_SHIFT:
-		pte_val(entry) |= _PAGE_PMD_HUGE;
-		break;
-	case HPAGE_64K_SHIFT:
-		hugepage_size = _PAGE_SZ64K_4U;
-		break;
-	default:
-		WARN_ONCE(1, "unsupported hugepage shift=%u\n", shift);
-	}
-
-	pte_val(entry) = pte_val(entry) | hugepage_size;
 	return entry;
 }
 
@@ -197,10 +177,8 @@ static pte_t hugepage_shift_to_tte(pte_t entry, unsigned int shift)
 		return sun4u_hugepage_shift_to_tte(entry, shift);
 }
 
-pte_t arch_make_huge_pte(pte_t entry, struct vm_area_struct *vma,
-			 struct page *page, int writeable)
+pte_t arch_make_huge_pte(pte_t entry, unsigned int shift, vm_flags_t flags)
 {
-	unsigned int shift = huge_page_shift(hstate_vma(vma));
 	pte_t pte;
 
 	pte = hugepage_shift_to_tte(entry, shift);
@@ -208,7 +186,7 @@ pte_t arch_make_huge_pte(pte_t entry, struct vm_area_struct *vma,
 #ifdef CONFIG_SPARC64
 	/* If this vma has ADI enabled on it, turn on TTE.mcd
 	 */
-	if (vma->vm_flags & VM_SPARC_ADI)
+	if (flags & VM_SPARC_ADI)
 		return pte_mkmcd(pte);
 	else
 		return pte_mknotmcd(pte);
@@ -267,14 +245,17 @@ static unsigned int sun4u_huge_tte_to_shift(pte_t entry)
 	return shift;
 }
 
+static unsigned long tte_to_shift(pte_t entry)
+{
+	if (tlb_type == hypervisor)
+		return sun4v_huge_tte_to_shift(entry);
+
+	return sun4u_huge_tte_to_shift(entry);
+}
+
 static unsigned int huge_tte_to_shift(pte_t entry)
 {
-	unsigned long shift;
-
-	if (tlb_type == hypervisor)
-		shift = sun4v_huge_tte_to_shift(entry);
-	else
-		shift = sun4u_huge_tte_to_shift(entry);
+	unsigned long shift = tte_to_shift(entry);
 
 	if (shift == PAGE_SHIFT)
 		WARN_ONCE(1, "tto_to_shift: invalid hugepage tte=0x%lx\n",
@@ -291,6 +272,10 @@ static unsigned long huge_tte_to_size(pte_t pte)
 		size = HPAGE_SIZE;
 	return size;
 }
+
+unsigned long pud_leaf_size(pud_t pud) { return 1UL << tte_to_shift(*(pte_t *)&pud); }
+unsigned long pmd_leaf_size(pmd_t pmd) { return 1UL << tte_to_shift(*(pte_t *)&pmd); }
+unsigned long pte_leaf_size(pte_t pte) { return 1UL << tte_to_shift(pte); }
 
 pte_t *huge_pte_alloc(struct mm_struct *mm, struct vm_area_struct *vma,
 			unsigned long addr, unsigned long sz)

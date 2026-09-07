@@ -15,6 +15,10 @@
 
 #include <sound/dmaengine_pcm.h>
 
+static unsigned int prealloc_buffer_size_kbytes = 512;
+module_param(prealloc_buffer_size_kbytes, uint, 0444);
+MODULE_PARM_DESC(prealloc_buffer_size_kbytes, "Preallocate DMA buffer size (KB).");
+
 /*
  * The platforms dmaengine driver does not support reporting the amount of
  * bytes that are still left to transfer.
@@ -79,7 +83,6 @@ static int dmaengine_pcm_hw_params(struct snd_soc_component *component,
 			struct snd_pcm_hw_params *params,
 			struct dma_slave_config *slave_config);
 	struct dma_slave_config slave_config;
-	int ret;
 
 	memset(&slave_config, 0, sizeof(slave_config));
 
@@ -89,7 +92,7 @@ static int dmaengine_pcm_hw_params(struct snd_soc_component *component,
 		prepare_slave_config = pcm->config->prepare_slave_config;
 
 	if (prepare_slave_config) {
-		ret = prepare_slave_config(substream, params, &slave_config);
+		int ret = prepare_slave_config(substream, params, &slave_config);
 		if (ret)
 			return ret;
 
@@ -230,21 +233,22 @@ static int dmaengine_pcm_new(struct snd_soc_component *component,
 	struct dmaengine_pcm *pcm = soc_component_to_pcm(component);
 	const struct snd_dmaengine_pcm_config *config = pcm->config;
 	struct device *dev = component->dev;
-	struct snd_pcm_substream *substream;
 	size_t prealloc_buffer_size;
 	size_t max_buffer_size;
 	unsigned int i;
 
-	if (config && config->prealloc_buffer_size) {
+	if (config && config->prealloc_buffer_size)
 		prealloc_buffer_size = config->prealloc_buffer_size;
+	else
+		prealloc_buffer_size = prealloc_buffer_size_kbytes * 1024;
+
+	if (config && config->pcm_hardware && config->pcm_hardware->buffer_bytes_max)
 		max_buffer_size = config->pcm_hardware->buffer_bytes_max;
-	} else {
-		prealloc_buffer_size = 512 * 1024;
+	else
 		max_buffer_size = SIZE_MAX;
-	}
 
 	for_each_pcm_streams(i) {
-		substream = rtd->pcm->streams[i].substream;
+		struct snd_pcm_substream *substream = rtd->pcm->streams[i].substream;
 		if (!substream)
 			continue;
 
@@ -307,14 +311,13 @@ static int dmaengine_copy_user(struct snd_soc_component *component,
 	bool is_playback = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
 	void *dma_ptr = runtime->dma_area + hwoff +
 			channel * (runtime->dma_bytes / runtime->channels);
-	int ret;
 
 	if (is_playback)
 		if (copy_from_user(dma_ptr, buf, bytes))
 			return -EFAULT;
 
 	if (process) {
-		ret = process(substream, channel, hwoff, (__force void *)buf, bytes);
+		int ret = process(substream, channel, hwoff, (__force void *)buf, bytes);
 		if (ret < 0)
 			return ret;
 	}
@@ -326,12 +329,6 @@ static int dmaengine_copy_user(struct snd_soc_component *component,
 	return 0;
 }
 
-static int dmaengine_pcm_sync_stop(struct snd_soc_component *component,
-				   struct snd_pcm_substream *substream)
-{
-	return snd_dmaengine_pcm_sync_stop(substream);
-}
-
 static const struct snd_soc_component_driver dmaengine_pcm_component = {
 	.name		= SND_DMAENGINE_PCM_DRV_NAME,
 	.probe_order	= SND_SOC_COMP_ORDER_LATE,
@@ -341,7 +338,6 @@ static const struct snd_soc_component_driver dmaengine_pcm_component = {
 	.trigger	= dmaengine_pcm_trigger,
 	.pointer	= dmaengine_pcm_pointer,
 	.pcm_construct	= dmaengine_pcm_new,
-	.sync_stop	= dmaengine_pcm_sync_stop,
 };
 
 static const struct snd_soc_component_driver dmaengine_pcm_component_process = {
@@ -354,7 +350,6 @@ static const struct snd_soc_component_driver dmaengine_pcm_component_process = {
 	.pointer	= dmaengine_pcm_pointer,
 	.copy_user	= dmaengine_copy_user,
 	.pcm_construct	= dmaengine_pcm_new,
-	.sync_stop	= dmaengine_pcm_sync_stop,
 };
 
 static const char * const dmaengine_pcm_dma_channel_names[] = {

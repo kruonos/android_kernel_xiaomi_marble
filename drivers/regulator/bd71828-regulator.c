@@ -90,38 +90,7 @@ static const struct linear_range bd71828_ldo_volts[] = {
 	REGULATOR_LINEAR_RANGE(3300000, 0x32, 0x3f, 0),
 };
 
-static int bd71828_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
-{
-	unsigned int val;
-
-	switch (ramp_delay) {
-	case 1 ... 2500:
-		val = 0;
-		break;
-	case 2501 ... 5000:
-		val = 1;
-		break;
-	case 5001 ... 10000:
-		val = 2;
-		break;
-	case 10001 ... 20000:
-		val = 3;
-		break;
-	default:
-		val = 3;
-		dev_err(&rdev->dev,
-			"ramp_delay: %d not supported, setting 20mV/uS",
-			 ramp_delay);
-	}
-
-	/*
-	 * On BD71828 the ramp delay level control reg is at offset +2 to
-	 * enable reg
-	 */
-	return regmap_update_bits(rdev->regmap, rdev->desc->enable_reg + 2,
-				  BD71828_MASK_RAMP_DELAY,
-				  val << (ffs(BD71828_MASK_RAMP_DELAY) - 1));
-}
+static const unsigned int bd71828_ramp_delay[] = { 2500, 5000, 10000, 20000 };
 
 static int buck_set_hw_dvs_levels(struct device_node *np,
 				  const struct regulator_desc *desc,
@@ -185,7 +154,7 @@ static const struct regulator_ops bd71828_dvs_buck_ops = {
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 	.set_voltage_time_sel = regulator_set_voltage_time_sel,
-	.set_ramp_delay = bd71828_set_ramp_delay,
+	.set_ramp_delay = regulator_set_ramp_delay_regmap,
 };
 
 static const struct regulator_ops bd71828_ldo_ops = {
@@ -219,6 +188,10 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 			.enable_mask = BD71828_MASK_RUN_EN,
 			.vsel_reg = BD71828_REG_BUCK1_VOLT,
 			.vsel_mask = BD71828_MASK_BUCK1267_VOLT,
+			.ramp_delay_table = bd71828_ramp_delay,
+			.n_ramp_values = ARRAY_SIZE(bd71828_ramp_delay),
+			.ramp_reg = BD71828_REG_BUCK1_MODE,
+			.ramp_mask = BD71828_MASK_RAMP_DELAY,
 			.owner = THIS_MODULE,
 			.of_parse_cb = buck_set_hw_dvs_levels,
 		},
@@ -234,11 +207,14 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 			.suspend_reg = BD71828_REG_BUCK1_SUSP_VOLT,
 			.suspend_mask = BD71828_MASK_BUCK1267_VOLT,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
+			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
 			/*
 			 * LPSR voltage is same as SUSPEND voltage. Allow
-			 * only enabling/disabling regulator for LPSR state
+			 * setting it so that regulator can be set enabled at
+			 * LPSR state
 			 */
-			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
+			.lpsr_reg = BD71828_REG_BUCK1_SUSP_VOLT,
+			.lpsr_mask = BD71828_MASK_BUCK1267_VOLT,
 		},
 		.reg_inits = buck1_inits,
 		.reg_init_amnt = ARRAY_SIZE(buck1_inits),
@@ -258,6 +234,10 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 			.enable_mask = BD71828_MASK_RUN_EN,
 			.vsel_reg = BD71828_REG_BUCK2_VOLT,
 			.vsel_mask = BD71828_MASK_BUCK1267_VOLT,
+			.ramp_delay_table = bd71828_ramp_delay,
+			.n_ramp_values = ARRAY_SIZE(bd71828_ramp_delay),
+			.ramp_reg = BD71828_REG_BUCK2_MODE,
+			.ramp_mask = BD71828_MASK_RAMP_DELAY,
 			.owner = THIS_MODULE,
 			.of_parse_cb = buck_set_hw_dvs_levels,
 		},
@@ -309,7 +289,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_BUCK3_VOLT,
+			.idle_reg = BD71828_REG_BUCK3_VOLT,
+			.suspend_reg = BD71828_REG_BUCK3_VOLT,
+			.lpsr_reg = BD71828_REG_BUCK3_VOLT,
 			.run_mask = BD71828_MASK_BUCK3_VOLT,
+			.idle_mask = BD71828_MASK_BUCK3_VOLT,
+			.suspend_mask = BD71828_MASK_BUCK3_VOLT,
+			.lpsr_mask = BD71828_MASK_BUCK3_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -344,7 +330,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_BUCK4_VOLT,
+			.idle_reg = BD71828_REG_BUCK4_VOLT,
+			.suspend_reg = BD71828_REG_BUCK4_VOLT,
+			.lpsr_reg = BD71828_REG_BUCK4_VOLT,
 			.run_mask = BD71828_MASK_BUCK4_VOLT,
+			.idle_mask = BD71828_MASK_BUCK4_VOLT,
+			.suspend_mask = BD71828_MASK_BUCK4_VOLT,
+			.lpsr_mask = BD71828_MASK_BUCK4_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -379,7 +371,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_BUCK5_VOLT,
+			.idle_reg = BD71828_REG_BUCK5_VOLT,
+			.suspend_reg = BD71828_REG_BUCK5_VOLT,
+			.lpsr_reg = BD71828_REG_BUCK5_VOLT,
 			.run_mask = BD71828_MASK_BUCK5_VOLT,
+			.idle_mask = BD71828_MASK_BUCK5_VOLT,
+			.suspend_mask = BD71828_MASK_BUCK5_VOLT,
+			.lpsr_mask = BD71828_MASK_BUCK5_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -400,6 +398,10 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 			.enable_mask = BD71828_MASK_RUN_EN,
 			.vsel_reg = BD71828_REG_BUCK6_VOLT,
 			.vsel_mask = BD71828_MASK_BUCK1267_VOLT,
+			.ramp_delay_table = bd71828_ramp_delay,
+			.n_ramp_values = ARRAY_SIZE(bd71828_ramp_delay),
+			.ramp_reg = BD71828_REG_BUCK6_MODE,
+			.ramp_mask = BD71828_MASK_RAMP_DELAY,
 			.owner = THIS_MODULE,
 			.of_parse_cb = buck_set_hw_dvs_levels,
 		},
@@ -437,6 +439,10 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 			.enable_mask = BD71828_MASK_RUN_EN,
 			.vsel_reg = BD71828_REG_BUCK7_VOLT,
 			.vsel_mask = BD71828_MASK_BUCK1267_VOLT,
+			.ramp_delay_table = bd71828_ramp_delay,
+			.n_ramp_values = ARRAY_SIZE(bd71828_ramp_delay),
+			.ramp_reg = BD71828_REG_BUCK7_MODE,
+			.ramp_mask = BD71828_MASK_RAMP_DELAY,
 			.owner = THIS_MODULE,
 			.of_parse_cb = buck_set_hw_dvs_levels,
 		},
@@ -488,7 +494,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_LDO1_VOLT,
+			.idle_reg = BD71828_REG_LDO1_VOLT,
+			.suspend_reg = BD71828_REG_LDO1_VOLT,
+			.lpsr_reg = BD71828_REG_LDO1_VOLT,
 			.run_mask = BD71828_MASK_LDO_VOLT,
+			.idle_mask = BD71828_MASK_LDO_VOLT,
+			.suspend_mask = BD71828_MASK_LDO_VOLT,
+			.lpsr_mask = BD71828_MASK_LDO_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -522,7 +534,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_LDO2_VOLT,
+			.idle_reg = BD71828_REG_LDO2_VOLT,
+			.suspend_reg = BD71828_REG_LDO2_VOLT,
+			.lpsr_reg = BD71828_REG_LDO2_VOLT,
 			.run_mask = BD71828_MASK_LDO_VOLT,
+			.idle_mask = BD71828_MASK_LDO_VOLT,
+			.suspend_mask = BD71828_MASK_LDO_VOLT,
+			.lpsr_mask = BD71828_MASK_LDO_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -556,7 +574,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_LDO3_VOLT,
+			.idle_reg = BD71828_REG_LDO3_VOLT,
+			.suspend_reg = BD71828_REG_LDO3_VOLT,
+			.lpsr_reg = BD71828_REG_LDO3_VOLT,
 			.run_mask = BD71828_MASK_LDO_VOLT,
+			.idle_mask = BD71828_MASK_LDO_VOLT,
+			.suspend_mask = BD71828_MASK_LDO_VOLT,
+			.lpsr_mask = BD71828_MASK_LDO_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -591,7 +615,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_LDO4_VOLT,
+			.idle_reg = BD71828_REG_LDO4_VOLT,
+			.suspend_reg = BD71828_REG_LDO4_VOLT,
+			.lpsr_reg = BD71828_REG_LDO4_VOLT,
 			.run_mask = BD71828_MASK_LDO_VOLT,
+			.idle_mask = BD71828_MASK_LDO_VOLT,
+			.suspend_mask = BD71828_MASK_LDO_VOLT,
+			.lpsr_mask = BD71828_MASK_LDO_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -626,7 +656,13 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 				     ROHM_DVS_LEVEL_SUSPEND |
 				     ROHM_DVS_LEVEL_LPSR,
 			.run_reg = BD71828_REG_LDO5_VOLT,
+			.idle_reg = BD71828_REG_LDO5_VOLT,
+			.suspend_reg = BD71828_REG_LDO5_VOLT,
+			.lpsr_reg = BD71828_REG_LDO5_VOLT,
 			.run_mask = BD71828_MASK_LDO_VOLT,
+			.idle_mask = BD71828_MASK_LDO_VOLT,
+			.suspend_mask = BD71828_MASK_LDO_VOLT,
+			.lpsr_mask = BD71828_MASK_LDO_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -685,6 +721,9 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 			.suspend_reg = BD71828_REG_LDO7_VOLT,
 			.lpsr_reg = BD71828_REG_LDO7_VOLT,
 			.run_mask = BD71828_MASK_LDO_VOLT,
+			.idle_mask = BD71828_MASK_LDO_VOLT,
+			.suspend_mask = BD71828_MASK_LDO_VOLT,
+			.lpsr_mask = BD71828_MASK_LDO_VOLT,
 			.idle_on_mask = BD71828_MASK_IDLE_EN,
 			.suspend_on_mask = BD71828_MASK_SUSP_EN,
 			.lpsr_on_mask = BD71828_MASK_LPSR_EN,
@@ -695,19 +734,14 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 
 static int bd71828_probe(struct platform_device *pdev)
 {
-	struct rohm_regmap_dev *bd71828;
 	int i, j, ret;
 	struct regulator_config config = {
 		.dev = pdev->dev.parent,
 	};
 
-	bd71828 = dev_get_drvdata(pdev->dev.parent);
-	if (!bd71828) {
-		dev_err(&pdev->dev, "No MFD driver data\n");
-		return -EINVAL;
-	}
-
-	config.regmap = bd71828->regmap;
+	config.regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	if (!config.regmap)
+		return -ENODEV;
 
 	for (i = 0; i < ARRAY_SIZE(bd71828_rdata); i++) {
 		struct regulator_dev *rdev;
@@ -723,7 +757,7 @@ static int bd71828_probe(struct platform_device *pdev)
 			return PTR_ERR(rdev);
 		}
 		for (j = 0; j < rd->reg_init_amnt; j++) {
-			ret = regmap_update_bits(bd71828->regmap,
+			ret = regmap_update_bits(config.regmap,
 						 rd->reg_inits[j].reg,
 						 rd->reg_inits[j].mask,
 						 rd->reg_inits[j].val);

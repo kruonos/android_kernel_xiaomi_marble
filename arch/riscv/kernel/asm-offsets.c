@@ -4,10 +4,14 @@
  * Copyright (C) 2017 SiFive
  */
 
+#define GENERATING_ASM_OFFSETS
+
 #include <linux/kbuild.h>
 #include <linux/sched.h>
 #include <asm/thread_info.h>
 #include <asm/ptrace.h>
+
+void asm_offsets(void);
 
 void asm_offsets(void)
 {
@@ -307,4 +311,6 @@ void asm_offsets(void)
 	 * ensures the alignment is sane.
 	 */
 	DEFINE(PT_SIZE_ON_STACK, ALIGN(sizeof(struct pt_regs), STACK_ALIGN));
+
+	OFFSET(KERNEL_MAP_VIRT_ADDR, kernel_mapping, virt_addr);
 }

@@ -25,28 +25,6 @@
 #include <linux/psi.h>
 #include <linux/uio.h>
 #include <linux/sched/task.h>
-#include <trace/hooks/mm.h>
-
-extern struct kcompress_t kcompress_data[MAX_NUMNODES];
-
-static struct bio *get_swap_bio(gfp_t gfp_flags,
-				struct page *page, bio_end_io_t end_io)
-{
-	struct bio *bio;
-
-	bio = bio_alloc(gfp_flags, 1);
-	if (bio) {
-		struct block_device *bdev;
-
-		bio->bi_iter.bi_sector = map_swap_page(page, &bdev);
-		bio_set_dev(bio, bdev);
-		bio->bi_iter.bi_sector <<= PAGE_SHIFT - 9;
-		bio->bi_end_io = end_io;
-
-		bio_add_page(bio, page, thp_size(page), 0);
-	}
-	return bio;
-}
 
 void end_swap_bio_write(struct bio *bio)
 {
@@ -194,32 +172,6 @@ bad_bmap:
 	goto out;
 }
 
-static bool swap_sched_async_compress(struct page *page)
-{
-	struct swap_info_struct *sis;
-	int node_id = numa_node_id();
-
-	if (unlikely(!kcompress_data[node_id].kcompressd))
-		return false;
-
-	if (!current_is_kswapd())
-		return false;
-
-	if (!PageAnon(page))
-		return false;
-
-	sis = page_swap_info(page);
-	if (data_race(sis->flags & SWP_SYNCHRONOUS_IO)) {
-		if (kfifo_avail(&kcompress_data[node_id].kcompress_fifo) >= sizeof(page) &&
-			kfifo_in(&kcompress_data[node_id].kcompress_fifo, &page, sizeof(page))) {
-			wake_up_interruptible(&kcompress_data[node_id].kcompressd_wait);
-			return true;
-		}
-	}
-
-	return false;
-}
-
 /*
  * We may have stale swap cache pages in memory: notice
  * them here and get rid of the unnecessary final write.
@@ -248,60 +200,9 @@ int swap_writepage(struct page *page, struct writeback_control *wbc)
 		end_page_writeback(page);
 		goto out;
 	}
-
-	/*
-	 * Compression within zswap and zram might block rmap, unmap
-	 * of both file and anon pages, try to do compression async
-	 * if possible
-	 */
-	if (swap_sched_async_compress(page))
-		return 0;
-
 	ret = __swap_writepage(page, wbc, end_swap_bio_write);
 out:
 	return ret;
-}
-
-int kcompressd(void *p)
-{
-	pg_data_t *pgdat = (pg_data_t *)p;
-	int node_id = pgdat->node_id;
-	struct page *page;
-	struct writeback_control wbc = {
-		.sync_mode = WB_SYNC_NONE,
-		.nr_to_write = SWAP_CLUSTER_MAX,
-		.range_start = 0,
-		.range_end = LLONG_MAX,
-		.for_reclaim = 1,
-	};
-
-	/*
-	 * Tell the memory management that we're a "memory allocator",
-	 * and that if we need more memory we should get access to it
-	 * regardless (see "__alloc_pages()"). "kswapd" should
-	 * never get caught in the normal page freeing logic.
-	 *
-	 * (Kswapd normally doesn't need memory anyway, but sometimes
-	 * you need a small amount of memory in order to be able to
-	 * page out something else, and this flag essentially protects
-	 * us from recursively trying to free more memory as we're
-	 * trying to free the first piece of memory in the first place).
-	 */
-	current->flags |= PF_MEMALLOC | PF_KSWAPD;
-
-	while (!kthread_should_stop()) {
-		wait_event_interruptible(kcompress_data[node_id].kcompressd_wait,
-				!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo));
-
-		while (!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo)) {
-			if (kfifo_out(&kcompress_data[node_id].kcompress_fifo, &page, sizeof(page))) {
-				__swap_writepage(page, &wbc, end_swap_bio_write);
-			}
-		}
-	}
-	current->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
-
-	return 0;
 }
 
 static inline void count_swpout_vm_event(struct page *page)
@@ -317,12 +218,14 @@ static inline void count_swpout_vm_event(struct page *page)
 static void bio_associate_blkg_from_page(struct bio *bio, struct page *page)
 {
 	struct cgroup_subsys_state *css;
+	struct mem_cgroup *memcg;
 
-	if (!page->mem_cgroup)
+	memcg = page_memcg(page);
+	if (!memcg)
 		return;
 
 	rcu_read_lock();
-	css = cgroup_e_css(page->mem_cgroup->css.cgroup, &io_cgrp_subsys);
+	css = cgroup_e_css(memcg->css.cgroup, &io_cgrp_subsys);
 	bio_associate_blkg_from_css(bio, css);
 	rcu_read_unlock();
 }
@@ -336,7 +239,6 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 	struct bio *bio;
 	int ret;
 	struct swap_info_struct *sis = page_swap_info(page);
-	bool skip = false;
 
 	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 	if (data_race(sis->flags & SWP_FS_OPS)) {
@@ -358,7 +260,6 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 		unlock_page(page);
 		ret = mapping->a_ops->direct_IO(&kiocb, &from);
 		if (ret == PAGE_SIZE) {
-			trace_android_vh_count_pswpout(sis);
 			count_vm_event(PSWPOUT);
 			ret = 0;
 		} else {
@@ -383,23 +284,19 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 
 	ret = bdev_write_page(sis->bdev, swap_page_sector(page), page, wbc);
 	if (!ret) {
-		trace_android_vh_count_swpout_vm_event(sis, page, &skip);
-		if (!skip)
-			count_swpout_vm_event(page);
+		count_swpout_vm_event(page);
 		return 0;
 	}
 
-	bio = get_swap_bio(GFP_NOIO, page, end_write_func);
-	if (bio == NULL) {
-		set_page_dirty(page);
-		unlock_page(page);
-		return -ENOMEM;
-	}
+	bio = bio_alloc(GFP_NOIO, 1);
+	bio_set_dev(bio, sis->bdev);
+	bio->bi_iter.bi_sector = swap_page_sector(page);
 	bio->bi_opf = REQ_OP_WRITE | REQ_SWAP | wbc_to_write_flags(wbc);
+	bio->bi_end_io = end_write_func;
+	bio_add_page(bio, page, thp_size(page), 0);
+
 	bio_associate_blkg_from_page(bio, page);
-	trace_android_vh_count_swpout_vm_event(sis, page, &skip);
-	if (!skip)
-		count_swpout_vm_event(page);
+	count_swpout_vm_event(page);
 	set_page_writeback(page);
 	unlock_page(page);
 	submit_bio(bio);
@@ -438,41 +335,37 @@ int swap_readpage(struct page *page, bool synchronous)
 		struct address_space *mapping = swap_file->f_mapping;
 
 		ret = mapping->a_ops->readpage(swap_file, page);
-		if (!ret) {
-			trace_android_vh_count_pswpin(sis);
+		if (!ret)
 			count_vm_event(PSWPIN);
-		}
 		goto out;
 	}
 
 	if (sis->flags & SWP_SYNCHRONOUS_IO) {
 		ret = bdev_read_page(sis->bdev, swap_page_sector(page), page);
 		if (!ret) {
-			trace_android_vh_count_pswpin(sis);
 			count_vm_event(PSWPIN);
 			goto out;
 		}
 	}
 
 	ret = 0;
-	bio = get_swap_bio(GFP_KERNEL, page, end_swap_bio_read);
-	if (bio == NULL) {
-		unlock_page(page);
-		ret = -ENOMEM;
-		goto out;
-	}
-	disk = bio->bi_disk;
+	bio = bio_alloc(GFP_KERNEL, 1);
+	bio_set_dev(bio, sis->bdev);
+	bio->bi_opf = REQ_OP_READ;
+	bio->bi_iter.bi_sector = swap_page_sector(page);
+	bio->bi_end_io = end_swap_bio_read;
+	bio_add_page(bio, page, thp_size(page), 0);
+
+	disk = bio->bi_bdev->bd_disk;
 	/*
 	 * Keep this task valid during swap readpage because the oom killer may
 	 * attempt to access it in the page fault retry time check.
 	 */
-	bio_set_op_attrs(bio, REQ_OP_READ, 0);
 	if (synchronous) {
 		bio->bi_opf |= REQ_HIPRI;
 		get_task_struct(current);
 		bio->bi_private = current;
 	}
-	trace_android_vh_count_pswpin(sis);
 	count_vm_event(PSWPIN);
 	bio_get(bio);
 	qc = submit_bio(bio);

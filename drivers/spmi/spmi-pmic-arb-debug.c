@@ -274,13 +274,12 @@ static int spmi_pmic_arb_debug_probe(struct platform_device *pdev)
 			return -EINVAL;
 		}
 
-		fuse_addr = devm_ioremap(&pdev->dev, res->start,
-					 resource_size(res));
-		if (IS_ERR(fuse_addr))
-			return PTR_ERR(fuse_addr);
+		fuse_addr = ioremap(res->start, resource_size(res));
+		if (!fuse_addr)
+			return -EINVAL;
 
 		fuse_val = readl_relaxed(fuse_addr);
-		devm_iounmap(&pdev->dev, fuse_addr);
+		iounmap(fuse_addr);
 
 		if (!!(fuse_val & BIT(fuse_bit)) == is_disable_fuse) {
 			dev_err(&pdev->dev, "SPMI PMIC arbiter debug bus disabled by fuse\n");

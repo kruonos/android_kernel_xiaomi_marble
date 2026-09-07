@@ -436,8 +436,6 @@ static void ucsi_ccg_update_set_new_cam_cmd(struct ucsi_ccg *uc,
 
 	port = uc->orig;
 	new_cam = UCSI_SET_NEW_CAM_GET_AM(*cmd);
-	if (new_cam >= ARRAY_SIZE(uc->updated))
-		return;
 	new_port = &uc->updated[new_cam];
 	cam = new_port->linked_idx;
 	enter_new_mode = UCSI_SET_NEW_CAM_ENTER(*cmd);
@@ -573,56 +571,10 @@ static int ucsi_ccg_sync_write(struct ucsi *ucsi, unsigned int offset,
 		    uc->has_multiple_dp) {
 			con_index = (uc->last_cmd_sent >> 16) &
 				    UCSI_CMD_CONNECTOR_MASK;
-			if (con_index == 0) {
-				ret = -EINVAL;
-				goto err_put;
-			}
 			con = &uc->ucsi->connector[con_index - 1];
 			ucsi_ccg_update_set_new_cam_cmd(uc, con, (u64 *)val);
 		}
 	}
-
-	ret = ucsi_ccg_async_write(ucsi, offset, val, val_len);
-	if (ret)
-		goto err_clear_bit;
-
-	if (!wait_for_completion_timeout(&uc->complete, msecs_to_jiffies(5000)))
-		ret = -ETIMEDOUT;
-
-err_clear_bit:
-	clear_bit(DEV_CMD_PENDING, &uc->flags);
-err_put:
-	pm_runtime_put_sync(uc->dev);
-	mutex_unlock(&uc->lock);
-
-	return ret;
-}
-
-static int ucsi_ccg_read(struct ucsi *ucsi, unsigned int offset,
-			 void *val, size_t val_len)
-{
-	u16 reg = CCGX_RAB_UCSI_DATA_BLOCK(offset);
-
-	return ccg_read(ucsi_get_drvdata(ucsi), reg, val, val_len);
-}
-
-static int ucsi_ccg_async_write(struct ucsi *ucsi, unsigned int offset,
-				const void *val, size_t val_len)
-{
-	u16 reg = CCGX_RAB_UCSI_DATA_BLOCK(offset);
-
-	return ccg_write(ucsi_get_drvdata(ucsi), reg, val, val_len);
-}
-
-static int ucsi_ccg_sync_write(struct ucsi *ucsi, unsigned int offset,
-			       const void *val, size_t val_len)
-{
-	struct ucsi_ccg *uc = ucsi_get_drvdata(ucsi);
-	int ret;
-
-	mutex_lock(&uc->lock);
-	pm_runtime_get_sync(uc->dev);
-	set_bit(DEV_CMD_PENDING, &uc->flags);
 
 	ret = ucsi_ccg_async_write(ucsi, offset, val, val_len);
 	if (ret)
@@ -642,7 +594,8 @@ err_clear_bit:
 static const struct ucsi_operations ucsi_ccg_ops = {
 	.read = ucsi_ccg_read,
 	.sync_write = ucsi_ccg_sync_write,
-	.async_write = ucsi_ccg_async_write
+	.async_write = ucsi_ccg_async_write,
+	.update_altmodes = ucsi_ccg_update_altmodes
 };
 
 static irqreturn_t ccg_irq_handler(int irq, void *data)

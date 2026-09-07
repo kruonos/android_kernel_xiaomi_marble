@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -11,6 +12,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/interrupt.h>
+#include "thermal_zone_internal.h"
 
 #define PE_SENS_DRIVER		"policy-engine-sensor"
 #define PE_INT_ENABLE_OFFSET	0x530
@@ -31,6 +33,13 @@ struct pe_sensor_data {
 	void __iomem			*regmap;
 	struct mutex			mutex;
 };
+
+static int pe_sensor_tz_change_mode(void *data, enum thermal_device_mode mode)
+{
+	struct pe_sensor_data *pe_sens = (struct pe_sensor_data *)data;
+
+	return qti_tz_change_mode(pe_sens->tz_dev, mode);
+}
 
 static int pe_sensor_get_trend(void *data, int trip, enum thermal_trend *trend)
 {
@@ -96,6 +105,7 @@ static struct thermal_zone_of_device_ops pe_sensor_ops = {
 	.get_temp = pe_sensor_read,
 	.set_trips = pe_sensor_set_trips,
 	.get_trend = pe_sensor_get_trend,
+	.change_mode = pe_sensor_tz_change_mode,
 };
 
 static irqreturn_t pe_handle_irq(int irq, void *data)
@@ -167,6 +177,7 @@ static int pe_sens_device_probe(struct platform_device *pdev)
 		pe_sens->tz_dev = NULL;
 		return ret;
 	}
+
 	writel_relaxed(PE_INTR_CFG, pe_sens->regmap + PE_INT_ENABLE_OFFSET);
 	writel_relaxed(PE_INTR_CLEAR, pe_sens->regmap + PE_INT_STATUS_OFFSET);
 	writel_relaxed(PE_STS_CLEAR, pe_sens->regmap + PE_INT_STATUS1_OFFSET);

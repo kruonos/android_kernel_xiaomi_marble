@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- *
- * Description: CoreSight Trace Memory Controller driver
+/*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
+
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/fs.h>
@@ -57,7 +57,7 @@ static irqreturn_t etr_handler(int irq, void *data)
 
 
 static long tmc_etr_flush_remaining_bytes(struct tmc_drvdata *tmcdrvdata, long offset,
-			char **bufpp)
+			size_t len, char **bufpp)
 {
 	long rwp_offset, req_size, actual = 0;
 	struct etr_buf *etr_buf;
@@ -81,6 +81,9 @@ static long tmc_etr_flush_remaining_bytes(struct tmc_drvdata *tmcdrvdata, long o
 	req_size = ((rwp_offset < offset) ? tmcdrvdata->size : 0) +
 		rwp_offset - offset;
 
+	if (req_size > len)
+		req_size = len;
+
 	if (req_size > 0)
 		actual = tmc_etr_buf_get_data(etr_buf, offset, req_size, bufpp);
 
@@ -94,6 +97,7 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 	struct byte_cntr *byte_cntr_data = fp->private_data;
 	struct tmc_drvdata *tmcdrvdata = byte_cntr_data->tmcdrvdata;
 	char *bufp = NULL;
+	long actual;
 	int ret = 0;
 
 	if (!data)
@@ -101,9 +105,10 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 
 	mutex_lock(&byte_cntr_data->byte_cntr_lock);
 	if (!byte_cntr_data->read_active) {
-		len = tmc_etr_flush_remaining_bytes(tmcdrvdata,
-					byte_cntr_data->offset, &bufp);
-		if (len > 0) {
+		actual = tmc_etr_flush_remaining_bytes(tmcdrvdata,
+				byte_cntr_data->offset, len, &bufp);
+		if (actual > 0) {
+			len = actual;
 			goto copy;
 		} else {
 			ret = -EINVAL;
@@ -120,9 +125,10 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 				return -ERESTARTSYS;
 			mutex_lock(&byte_cntr_data->byte_cntr_lock);
 			if (!byte_cntr_data->read_active) {
-				len = tmc_etr_flush_remaining_bytes(tmcdrvdata,
-						byte_cntr_data->offset, &bufp);
-				if (len > 0) {
+				actual = tmc_etr_flush_remaining_bytes(tmcdrvdata,
+						byte_cntr_data->offset, len, &bufp);
+				if (actual > 0) {
+					len = actual;
 					goto copy;
 				} else {
 					ret = -EINVAL;
@@ -135,9 +141,10 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 				   byte_cntr_data->block_size, &len, &bufp);
 
 	} else {
-		len = tmc_etr_flush_remaining_bytes(tmcdrvdata,
-					byte_cntr_data->offset, &bufp);
-		if (len > 0) {
+		actual = tmc_etr_flush_remaining_bytes(tmcdrvdata,
+				byte_cntr_data->offset, len, &bufp);
+		if (actual > 0) {
+			len = actual;
 			goto copy;
 		} else {
 			ret = -EINVAL;

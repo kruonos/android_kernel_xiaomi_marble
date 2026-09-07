@@ -97,7 +97,7 @@ static int ufs_bsg_request(struct bsg_job *job)
 
 	bsg_reply->reply_payload_rcv_len = 0;
 
-	pm_runtime_get_sync(hba->dev);
+	ufshcd_rpm_get_sync(hba);
 
 	msgcode = bsg_request->msgcode;
 	switch (msgcode) {
@@ -106,7 +106,7 @@ static int ufs_bsg_request(struct bsg_job *job)
 		ret = ufs_bsg_alloc_desc_buffer(hba, job, &desc_buff,
 						&desc_len, desc_op);
 		if (ret) {
-			pm_runtime_put_sync(hba->dev);
+			ufshcd_rpm_put_sync(hba);
 			goto out;
 		}
 
@@ -138,7 +138,7 @@ static int ufs_bsg_request(struct bsg_job *job)
 		break;
 	}
 
-	pm_runtime_put_sync(hba->dev);
+	ufshcd_rpm_put_sync(hba);
 
 	if (!desc_buff)
 		goto out;
@@ -175,7 +175,6 @@ void ufs_bsg_remove(struct ufs_hba *hba)
 		return;
 
 	bsg_remove_queue(hba->bsg_queue);
-	hba->bsg_queue = NULL;
 
 	device_del(bsg_dev);
 	put_device(bsg_dev);
@@ -214,7 +213,6 @@ int ufs_bsg_probe(struct ufs_hba *hba)
 	q = bsg_setup_queue(bsg_dev, dev_name(bsg_dev), ufs_bsg_request, NULL, 0);
 	if (IS_ERR(q)) {
 		ret = PTR_ERR(q);
-		device_del(bsg_dev);
 		goto out;
 	}
 

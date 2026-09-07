@@ -12,7 +12,6 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/io.h>
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/completion.h>
@@ -30,9 +29,9 @@
 
 /* Bit definitions for SPEAR_ADC_STATUS */
 #define SPEAR_ADC_STATUS_START_CONVERSION	BIT(0)
-#define SPEAR_ADC_STATUS_CHANNEL_NUM_MASK	GENMASK(3, 1)
+#define SPEAR_ADC_STATUS_CHANNEL_NUM(x)		((x) << 1)
 #define SPEAR_ADC_STATUS_ADC_ENABLE		BIT(4)
-#define SPEAR_ADC_STATUS_AVG_SAMPLE_MASK	GENMASK(8, 5)
+#define SPEAR_ADC_STATUS_AVG_SAMPLE(x)		((x) << 5)
 #define SPEAR_ADC_STATUS_VREF_INTERNAL		BIT(9)
 
 #define SPEAR_ADC_DATA_MASK		0x03ff
@@ -76,6 +75,15 @@ struct spear_adc_state {
 	struct adc_regs_spear6xx __iomem *adc_base_spear6xx;
 	struct clk *clk;
 	struct completion completion;
+	/*
+	 * Lock to protect the device state during a potential concurrent
+	 * read access from userspace. Reading a raw value requires a sequence
+	 * of register writes, then a wait for a completion callback,
+	 * and finally a register read, during which userspace could issue
+	 * another read request. This lock protects a read access from
+	 * ocurring before another one has finished.
+	 */
+	struct mutex lock;
 	u32 current_clk;
 	u32 sampling_freq;
 	u32 avg_samples;
@@ -147,10 +155,10 @@ static int spear_adc_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&st->lock);
 
-		status = FIELD_PREP(SPEAR_ADC_STATUS_CHANNEL_NUM_MASK, chan->channel) |
-			FIELD_PREP(SPEAR_ADC_STATUS_AVG_SAMPLE_MASK, st->avg_samples) |
+		status = SPEAR_ADC_STATUS_CHANNEL_NUM(chan->channel) |
+			SPEAR_ADC_STATUS_AVG_SAMPLE(st->avg_samples) |
 			SPEAR_ADC_STATUS_START_CONVERSION |
 			SPEAR_ADC_STATUS_ADC_ENABLE;
 		if (st->vref_external == 0)
@@ -160,7 +168,7 @@ static int spear_adc_read_raw(struct iio_dev *indio_dev,
 		wait_for_completion(&st->completion); /* set by ISR */
 		*val = st->value;
 
-		mutex_unlock(&indio_dev->mlock);
+		mutex_unlock(&st->lock);
 
 		return IIO_VAL_INT;
 
@@ -188,7 +196,7 @@ static int spear_adc_write_raw(struct iio_dev *indio_dev,
 	if (mask != IIO_CHAN_INFO_SAMP_FREQ)
 		return -EINVAL;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 
 	if ((val < SPEAR_ADC_CLK_MIN) ||
 	    (val > SPEAR_ADC_CLK_MAX) ||
@@ -200,7 +208,7 @@ static int spear_adc_write_raw(struct iio_dev *indio_dev,
 	spear_adc_set_clk(st, val);
 
 out:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 	return ret;
 }
 
@@ -272,6 +280,9 @@ static int spear_adc_probe(struct platform_device *pdev)
 	}
 
 	st = iio_priv(indio_dev);
+
+	mutex_init(&st->lock);
+
 	st->np = np;
 
 	/*

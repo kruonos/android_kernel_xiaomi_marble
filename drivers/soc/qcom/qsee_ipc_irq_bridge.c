@@ -28,8 +28,7 @@
 
 #define QIIB_ERR(x...) do { \
 	pr_err(x); \
-	if (qiib_info->log_ctx) \
-		ipc_log_string(qiib_info->log_ctx, x); \
+	ipc_log_string(qiib_info->log_ctx, x); \
 	} while (0)
 
 static void qiib_cleanup(void);

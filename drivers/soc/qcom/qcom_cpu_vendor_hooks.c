@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-
 /*
- * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "VendorHooks: " fmt
@@ -18,7 +16,6 @@
 #include <linux/atomic.h>
 #include <linux/sched/debug.h>
 #include <linux/io.h>
-#include <linux/syscore_ops.h>
 
 #include <soc/qcom/watchdog.h>
 
@@ -111,10 +108,9 @@ void show_regs_min(struct pt_regs *regs)
 	}
 }
 
-static void print_undefinstr(void *unused,
-			struct pt_regs *regs, bool user)
+static void print_undefinstr(void *unused, struct pt_regs *regs)
 {
-	if (!user) {
+	if (!user_mode(regs)) {
 		dump_instr("PC", regs->pc);
 		dump_instr("LR", ptrauth_strip_insn_pac(regs->regs[30]));
 		show_regs_min(regs);
@@ -122,9 +118,9 @@ static void print_undefinstr(void *unused,
 }
 
 static void print_ptrauth_fault(void *unused, struct pt_regs *regs,
-			unsigned int esr, bool user)
+			unsigned int esr)
 {
-	if (!user) {
+	if (!user_mode(regs)) {
 		dump_instr("PC", regs->pc);
 		dump_instr("LR", ptrauth_strip_insn_pac(regs->regs[30]));
 		printk(KERN_EMERG "ESR value: 0x%08x", esr);
@@ -133,7 +129,7 @@ static void print_ptrauth_fault(void *unused, struct pt_regs *regs,
 }
 
 #if IS_ENABLED(CONFIG_DEBUG_SPINLOCK) && \
-   (IS_ENABLED(CONFIG_DEBUG_SPINLOCK_BITE_ON_BUG) || IS_ENABLED(CONFIG_DEBUG_SPINLOCK_PANIC_ON_BUG))
+	(IS_ENABLED(CONFIG_DEBUG_SPINLOCK_BITE_ON_BUG) || IS_ENABLED(CONFIG_DEBUG_SPINLOCK_PANIC_ON_BUG))
 static int entry_spin_bug(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	raw_spinlock_t *lock = (raw_spinlock_t *)regs->regs[0];
@@ -221,20 +217,11 @@ static void store_kaslr_offset(void)
 static void store_kaslr_offset(void) {}
 #endif /* CONFIG_RANDOMIZE_BASE */
 
-#ifdef CONFIG_HIBERNATION
-static struct syscore_ops kaslr_offset_restore_syscore_ops = {
-	.resume = store_kaslr_offset,
-};
-#endif /* CONFIG_HIBERNATION */
-
 static int cpu_vendor_hooks_driver_probe(struct platform_device *pdev)
 {
 	int ret;
 
 	store_kaslr_offset();
-#ifdef CONFIG_HIBERNATION
-	register_syscore_ops(&kaslr_offset_restore_syscore_ops);
-#endif
 
 	ret = register_trace_android_vh_ipi_stop(trace_ipi_stop, NULL);
 	if (ret) {

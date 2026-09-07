@@ -121,59 +121,12 @@ void vma_set_pad_pages(struct vm_area_struct *vma,
 	vma->vm_flags |= (nr_pages << VM_PAD_SHIFT);
 }
 
-/**
- * __vma_pad_pages - Get the number of padding pages for a VMA.
- * @vma: The VMA to check.
- * @new: The new VMA if this is called during a split.
- *
- * This is an internal helper only meant to be used by split_pad_vma() to
- * handle the case where the VMA bounds have already been updated. Other
- * callers should use vma_pad_pages().
- *
- * During a VMA split, the original VMA's bounds (vm_start/vm_end) are updated
- * before its padding flags are adjusted. This means that at the time of the
- * split, vma_pages(vma) might be smaller than the number of padding pages
- * stored in its flags.
- *
- * If @new is provided, it is assumed to be the other half of the split VMA,
- * and its page count is added to @vma's to reconstruct the original total
- * page count for the padding check.
- *
- * Returns: The number of padding pages, or 0 if padding is disabled or
- * the VMA is inconsistent.
- */
-static unsigned long __vma_pad_pages(struct vm_area_struct *vma,
-				     struct vm_area_struct *new)
+unsigned long vma_pad_pages(struct vm_area_struct *vma)
 {
-	unsigned long nr_pages;
-	unsigned long nr_pad;
-
 	if (!is_pgsize_migration_enabled())
 		return 0;
 
-	nr_pad = (vma->vm_flags & VM_PAD_MASK) >> VM_PAD_SHIFT;
-	if (!nr_pad)
-		return 0;
-
-	nr_pages = vma_pages(vma);
-	if (new)
-		nr_pages += vma_pages(new);
-
-	/*
-	 * The number of padding pages should not exceed the total number of pages in
-	 * the VMA, but can be equal.
-	 *
-	 * See comment in split_pad_vma() for more details.
-	 */
-	if (WARN_ON(nr_pad > nr_pages))
-		return 0;
-
-	return nr_pad;
-}
-
-unsigned long vma_pad_pages(struct vm_area_struct *vma)
-{
-	return __vma_pad_pages(vma, NULL);
+	return vma->vm_flags >> VM_PAD_SHIFT;
 }
 
 static __always_inline bool str_has_suffix(const char *str, const char *suffix)
@@ -230,23 +183,15 @@ static inline bool linker_ctx(void)
 		memset(buf, 0, bufsize);
 		path = d_path(&file->f_path, buf, bufsize);
 
-		if (IS_ERR(path)) {
-			pgmigration_err("Unable to parse filepath");
-			return false;
-		}
-
 		/*
 		 * Depending on interpreter requested, valid paths could be any of:
 		 *   1. /system/bin/bootstrap/linker64
 		 *   2. /system/bin/linker64
 		 *   3. /apex/com.android.runtime/bin/linker64
 		 *
-		 * Check against absolute paths to ensure the dynamic loader
-		 * context is correctly identified.
+		 * Check the base name (linker64).
 		 */
-		if (!strcmp(path, "/system/bin/bootstrap/linker64") ||
-		    !strcmp(path, "/system/bin/linker64") ||
-		    !strcmp(path, "/apex/com.android.runtime/bin/linker64"))
+		if (!strcmp(kbasename(path), "linker64"))
 			return true;
 	}
 
@@ -282,14 +227,6 @@ void madvise_vma_pad_pages(struct vm_area_struct *vma,
 	if (start <= vma->vm_start || end != vma->vm_end)
 		return;
 
-	/*
-	 * The only valid usecase is for madvising MAP_PRIVATE ELF mappings.
-	 */
-	if (vma->vm_flags & VM_SHARED) {
-		pgmigration_err("Invalid attempt to madvise padding on MAP_SHARED vma");
-		return;
-	}
-
 	nr_pad_pages = (end - start) >> PAGE_SHIFT;
 
 	if (!nr_pad_pages || nr_pad_pages > VM_TOTAL_PAD_PAGES)
@@ -320,11 +257,19 @@ static const struct vm_operations_struct pad_vma_ops = {
 };
 
 /*
- * Initialize @pad VMA fields with information from the original @vma.
+ * Returns a new VMA representing the padding in @vma, if no padding
+ * in @vma returns NULL.
  */
-static void init_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *pad)
+struct vm_area_struct *get_pad_vma(struct vm_area_struct *vma)
 {
-	memcpy(pad, vma, sizeof(struct vm_area_struct));
+	struct vm_area_struct *pad;
+
+	if (!is_pgsize_migration_enabled() || !(vma->vm_flags & VM_PAD_MASK))
+		return NULL;
+
+	pad = kzalloc(sizeof(struct vm_area_struct), GFP_KERNEL);
+
+	*pad = *vma;
 
 	/* Remove file */
 	pad->vm_file = NULL;
@@ -340,34 +285,60 @@ static void init_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *pad)
 
 	/* Remove padding bits */
 	pad->vm_flags &= ~VM_PAD_MASK;
+
+	return pad;
 }
 
 /*
- * Calls the show_pad_vma_fn on the @pad VMA.
+ * Returns a new VMA exclusing the padding from @vma; if no padding in
+ * @vma returns @vma.
  */
-void show_map_pad_vma(struct vm_area_struct *vma, struct seq_file *m,
-		      void *func, bool smaps)
+struct vm_area_struct *get_data_vma(struct vm_area_struct *vma)
 {
-	struct vm_area_struct pad;
+	struct vm_area_struct *data;
 
 	if (!is_pgsize_migration_enabled() || !(vma->vm_flags & VM_PAD_MASK))
+		return vma;
+
+	data = kzalloc(sizeof(struct vm_area_struct), GFP_KERNEL);
+
+	*data = *vma;
+
+	/* Adjust the end to the start of the padding section */
+	data->vm_end = VMA_PAD_START(data);
+
+	return data;
+}
+
+/*
+ * Calls the show_pad_vma_fn on the @pad VMA, and frees the copies of @vma
+ * and @pad.
+ */
+void show_map_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *pad,
+		      struct seq_file *m, void *func, bool smaps)
+{
+	if (!pad)
 		return;
 
-	init_pad_vma(vma, &pad);
+	/*
+	 * This cannot happen. If @pad vma was allocated the corresponding
+	 * @vma should have the VM_PAD_MASK bit(s) set.
+	 */
+	BUG_ON(!(vma->vm_flags & VM_PAD_MASK));
 
-	/* The pad VMA should be anonymous. */
-	BUG_ON(pad.vm_file);
-
-	/* The pad VMA should be PROT_NONE. */
-	BUG_ON(pad.vm_flags & (VM_READ|VM_WRITE|VM_EXEC));
-
-	/* The pad VMA itself cannot have padding; infinite recursion */
-	BUG_ON(pad.vm_flags & VM_PAD_MASK);
+	/*
+	 * This cannot happen. @pad is a section of the original VMA.
+	 * Therefore @vma cannot be null if @pad is not null.
+	 */
+	BUG_ON(!vma);
 
 	if (smaps)
-		((show_pad_smaps_fn)func)(m, &pad);
+		((show_pad_smaps_fn)func)(m, pad);
 	else
-		((show_pad_maps_fn)func)(m, &pad);
+		((show_pad_maps_fn)func)(m, pad);
+
+	kfree(pad);
+	kfree(vma);
 }
 
 /*
@@ -407,7 +378,7 @@ void show_map_pad_vma(struct vm_area_struct *vma, struct seq_file *m,
 void split_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *new,
 		   unsigned long addr, int new_below)
 {
-	unsigned long nr_pad_pages = __vma_pad_pages(vma, new);
+	unsigned long nr_pad_pages = vma_pad_pages(vma);
 	unsigned long nr_vma2_pages;
 	struct vm_area_struct *first;
 	struct vm_area_struct *second;
@@ -426,32 +397,12 @@ void split_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *new,
 	nr_vma2_pages = vma_pages(second);
 
 	if (nr_vma2_pages >= nr_pad_pages) { 			/* Case 1 & 3 */
-		vma_set_pad_pages(first, 0);
+		first->vm_flags &= ~VM_PAD_MASK;
 		vma_set_pad_pages(second, nr_pad_pages);
 	} else {						/* Case 2 */
 		vma_set_pad_pages(first, nr_pad_pages - nr_vma2_pages);
 		vma_set_pad_pages(second, nr_vma2_pages);
 	}
 }
-
-/*
- * Merging of padding VMAs is uncommon, as padding is only allowed
- * from the linker context.
- *
- * To simplify the semantics, adjacent VMAs with padding are not
- * allowed to merge.
- */
-bool is_mergable_pad_vma(struct vm_area_struct *vma,
-			 unsigned long vm_flags)
-{
-	/* Padding VMAs cannot be merged with other padding or real VMAs */
-	return !((vma->vm_flags | vm_flags) & VM_PAD_MASK);
-}
-
-unsigned long vma_data_pages(struct vm_area_struct *vma)
-{
-	return vma_pages(vma) - vma_pad_pages(vma);
-}
-
 #endif /* PAGE_SIZE == SZ_4K */
 #endif /* CONFIG_64BIT */

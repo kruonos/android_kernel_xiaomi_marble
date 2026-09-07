@@ -2,7 +2,7 @@
 /*
  * System Control and Management Interface (SCMI) Reset Protocol
  *
- * Copyright (C) 2019-2020 ARM Ltd.
+ * Copyright (C) 2019-2021 ARM Ltd.
  */
 
 #define pr_fmt(fmt) "SCMI Notifications RESET - " fmt
@@ -158,7 +158,7 @@ static int scmi_domain_reset(const struct scmi_protocol_handle *ph, u32 domain,
 		return -EINVAL;
 
 	rdom = pi->dom_info + domain;
-	if (rdom->async_reset)
+	if (rdom->async_reset && flags & AUTONOMOUS_RESET)
 		flags |= ASYNCHRONOUS_RESET;
 
 	ret = ph->xops->xfer_get_init(ph, RESET, sizeof(*dom), 0, &t);
@@ -170,7 +170,7 @@ static int scmi_domain_reset(const struct scmi_protocol_handle *ph, u32 domain,
 	dom->flags = cpu_to_le32(flags);
 	dom->reset_state = cpu_to_le32(state);
 
-	if (rdom->async_reset)
+	if (flags & ASYNCHRONOUS_RESET)
 		ret = ph->xops->do_xfer_with_response(ph, t);
 	else
 		ret = ph->xops->do_xfer(ph, t);
@@ -330,7 +330,7 @@ static int scmi_reset_protocol_init(const struct scmi_protocol_handle *ph)
 static const struct scmi_protocol scmi_reset = {
 	.id = SCMI_PROTOCOL_RESET,
 	.owner = THIS_MODULE,
-	.init_instance = &scmi_reset_protocol_init,
+	.instance_init = &scmi_reset_protocol_init,
 	.ops = &reset_proto_ops,
 	.events = &reset_protocol_events,
 };

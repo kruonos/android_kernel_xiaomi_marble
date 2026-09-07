@@ -160,7 +160,7 @@ int siw_query_device(struct ib_device *base_dev, struct ib_device_attr *attr,
 	return 0;
 }
 
-int siw_query_port(struct ib_device *base_dev, u8 port,
+int siw_query_port(struct ib_device *base_dev, u32 port,
 		   struct ib_port_attr *attr)
 {
 	struct siw_device *sdev = to_siw_dev(base_dev);
@@ -194,7 +194,7 @@ int siw_query_port(struct ib_device *base_dev, u8 port,
 	return rv;
 }
 
-int siw_get_port_immutable(struct ib_device *base_dev, u8 port,
+int siw_get_port_immutable(struct ib_device *base_dev, u32 port,
 			   struct ib_port_immutable *port_immutable)
 {
 	struct ib_port_attr attr;
@@ -209,7 +209,7 @@ int siw_get_port_immutable(struct ib_device *base_dev, u8 port,
 	return 0;
 }
 
-int siw_query_gid(struct ib_device *base_dev, u8 port, int idx,
+int siw_query_gid(struct ib_device *base_dev, u32 port, int idx,
 		  union ib_gid *gid)
 {
 	struct siw_device *sdev = to_siw_dev(base_dev);
@@ -285,16 +285,16 @@ siw_mmap_entry_insert(struct siw_ucontext *uctx,
  *
  * Create QP of requested size on given device.
  *
- * @pd:		Protection Domain
+ * @qp:		Queue pait
  * @attrs:	Initial QP attributes.
  * @udata:	used to provide QP ID, SQ and RQ size back to user.
  */
 
-struct ib_qp *siw_create_qp(struct ib_pd *pd,
-			    struct ib_qp_init_attr *attrs,
-			    struct ib_udata *udata)
+int siw_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attrs,
+		  struct ib_udata *udata)
 {
-	struct siw_qp *qp = NULL;
+	struct ib_pd *pd = ibqp->pd;
+	struct siw_qp *qp = to_siw_qp(ibqp);
 	struct ib_device *base_dev = pd->device;
 	struct siw_device *sdev = to_siw_dev(base_dev);
 	struct siw_ucontext *uctx =
@@ -306,15 +306,18 @@ struct ib_qp *siw_create_qp(struct ib_pd *pd,
 
 	siw_dbg(base_dev, "create new QP\n");
 
+	if (attrs->create_flags)
+		return -EOPNOTSUPP;
+
 	if (atomic_inc_return(&sdev->num_qp) > SIW_MAX_QP) {
 		siw_dbg(base_dev, "too many QP's\n");
 		rv = -ENOMEM;
-		goto err_out;
+		goto err_atomic;
 	}
 	if (attrs->qp_type != IB_QPT_RC) {
 		siw_dbg(base_dev, "only RC QP's supported\n");
 		rv = -EOPNOTSUPP;
-		goto err_out;
+		goto err_atomic;
 	}
 	if ((attrs->cap.max_send_wr > SIW_MAX_QP_WR) ||
 	    (attrs->cap.max_recv_wr > SIW_MAX_QP_WR) ||
@@ -322,13 +325,13 @@ struct ib_qp *siw_create_qp(struct ib_pd *pd,
 	    (attrs->cap.max_recv_sge > SIW_MAX_SGE)) {
 		siw_dbg(base_dev, "QP size error\n");
 		rv = -EINVAL;
-		goto err_out;
+		goto err_atomic;
 	}
 	if (attrs->cap.max_inline_data > SIW_MAX_INLINE) {
 		siw_dbg(base_dev, "max inline send: %d > %d\n",
 			attrs->cap.max_inline_data, (int)SIW_MAX_INLINE);
 		rv = -EINVAL;
-		goto err_out;
+		goto err_atomic;
 	}
 	/*
 	 * NOTE: we allow for zero element SQ and RQ WQE's SGL's
@@ -337,19 +340,15 @@ struct ib_qp *siw_create_qp(struct ib_pd *pd,
 	if (attrs->cap.max_send_wr + attrs->cap.max_recv_wr == 0) {
 		siw_dbg(base_dev, "QP must have send or receive queue\n");
 		rv = -EINVAL;
-		goto err_out;
+		goto err_atomic;
 	}
 
 	if (!attrs->send_cq || (!attrs->recv_cq && !attrs->srq)) {
 		siw_dbg(base_dev, "send CQ or receive CQ invalid\n");
 		rv = -EINVAL;
-		goto err_out;
+		goto err_atomic;
 	}
-	qp = kzalloc(sizeof(*qp), GFP_KERNEL);
-	if (!qp) {
-		rv = -ENOMEM;
-		goto err_out;
-	}
+
 	init_rwsem(&qp->state_lock);
 	spin_lock_init(&qp->sq_lock);
 	spin_lock_init(&qp->rq_lock);
@@ -357,7 +356,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *pd,
 
 	rv = siw_qp_add(sdev, qp);
 	if (rv)
-		goto err_out;
+		goto err_atomic;
 
 	num_sqe = attrs->cap.max_send_wr;
 	num_rqe = attrs->cap.max_recv_wr;
@@ -479,23 +478,22 @@ struct ib_qp *siw_create_qp(struct ib_pd *pd,
 	list_add_tail(&qp->devq, &sdev->qp_list);
 	spin_unlock_irqrestore(&sdev->lock, flags);
 
-	return &qp->base_qp;
+	init_completion(&qp->qp_free);
+
+	return 0;
 
 err_out_xa:
 	xa_erase(&sdev->qp_xa, qp_id(qp));
-err_out:
-	if (qp) {
-		if (uctx) {
-			rdma_user_mmap_entry_remove(qp->sq_entry);
-			rdma_user_mmap_entry_remove(qp->rq_entry);
-		}
-		vfree(qp->sendq);
-		vfree(qp->recvq);
-		kfree(qp);
+	if (uctx) {
+		rdma_user_mmap_entry_remove(qp->sq_entry);
+		rdma_user_mmap_entry_remove(qp->rq_entry);
 	}
-	atomic_dec(&sdev->num_qp);
+	vfree(qp->sendq);
+	vfree(qp->recvq);
 
-	return ERR_PTR(rv);
+err_atomic:
+	atomic_dec(&sdev->num_qp);
+	return rv;
 }
 
 /*
@@ -548,6 +546,9 @@ int siw_verbs_modify_qp(struct ib_qp *base_qp, struct ib_qp_attr *attr,
 
 	if (!attr_mask)
 		return 0;
+
+	if (attr_mask & ~IB_QP_ATTR_STANDARD_BITS)
+		return -EOPNOTSUPP;
 
 	memset(&new_attrs, 0, sizeof(new_attrs));
 
@@ -623,6 +624,7 @@ int siw_destroy_qp(struct ib_qp *base_qp, struct ib_udata *udata)
 	qp->scq = qp->rcq = NULL;
 
 	siw_qp_put(qp);
+	wait_for_completion(&qp->qp_free);
 
 	return 0;
 }
@@ -757,7 +759,7 @@ int siw_post_send(struct ib_qp *base_qp, const struct ib_send_wr *wr,
 	struct siw_wqe *wqe = tx_wqe(qp);
 
 	unsigned long flags;
-	int rv = 0, imm_err = 0;
+	int rv = 0;
 
 	if (wr && !rdma_is_kernel_res(&qp->base_qp.res)) {
 		siw_dbg_qp(qp, "wr must be empty for user mapped sq\n");
@@ -943,17 +945,9 @@ int siw_post_send(struct ib_qp *base_qp, const struct ib_send_wr *wr,
 	 * Send directly if SQ processing is not in progress.
 	 * Eventual immediate errors (rv < 0) do not affect the involved
 	 * RI resources (Verbs, 8.3.1) and thus do not prevent from SQ
-	 * processing, if new work is already pending. But rv and pointer
-	 * to failed work request must be passed to caller.
+	 * processing, if new work is already pending. But rv must be passed
+	 * to caller.
 	 */
-	if (unlikely(rv < 0)) {
-		/*
-		 * Immediate error
-		 */
-		siw_dbg_qp(qp, "Immediate error %d\n", rv);
-		imm_err = rv;
-		*bad_wr = wr;
-	}
 	if (wqe->wr_status != SIW_WR_IDLE) {
 		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		goto skip_direct_sending;
@@ -978,10 +972,15 @@ skip_direct_sending:
 
 	up_read(&qp->state_lock);
 
-	if (unlikely(imm_err))
-		return imm_err;
+	if (rv >= 0)
+		return 0;
+	/*
+	 * Immediate error
+	 */
+	siw_dbg_qp(qp, "error %d\n", rv);
 
-	return (rv >= 0) ? 0 : rv;
+	*bad_wr = wr;
+	return rv;
 }
 
 /*
@@ -1133,6 +1132,9 @@ int siw_create_cq(struct ib_cq *base_cq, const struct ib_cq_init_attr *attr,
 	struct siw_device *sdev = to_siw_dev(base_cq->device);
 	struct siw_cq *cq = to_siw_cq(base_cq);
 	int rv, size = attr->cqe;
+
+	if (attr->flags)
+		return -EOPNOTSUPP;
 
 	if (atomic_inc_return(&sdev->num_cq) > SIW_MAX_CQ) {
 		siw_dbg(base_cq->device, "too many CQ's\n");
@@ -1490,7 +1492,7 @@ int siw_map_mr_sg(struct ib_mr *base_mr, struct scatterlist *sl, int num_sle,
 
 	if (pbl->max_buf < num_sle) {
 		siw_dbg_mem(mem, "too many SGE's: %d > %d\n",
-			    num_sle, pbl->max_buf);
+			    mem->pbl->max_buf, num_sle);
 		return -ENOMEM;
 	}
 	for_each_sg(sl, slp, num_sle, i) {
@@ -1594,6 +1596,9 @@ int siw_create_srq(struct ib_srq *base_srq,
 		rdma_udata_to_drv_context(udata, struct siw_ucontext,
 					  base_ucontext);
 	int rv;
+
+	if (init_attrs->srq_type != IB_SRQT_BASIC)
+		return -EOPNOTSUPP;
 
 	if (atomic_inc_return(&sdev->num_srq) > SIW_MAX_SRQ) {
 		siw_dbg_pd(base_srq->pd, "too many SRQ's\n");
@@ -1868,7 +1873,7 @@ void siw_srq_event(struct siw_srq *srq, enum ib_event_type etype)
 	}
 }
 
-void siw_port_event(struct siw_device *sdev, u8 port, enum ib_event_type etype)
+void siw_port_event(struct siw_device *sdev, u32 port, enum ib_event_type etype)
 {
 	struct ib_event event;
 

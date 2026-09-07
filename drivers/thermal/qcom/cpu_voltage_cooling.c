@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021,2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
 
@@ -178,7 +178,7 @@ static struct cc_limits_data *opp_init(int *cpus)
 {
 	int cpu1, cpu2;
 	struct device *cpu1_dev, *cpu2_dev;
-	struct limits_freq_table *cpu1_freq_table, *cpu2_freq_table = NULL;
+	struct limits_freq_table *cpu1_freq_table, *cpu2_freq_table;
 	struct limits_freq_table *cpu_freq_table[CPU_MAP_CT];
 	int table_ct[CPU_MAP_CT], ret = 0;
 	struct cc_limits_data *cc_cdev = NULL;
@@ -357,6 +357,7 @@ static int cc_init_single_cluster(struct device_node *np, int cpu)
 					&cc_cooling_ops);
 	if (!IS_ERR(cc_cdev->cdev))
 		list_add(&cc_cdev->node, &cc_cdev_list);
+
 	return 0;
 
 cc_err_exit:;
@@ -418,7 +419,7 @@ static int cc_cooling_probe(struct platform_device *pdev)
 				break;
 		}
 		if (count == 0) {
-			dev_err(dev, "No cluster avaliable\n");
+			dev_err(dev, "No cluster available\n");
 			return -EINVAL;
 		} else if (count == 2)
 			ret = cc_init(subsys_np, cpu_map);

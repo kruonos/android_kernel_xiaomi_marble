@@ -226,6 +226,7 @@ static struct socket *bareudp_create_sock(struct net *net, __be16 port)
 	if (err < 0)
 		return ERR_PTR(err);
 
+	udp_allow_gso(sock->sk);
 	return sock;
 }
 
@@ -295,9 +296,6 @@ static int bareudp_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 	__be32 saddr;
 	int err;
 
-	if (!skb_vlan_inet_prepare(skb, skb->protocol != htons(ETH_P_TEB)))
-		return -EINVAL;
-
 	if (!sock)
 		return -ESHUTDOWN;
 
@@ -360,9 +358,6 @@ static int bareudp6_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 	__u8 prio, ttl;
 	__be16 sport;
 	int err;
-
-	if (!skb_vlan_inet_prepare(skb, skb->protocol != htons(ETH_P_TEB)))
-		return -EINVAL;
 
 	if (!sock)
 		return -ESHUTDOWN;
@@ -518,7 +513,7 @@ static const struct net_device_ops bareudp_netdev_ops = {
 	.ndo_open               = bareudp_open,
 	.ndo_stop               = bareudp_stop,
 	.ndo_start_xmit         = bareudp_xmit,
-	.ndo_get_stats64        = ip_tunnel_get_stats64,
+	.ndo_get_stats64        = dev_get_tstats64,
 	.ndo_fill_metadata_dst  = bareudp_fill_metadata_dst,
 };
 
@@ -530,7 +525,7 @@ static const struct nla_policy bareudp_policy[IFLA_BAREUDP_MAX + 1] = {
 };
 
 /* Info for udev, that this is a virtual tunnel endpoint */
-static struct device_type bareudp_type = {
+static const struct device_type bareudp_type = {
 	.name = "bareudp",
 };
 
@@ -540,11 +535,12 @@ static void bareudp_setup(struct net_device *dev)
 	dev->netdev_ops = &bareudp_netdev_ops;
 	dev->needs_free_netdev = true;
 	SET_NETDEV_DEVTYPE(dev, &bareudp_type);
-	dev->features    |= NETIF_F_SG | NETIF_F_HW_CSUM;
+	dev->features    |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_FRAGLIST;
 	dev->features    |= NETIF_F_RXCSUM;
 	dev->features    |= NETIF_F_LLTX;
 	dev->features    |= NETIF_F_GSO_SOFTWARE;
-	dev->hw_features |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_RXCSUM;
+	dev->hw_features |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_FRAGLIST;
+	dev->hw_features |= NETIF_F_RXCSUM;
 	dev->hw_features |= NETIF_F_GSO_SOFTWARE;
 	dev->hard_header_len = 0;
 	dev->addr_len = 0;
@@ -666,7 +662,6 @@ static int bareudp_newlink(struct net *net, struct net_device *dev,
 			   struct netlink_ext_ack *extack)
 {
 	struct bareudp_conf conf;
-	LIST_HEAD(list_kill);
 	int err;
 
 	err = bareudp2info(data, &conf, extack);
@@ -684,8 +679,7 @@ static int bareudp_newlink(struct net *net, struct net_device *dev,
 	return 0;
 
 err_unconfig:
-	bareudp_dellink(dev, &list_kill);
-	unregister_netdevice_many(&list_kill);
+	bareudp_dellink(dev, NULL);
 	return err;
 }
 
@@ -737,7 +731,6 @@ struct net_device *bareudp_dev_create(struct net *net, const char *name,
 {
 	struct nlattr *tb[IFLA_MAX + 1];
 	struct net_device *dev;
-	LIST_HEAD(list_kill);
 	int err;
 
 	memset(tb, 0, sizeof(tb));
@@ -761,8 +754,7 @@ struct net_device *bareudp_dev_create(struct net *net, const char *name,
 
 	return dev;
 err:
-	bareudp_dellink(dev, &list_kill);
-	unregister_netdevice_many(&list_kill);
+	bareudp_dellink(dev, NULL);
 	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(bareudp_dev_create);

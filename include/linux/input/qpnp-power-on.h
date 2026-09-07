@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2012-2015, 2017-2019, 2021 The Linux Foundation.
  * All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef QPNP_PON_H
@@ -55,6 +56,10 @@ enum pon_restart_reason {
 	PON_RESTART_REASON_DMVERITY_CORRUPTED	= 0x04,
 	PON_RESTART_REASON_DMVERITY_ENFORCE	= 0x05,
 	PON_RESTART_REASON_KEYS_CLEAR		= 0x06,
+	PON_RESTART_REASON_SILENT				= 0x0a,
+	PON_RESTART_REASON_NON_SILENT			= 0x0b,
+	PON_RESTART_REASON_FORCED_SILENT		= 0x0c,
+	PON_RESTART_REASON_FORCED_NON_SILENT	= 0x0d,
 };
 
 #if IS_ENABLED(CONFIG_INPUT_QPNP_POWER_ON)
@@ -68,11 +73,6 @@ int qpnp_pon_modem_pwr_off(enum pon_power_off_type type);
 
 #else
 
-static inline int qpnp_pon_system_pwr_off(enum pon_power_off_type type)
-{
-	return -ENODEV;
-}
-
 static inline int qpnp_pon_is_warm_reset(void)
 {
 	return -ENODEV;
@@ -84,7 +84,7 @@ static inline int qpnp_pon_trigger_config(enum pon_trigger_source pon_src,
 	return -ENODEV;
 }
 
-static inline int qpnp_pon_wd_config(bool enable)
+int qpnp_pon_wd_config(bool enable)
 {
 	return -ENODEV;
 }

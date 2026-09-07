@@ -103,7 +103,7 @@ static const struct zpa2326_frequency *zpa2326_highest_frequency(void)
 }
 
 /**
- * struct zpa_private - Per-device internal private state
+ * struct zpa2326_private - Per-device internal private state
  * @timestamp:  Buffered samples ready datum.
  * @regmap:     Underlying I2C / SPI bus adapter used to abstract slave register
  *              accesses.
@@ -582,11 +582,9 @@ static int zpa2326_fill_sample_buffer(struct iio_dev               *indio_dev,
 	struct {
 		u32 pressure;
 		u16 temperature;
-		aligned_s64 timestamp;
+		u64 timestamp;
 	}   sample;
 	int err;
-
-	memset(&sample, 0, sizeof(sample));
 
 	if (test_bit(0, indio_dev->active_scan_mask)) {
 		/* Get current pressure from hardware FIFO. */
@@ -1384,7 +1382,7 @@ static const struct iio_trigger_ops zpa2326_trigger_ops = {
 };
 
 /**
- * zpa2326_init_trigger() - Create an interrupt driven / hardware trigger
+ * zpa2326_init_managed_trigger() - Create interrupt driven / hardware trigger
  *                          allowing to notify external devices a new sample is
  *                          ready.
  * @parent:    Hardware sampling device @indio_dev is a child of.
@@ -1410,12 +1408,12 @@ static int zpa2326_init_managed_trigger(struct device          *parent,
 		return 0;
 
 	trigger = devm_iio_trigger_alloc(parent, "%s-dev%d",
-					 indio_dev->name, indio_dev->id);
+					 indio_dev->name,
+					 iio_device_id(indio_dev));
 	if (!trigger)
 		return -ENOMEM;
 
 	/* Basic setup. */
-	trigger->dev.parent = parent;
 	trigger->ops = &zpa2326_trigger_ops;
 
 	private->trigger = trigger;

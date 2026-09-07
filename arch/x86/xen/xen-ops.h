@@ -51,6 +51,7 @@ void __init xen_remap_memory(void);
 phys_addr_t __init xen_find_free_area(phys_addr_t size);
 char * __init xen_memory_setup(void);
 void __init xen_arch_setup(void);
+void xen_banner(void);
 void xen_enable_sysenter(void);
 void xen_enable_syscall(void);
 void xen_vcpu_restore(void);
@@ -110,13 +111,16 @@ static inline void xen_uninit_lock_cpu(int cpu)
 struct dom0_vga_console_info;
 
 #ifdef CONFIG_XEN_DOM0
-void __init xen_init_vga(const struct dom0_vga_console_info *, size_t size);
+void __init xen_init_vga(const struct dom0_vga_console_info *, size_t size,
+			 struct screen_info *);
 #else
 static inline void __init xen_init_vga(const struct dom0_vga_console_info *info,
-				       size_t size)
+				       size_t size, struct screen_info *si)
 {
 }
 #endif
+
+void xen_add_preferred_consoles(void);
 
 void __init xen_init_apic(void);
 
@@ -131,7 +135,6 @@ static inline void __init xen_efi_init(struct boot_params *boot_params)
 __visible void xen_irq_enable_direct(void);
 __visible void xen_irq_disable_direct(void);
 __visible unsigned long xen_save_fl_direct(void);
-__visible void xen_restore_fl_direct(unsigned long);
 
 __visible unsigned long xen_read_cr2(void);
 __visible unsigned long xen_read_cr2_direct(void);
@@ -160,14 +163,5 @@ void xen_hvm_post_suspend(int suspend_cancelled);
 #else
 static inline void xen_hvm_post_suspend(int suspend_cancelled) {}
 #endif
-
-#ifdef CONFIG_XEN_PV
-void xen_hypercall_pv(void);
-#endif
-void xen_hypercall_hvm(void);
-void xen_hypercall_amd(void);
-void xen_hypercall_intel(void);
-void xen_hypercall_setfunc(void);
-void *__xen_hypercall_setfunc(void);
 
 #endif /* XEN_OPS_H */

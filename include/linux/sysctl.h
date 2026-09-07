@@ -38,24 +38,26 @@ struct ctl_table_header;
 struct ctl_dir;
 
 /* Keep the same order as in fs/proc/proc_sysctl.c */
-#define SYSCTL_NEG_ONE			((void *)&android_gki_sysctl_vals[0])
-#define SYSCTL_ZERO			((void *)&android_gki_sysctl_vals[1])
-#define SYSCTL_ONE			((void *)&android_gki_sysctl_vals[2])
-#define SYSCTL_TWO			((void *)&android_gki_sysctl_vals[3])
-#define SYSCTL_FOUR			((void *)&android_gki_sysctl_vals[4])
-#define SYSCTL_ONE_HUNDRED		((void *)&android_gki_sysctl_vals[5])
-#define SYSCTL_TWO_HUNDRED		((void *)&android_gki_sysctl_vals[6])
-#define SYSCTL_ONE_THOUSAND		((void *)&android_gki_sysctl_vals[7])
-#define SYSCTL_THREE_THOUSAND		((void *)&android_gki_sysctl_vals[8])
-#define SYSCTL_INT_MAX			((void *)&android_gki_sysctl_vals[9])
+#define SYSCTL_NEG_ONE			((void *)&sysctl_vals_new[0])
+#define SYSCTL_ZERO			((void *)&sysctl_vals_new[1])
+#define SYSCTL_ONE			((void *)&sysctl_vals_new[2])
+#define SYSCTL_TWO			((void *)&sysctl_vals_new[3])
+#define SYSCTL_FOUR			((void *)&sysctl_vals_new[4])
+#define SYSCTL_ONE_HUNDRED		((void *)&sysctl_vals_new[5])
+#define SYSCTL_TWO_HUNDRED		((void *)&sysctl_vals_new[6])
+#define SYSCTL_ONE_THOUSAND		((void *)&sysctl_vals_new[7])
+#define SYSCTL_THREE_THOUSAND		((void *)&sysctl_vals_new[8])
+#define SYSCTL_INT_MAX			((void *)&sysctl_vals_new[9])
 
 extern const int sysctl_vals[];
-extern const int android_gki_sysctl_vals[];
+extern const int sysctl_vals_new[];
 
 typedef int proc_handler(struct ctl_table *ctl, int write, void *buffer,
 		size_t *lenp, loff_t *ppos);
 
 int proc_dostring(struct ctl_table *, int, void *, size_t *, loff_t *);
+int proc_dobool(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos);
 int proc_dointvec(struct ctl_table *, int, void *, size_t *, loff_t *);
 int proc_douintvec(struct ctl_table *, int, void *, size_t *, loff_t *);
 int proc_dointvec_minmax(struct ctl_table *, int, void *, size_t *, loff_t *);
@@ -209,6 +211,7 @@ extern void __register_sysctl_init(const char *path, struct ctl_table *table,
 				 const char *table_name);
 #define register_sysctl_init(path, table) __register_sysctl_init(path, table, #table)
 void do_sysctl_args(void);
+bool sysctl_is_alias(char *param);
 
 extern int pwrsw_enabled;
 extern int unaligned_enabled;
@@ -249,6 +252,11 @@ static inline void setup_sysctl_set(struct ctl_table_set *p,
 
 static inline void do_sysctl_args(void)
 {
+}
+
+static inline bool sysctl_is_alias(char *param)
+{
+	return false;
 }
 #endif /* CONFIG_SYSCTL */
 

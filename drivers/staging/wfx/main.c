@@ -339,7 +339,6 @@ int wfx_probe(struct wfx_dev *wdev)
 {
 	int i;
 	int err;
-	const void *macaddr;
 	struct gpio_desc *gpio_saved;
 
 	// During first part of boot, gpio_wakeup cannot yet been used. So
@@ -428,9 +427,9 @@ int wfx_probe(struct wfx_dev *wdev)
 
 	for (i = 0; i < ARRAY_SIZE(wdev->addresses); i++) {
 		eth_zero_addr(wdev->addresses[i].addr);
-		macaddr = of_get_mac_address(wdev->dev->of_node);
-		if (!IS_ERR_OR_NULL(macaddr)) {
-			ether_addr_copy(wdev->addresses[i].addr, macaddr);
+		err = of_get_mac_address(wdev->dev->of_node,
+					 wdev->addresses[i].addr);
+		if (!err) {
 			wdev->addresses[i].addr[ETH_ALEN - 1] += i;
 		} else {
 			ether_addr_copy(wdev->addresses[i].addr,
@@ -477,23 +476,10 @@ static int __init wfx_core_init(void)
 {
 	int ret = 0;
 
-	if (IS_ENABLED(CONFIG_SPI)) {
-		ret = spi_register_driver(&wfx_spi_driver);
-		if (ret)
-			goto out;
-	}
-	if (IS_ENABLED(CONFIG_MMC)) {
-		ret = sdio_register_driver(&wfx_sdio_driver);
-		if (ret)
-			goto unregister_spi;
-	}
-
-	return 0;
-
-unregister_spi:
 	if (IS_ENABLED(CONFIG_SPI))
-		spi_unregister_driver(&wfx_spi_driver);
-out:
+		ret = spi_register_driver(&wfx_spi_driver);
+	if (IS_ENABLED(CONFIG_MMC) && !ret)
+		ret = sdio_register_driver(&wfx_sdio_driver);
 	return ret;
 }
 module_init(wfx_core_init);

@@ -14,7 +14,9 @@
 #include "fjes.h"
 #include "fjes_trace.h"
 
-#define DRV_VERSION "1.2"
+#define MAJ 1
+#define MIN 2
+#define DRV_VERSION __stringify(MAJ) "." __stringify(MIN)
 #define DRV_NAME	"fjes"
 char fjes_driver_name[] = DRV_NAME;
 char fjes_driver_version[] = DRV_VERSION;
@@ -88,16 +90,8 @@ static struct platform_driver fjes_driver = {
 };
 
 static struct resource fjes_resource[] = {
-	{
-		.flags = IORESOURCE_MEM,
-		.start = 0,
-		.end = 0,
-	},
-	{
-		.flags = IORESOURCE_IRQ,
-		.start = 0,
-		.end = 0,
-	},
+	DEFINE_RES_MEM(0, 1),
+	DEFINE_RES_IRQ(0)
 };
 
 static bool is_extended_socket_device(struct acpi_device *device)

@@ -166,7 +166,7 @@
 		reg = <0x3b000000 0x20000>;
 		interrupt-parent = <&intc_fpga1176>;
 		interrupts = <0 11 IRQ_TYPE_LEVEL_HIGH>;
-		port1-otg;
+		dr_mode = "peripheral";
 	};
 
 	bridge {
@@ -435,7 +435,7 @@
 
 		/* Direct-mapped development chip ROM */
 		pb1176_rom@10200000 {
-			compatible = "mtd-rom";
+			compatible = "direct-mapped";
 			reg = <0x10200000 0x4000>;
 			bank-width = <1>;
 		};

@@ -28,6 +28,33 @@
 #include "usx2y.h"
 #include "usbusx2y.h"
 
+/* Default value used for nr of packs per urb.
+ * 1 to 4 have been tested ok on uhci.
+ * To use 3 on ohci, you'd need a patch:
+ * look for "0000425-linux-2.6.9-rc4-mm1_ohci-hcd.patch.gz" on
+ * "https://bugtrack.alsa-project.org/alsa-bug/bug_view_page.php?bug_id=0000425"
+ *
+ * 1, 2 and 4 work out of the box on ohci, if I recall correctly.
+ * Bigger is safer operation, smaller gives lower latencies.
+ */
+#define USX2Y_NRPACKS 4
+
+/* If your system works ok with this module's parameter
+ * nrpacks set to 1, you might as well comment
+ * this define out, and thereby produce smaller, faster code.
+ * You'd also set USX2Y_NRPACKS to 1 then.
+ */
+#define USX2Y_NRPACKS_VARIABLE 1
+
+#ifdef USX2Y_NRPACKS_VARIABLE
+static int nrpacks = USX2Y_NRPACKS; /* number of packets per urb */
+#define  nr_of_packs() nrpacks
+module_param(nrpacks, int, 0444);
+MODULE_PARM_DESC(nrpacks, "Number of packets per URB.");
+#else
+#define nr_of_packs() USX2Y_NRPACKS
+#endif
+
 static int usx2y_urb_capt_retire(struct snd_usx2y_substream *subs)
 {
 	struct urb	*urb = subs->completed_urb;
@@ -499,7 +526,7 @@ static int usx2y_urbs_start(struct snd_usx2y_substream *subs)
  cleanup:
 	if (err) {
 		usx2y_subs_startup_finish(usx2y);
-		usx2y_clients_stop(usx2y);		// something is completely wroong > stop evrything
+		usx2y_clients_stop(usx2y);	// something is completely wrong > stop everything
 	}
 	return err;
 }
@@ -990,9 +1017,7 @@ static int usx2y_audio_stream_new(struct snd_card *card, int playback_endpoint, 
  */
 int usx2y_audio_create(struct snd_card *card)
 {
-	int err = 0;
-
-	INIT_LIST_HEAD(&usx2y(card)->pcm_list);
+	int err;
 
 	err = usx2y_audio_stream_new(card, 0xA, 0x8);
 	if (err < 0)

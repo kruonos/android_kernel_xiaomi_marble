@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2013-2014,2020-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _DRIVERS_MMC_SDHCI_MSM_H
@@ -23,7 +23,9 @@
 #include <linux/reset.h>
 
 #include "sdhci-pltfm.h"
+#if IS_ENABLED(CONFIG_MMC_SDHCI_MSM_SCALING)
 #include "sdhci-msm-scaling.h"
+#endif
 #include "cqhci.h"
 
 #define MMC_CAP2_CLK_SCALE      (1 << 28)       /* Allow dynamic clk scaling */
@@ -62,6 +64,7 @@ enum sdhci_msm_mmc_load {
  * @enable: flag indicating if the clock scaling logic is enabled for this host
  * @is_suspended: to make devfreq request queued when mmc is suspened
  */
+#if IS_ENABLED(CONFIG_MMC_SDHCI_MSM_SCALING)
 struct sdhci_msm_mmc_devfeq_clk_scaling {
 	spinlock_t	lock;
 	struct		devfreq *devfreq;
@@ -89,7 +92,7 @@ struct sdhci_msm_mmc_devfeq_clk_scaling {
 	bool		enable;
 	bool		is_suspended;
 };
-
+#endif
 struct sdhci_msm_variant_ops {
 	u32 (*msm_readl_relaxed)(struct sdhci_host *host, u32 offset);
 	void (*msm_writel_relaxed)(u32 val, struct sdhci_host *host,
@@ -134,12 +137,8 @@ struct sdhci_msm_reg_data {
 	struct sdhci_msm_host *msm_host;
 	/* voltage regulator handle */
 	struct regulator *reg;
-	/* Alternative voltage enable/disable regulator handle */
-	struct regulator *reg_en_dis;
 	/* regulator name */
 	const char *name;
-	/* regulator enable/disable name */
-	char en_dis_name[32];
 	/* voltage level to be set */
 	u32 low_vol_level;
 	u32 high_vol_level;
@@ -155,7 +154,6 @@ struct sdhci_msm_reg_data {
 	bool lpm_sup;
 	bool set_voltage_sup;
 	bool is_voltage_supplied;
-	bool multi_card_tray_wa_needed;
 };
 
 /*
@@ -252,7 +250,7 @@ struct sdhci_msm_host {
 #ifdef CONFIG_MMC_CRYPTO
 	void __iomem *ice_mem;	/* MSM ICE mapped address (if available) */
 #endif
-#if IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)
+#if (IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER) || IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER_V1))
 	void __iomem *ice_hwkm_mem;
 #endif
 	int pwr_irq;		/* power irq */
@@ -298,7 +296,9 @@ struct sdhci_msm_host {
 	bool cqhci_offset_changed;
 	bool reg_store;
 	struct reset_control *core_reset;
+	bool vbias_skip_wa;
 	bool pltfm_init_done;
+	bool fake_core_3_0v_support;
 	bool core_3_0v_support;
 	bool use_7nm_dll;
 	struct sdhci_msm_dll_hsr *dll_hsr;
@@ -312,7 +312,6 @@ struct sdhci_msm_host {
 	bool uses_tassadar_dll;
 	bool uses_level_shifter;
 	bool dll_lock_bist_fail_wa;
-	bool need_special_up_threshold;
 	u32 dll_config;
 	u32 ddr_config;
 	u16 last_cmd;
@@ -321,7 +320,9 @@ struct sdhci_msm_host {
 	bool dbg_en;
 	bool err_occurred;
 	bool crash_on_err;
+#if IS_ENABLED(CONFIG_MMC_SDHCI_MSM_SCALING)
 	struct sdhci_msm_mmc_devfeq_clk_scaling clk_scaling;
+#endif
 	unsigned long           clk_scaling_lowest;     /* lowest scaleable
 							 * frequency.
 							 */
@@ -334,7 +335,12 @@ struct sdhci_msm_host {
 	int clk_scale_init_done;
 	int defer_clk_scaling_resume;
 	int scaling_suspended;
-	struct notifier_block sdhci_msm_pm_notifier;
+	u8 raw_ext_csd_cmdq;
+	u8 raw_ext_csd_cache_ctrl;
+	u8 raw_ext_csd_bus_width;
+	u8 raw_ext_csd_hs_timing;
+	struct mmc_ios cached_ios;
+	bool rst_n_disable;
 };
 
 struct mmc_pwrseq_ops {

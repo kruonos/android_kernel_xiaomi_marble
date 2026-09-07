@@ -45,6 +45,7 @@
 #include <linux/swap.h>
 
 #include "amd_shared.h"
+#include "amdgpu.h"
 
 #define KFD_MAX_RING_ENTRY_SIZE	8
 
@@ -108,14 +109,7 @@
 
 #define KFD_KERNEL_QUEUE_SIZE 2048
 
-/*  KFD_UNMAP_LATENCY_MS is the timeout CP waiting for SDMA preemption. One XCC
- *  can be associated to 2 SDMA engines. queue_preemption_timeout_ms is the time
- *  driver waiting for CP returning the UNMAP_QUEUE fence. Thus the math is
- *  queue_preemption_timeout_ms = sdma_preemption_time * 2 + cp workload
- *  The format here makes CP workload 10% of total timeout
- */
-#define KFD_UNMAP_LATENCY_MS	\
-	((queue_preemption_timeout_ms - queue_preemption_timeout_ms / 10) >> 1)
+#define KFD_UNMAP_LATENCY_MS	(4000)
 
 /*
  * 512 = 0x200
@@ -176,6 +170,11 @@ extern bool hws_gws_support;
 /* Queue preemption timeout in ms */
 extern int queue_preemption_timeout_ms;
 
+/*
+ * Don't evict process queues on vm fault
+ */
+extern int amdgpu_no_queue_eviction_on_vm_fault;
+
 /* Enable eviction debug messages */
 extern bool debug_evictions;
 
@@ -197,6 +196,7 @@ struct kfd_event_interrupt_class {
 struct kfd_device_info {
 	enum amd_asic_type asic_family;
 	const char *asic_name;
+	uint32_t gfx_target_version;
 	const struct kfd_event_interrupt_class *event_interrupt_class;
 	unsigned int max_pasid_bits;
 	unsigned int max_no_of_hqd;
@@ -207,6 +207,7 @@ struct kfd_device_info {
 	bool supports_cwsr;
 	bool needs_iommu_device;
 	bool needs_pci_atomics;
+	uint32_t no_atomic_fw_version;
 	unsigned int num_sdma_engines;
 	unsigned int num_xgmi_sdma_engines;
 	unsigned int num_sdma_queues_per_engine;
@@ -299,9 +300,6 @@ struct kfd_dev {
 	/* xGMI */
 	uint64_t hive_id;
 
-	/* UUID */
-	uint64_t unique_id;
-
 	bool pci_atomic_requested;
 
 	/* Use IOMMU v2 flag */
@@ -326,6 +324,9 @@ struct kfd_dev {
 	unsigned int max_doorbell_slices;
 
 	int noretry;
+
+	/* HMM page migration MEMORY_DEVICE_PRIVATE mapping */
+	struct dev_pagemap pgmap;
 };
 
 enum kfd_mempool {
@@ -654,12 +655,6 @@ enum kfd_pdd_bound {
 
 /* Data that is per-process-per device. */
 struct kfd_process_device {
-	/*
-	 * List of all per-device data for a process.
-	 * Starts from kfd_process.per_device_data.
-	 */
-	struct list_head per_device_list;
-
 	/* The device that owns this data. */
 	struct kfd_dev *dev;
 
@@ -679,7 +674,7 @@ struct kfd_process_device {
 
 	/* VM context for GPUVM allocations */
 	struct file *drm_file;
-	void *vm;
+	void *drm_priv;
 
 	/* GPUVM allocations storage */
 	struct idr alloc_idr;
@@ -737,9 +732,31 @@ struct kfd_process_device {
 	 *  number of CU's a device has along with number of other competing processes
 	 */
 	struct attribute attr_cu_occupancy;
+
+	/* sysfs counters for GPU retry fault and page migration tracking */
+	struct kobject *kobj_counters;
+	struct attribute attr_faults;
+	struct attribute attr_page_in;
+	struct attribute attr_page_out;
+	uint64_t faults;
+	uint64_t page_in;
+	uint64_t page_out;
 };
 
 #define qpd_to_pdd(x) container_of(x, struct kfd_process_device, qpd)
+
+struct svm_range_list {
+	struct mutex			lock;
+	struct rb_root_cached		objects;
+	struct list_head		list;
+	struct work_struct		deferred_list_work;
+	struct list_head		deferred_range_list;
+	spinlock_t			deferred_list_lock;
+	atomic_t			evicted_ranges;
+	struct delayed_work		restore_work;
+	DECLARE_BITMAP(bitmap_supported, MAX_GPU_INSTANCE);
+	struct task_struct 		*faulting_task;
+};
 
 /* Process data */
 struct kfd_process {
@@ -776,10 +793,11 @@ struct kfd_process {
 	u32 pasid;
 
 	/*
-	 * List of kfd_process_device structures,
+	 * Array of kfd_process_device pointers,
 	 * one for each device the process is using.
 	 */
-	struct list_head per_device_data;
+	struct kfd_process_device *pdds[MAX_GPU_INSTANCE];
+	uint32_t n_pdds;
 
 	struct process_queue_manager pqm;
 
@@ -818,6 +836,11 @@ struct kfd_process {
 	struct kobject *kobj;
 	struct kobject *kobj_queues;
 	struct attribute attr_pasid;
+
+	/* shared virtual memory registered by this process */
+	struct svm_range_list svms;
+
+	bool xnack_enabled;
 };
 
 #define KFD_PROCESS_TABLE_SIZE 5 /* bits: 32 entries */
@@ -851,6 +874,20 @@ struct kfd_process *kfd_create_process(struct file *filep);
 struct kfd_process *kfd_get_process(const struct task_struct *);
 struct kfd_process *kfd_lookup_process_by_pasid(u32 pasid);
 struct kfd_process *kfd_lookup_process_by_mm(const struct mm_struct *mm);
+
+int kfd_process_gpuidx_from_gpuid(struct kfd_process *p, uint32_t gpu_id);
+int kfd_process_gpuid_from_kgd(struct kfd_process *p,
+			       struct amdgpu_device *adev, uint32_t *gpuid,
+			       uint32_t *gpuidx);
+static inline int kfd_process_gpuid_from_gpuidx(struct kfd_process *p,
+				uint32_t gpuidx, uint32_t *gpuid) {
+	return gpuidx < p->n_pdds ? p->pdds[gpuidx]->dev->id : -EINVAL;
+}
+static inline struct kfd_process_device *kfd_process_device_from_gpuidx(
+				struct kfd_process *p, uint32_t gpuidx) {
+	return gpuidx < p->n_pdds ? p->pdds[gpuidx] : NULL;
+}
+
 void kfd_unref_process(struct kfd_process *p);
 int kfd_process_evict_queues(struct kfd_process *p);
 int kfd_process_restore_queues(struct kfd_process *p);
@@ -866,6 +903,8 @@ struct kfd_process_device *kfd_get_process_device_data(struct kfd_dev *dev,
 struct kfd_process_device *kfd_create_process_device_data(struct kfd_dev *dev,
 							struct kfd_process *p);
 
+bool kfd_process_xnack_mode(struct kfd_process *p, bool supported);
+
 int kfd_reserved_mem_mmap(struct kfd_dev *dev, struct kfd_process *process,
 			  struct vm_area_struct *vma);
 
@@ -876,14 +915,6 @@ void *kfd_process_device_translate_handle(struct kfd_process_device *p,
 					int handle);
 void kfd_process_device_remove_obj_handle(struct kfd_process_device *pdd,
 					int handle);
-
-/* Process device data iterator */
-struct kfd_process_device *kfd_get_first_process_device_data(
-							struct kfd_process *p);
-struct kfd_process_device *kfd_get_next_process_device_data(
-						struct kfd_process *p,
-						struct kfd_process_device *pdd);
-bool kfd_has_process_device_data(struct kfd_process *p);
 
 /* PASIDs */
 int kfd_pasid_init(void);
@@ -953,6 +984,10 @@ bool interrupt_is_wanted(struct kfd_dev *dev,
 
 /* amdkfd Apertures */
 int kfd_init_apertures(struct kfd_process *process);
+
+void kfd_process_set_trap_handler(struct qcm_process_device *qpd,
+				  uint64_t tba_addr,
+				  uint64_t tma_addr);
 
 /* Queue Context Management */
 int init_queue(struct queue **q, const struct queue_properties *properties);
@@ -1065,6 +1100,7 @@ struct packet_manager_funcs {
 
 extern const struct packet_manager_funcs kfd_vi_pm_funcs;
 extern const struct packet_manager_funcs kfd_v9_pm_funcs;
+extern const struct packet_manager_funcs kfd_aldebaran_pm_funcs;
 
 int pm_init(struct packet_manager *pm, struct device_queue_manager *dqm);
 void pm_uninit(struct packet_manager *pm, bool hanging);
@@ -1120,7 +1156,9 @@ void kfd_signal_vm_fault_event(struct kfd_dev *dev, u32 pasid,
 
 void kfd_signal_reset_event(struct kfd_dev *dev);
 
-void kfd_flush_tlb(struct kfd_process_device *pdd);
+void kfd_signal_poison_consumed_event(struct kfd_dev *dev, u32 pasid);
+
+void kfd_flush_tlb(struct kfd_process_device *pdd, enum TLB_FLUSH_TYPE type);
 
 int dbgdev_wave_reset_wavefronts(struct kfd_dev *dev, struct kfd_process *p);
 
@@ -1159,7 +1197,7 @@ int pm_debugfs_runlist(struct seq_file *m, void *data);
 
 int kfd_debugfs_hang_hws(struct kfd_dev *dev);
 int pm_debugfs_hang_hws(struct packet_manager *pm);
-int dqm_debugfs_execute_queues(struct device_queue_manager *dqm);
+int dqm_debugfs_hang_hws(struct device_queue_manager *dqm);
 
 #else
 

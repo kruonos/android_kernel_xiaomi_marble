@@ -2,7 +2,7 @@
 #
 # MHI bus
 #
-# Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+# Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
 #
 
 config MHI_BUS
@@ -12,15 +12,6 @@ config MHI_BUS
 	  communication protocol used by the host processors to control
 	  and communicate with modem devices over a high speed peripheral
 	  bus or shared memory.
-
-config MHI_BUS_MISC
-	bool "Support for miscellaneous MHI features"
-	depends on MHI_BUS
-	help
-	  Miscellaneous features support for MHI Bus driver includes IPC logs,
-	  introduction of a list of controllers for debug using ramdumps and
-	  other features not present upstream such as Dynamic Resource Vote,
-	  SFR parsing using RDDM dumps, scanning for the RDDM cookie and more.
 
 config MHI_BUS_DEBUG
 	bool "Debugfs support for the MHI bus"
@@ -37,4 +28,13 @@ config MHI_BUS_PCI_GENERIC
 	help
 	  This driver provides MHI PCI controller driver for devices such as
 	  Qualcomm SDX55 based PCIe modems.
+
+config MHI_BUS_MISC
+	bool "Support for miscellaneous MHI features"
+	depends on MHI_BUS
+	help
+	  Miscellaneous features support for MHI Bus driver includes IPC logs,
+	  introduction of a list of controllers for debug using ramdumps and
+	  other features not present upstream such as Dynamic Resource Vote,
+	  SFR parsing using RDDM dumps, scanning for the RDDM cookie and more.
 

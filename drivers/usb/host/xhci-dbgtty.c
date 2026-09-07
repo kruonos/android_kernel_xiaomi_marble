@@ -37,7 +37,7 @@ dbc_send_packet(struct dbc_port *port, char *packet, unsigned int size)
 	return size;
 }
 
-static int dbc_do_start_tx(struct dbc_port *port)
+static int dbc_start_tx(struct dbc_port *port)
 	__releases(&port->port_lock)
 	__acquires(&port->port_lock)
 {
@@ -46,8 +46,6 @@ static int dbc_do_start_tx(struct dbc_port *port)
 	int			status = 0;
 	bool			do_tty_wake = false;
 	struct list_head	*pool = &port->write_pool;
-
-	port->tx_running = true;
 
 	while (!list_empty(pool)) {
 		req = list_entry(pool->next, struct dbc_request, list_pool);
@@ -69,23 +67,10 @@ static int dbc_do_start_tx(struct dbc_port *port)
 		}
 	}
 
-	port->tx_running = false;
-
 	if (do_tty_wake && port->port.tty)
 		tty_wakeup(port->port.tty);
 
 	return status;
-}
-
-/* must be called with port->port_lock held */
-static int dbc_start_tx(struct dbc_port *port)
-{
-	lockdep_assert_held(&port->port_lock);
-
-	if (port->tx_running)
-		return -EBUSY;
-
-	return dbc_do_start_tx(port);
 }
 
 static void dbc_start_rx(struct dbc_port *port)
@@ -255,11 +240,11 @@ static void dbc_tty_flush_chars(struct tty_struct *tty)
 	spin_unlock_irqrestore(&port->port_lock, flags);
 }
 
-static int dbc_tty_write_room(struct tty_struct *tty)
+static unsigned int dbc_tty_write_room(struct tty_struct *tty)
 {
 	struct dbc_port		*port = tty->driver_data;
 	unsigned long		flags;
-	int			room = 0;
+	unsigned int		room;
 
 	spin_lock_irqsave(&port->port_lock, flags);
 	room = kfifo_avail(&port->write_fifo);
@@ -268,11 +253,11 @@ static int dbc_tty_write_room(struct tty_struct *tty)
 	return room;
 }
 
-static int dbc_tty_chars_in_buffer(struct tty_struct *tty)
+static unsigned int dbc_tty_chars_in_buffer(struct tty_struct *tty)
 {
 	struct dbc_port		*port = tty->driver_data;
 	unsigned long		flags;
-	int			chars = 0;
+	unsigned int		chars;
 
 	spin_lock_irqsave(&port->port_lock, flags);
 	chars = kfifo_len(&port->write_fifo);
@@ -468,12 +453,6 @@ static void xhci_dbc_tty_unregister_device(struct xhci_dbc *dbc)
 
 	if (!port->registered)
 		return;
-	/*
-	 * Hang up the TTY. This wakes up any blocked
-	 * writers and causes subsequent writes to fail.
-	 */
-	tty_vhangup(port->port.tty);
-
 	tty_unregister_device(dbc_tty_driver, 0);
 	xhci_dbc_tty_exit_port(port);
 	port->registered = false;
@@ -489,9 +468,9 @@ static const struct dbc_driver dbc_driver = {
 	.disconnect		= xhci_dbc_tty_unregister_device,
 };
 
-int xhci_dbc_tty_probe(struct xhci_hcd *xhci)
+int xhci_dbc_tty_probe(struct device *dev, void __iomem *base, struct xhci_hcd *xhci)
 {
-	struct xhci_dbc		*dbc = xhci->dbc;
+	struct xhci_dbc		*dbc;
 	struct dbc_port		*port;
 	int			status;
 
@@ -506,13 +485,22 @@ int xhci_dbc_tty_probe(struct xhci_hcd *xhci)
 		goto out;
 	}
 
-	dbc->driver = &dbc_driver;
-	dbc->priv = port;
-
-
 	dbc_tty_driver->driver_state = port;
 
+	dbc = xhci_alloc_dbc(dev, base, &dbc_driver);
+	if (!dbc) {
+		status = -ENOMEM;
+		goto out2;
+	}
+
+	dbc->priv = port;
+
+	/* get rid of xhci once this is a real driver binding to a device */
+	xhci->dbc = dbc;
+
 	return 0;
+out2:
+	kfree(port);
 out:
 	/* dbc_tty_exit will be called by module_exit() in the future */
 	dbc_tty_exit();
@@ -527,8 +515,7 @@ void xhci_dbc_tty_remove(struct xhci_dbc *dbc)
 {
 	struct dbc_port         *port = dbc_to_port(dbc);
 
-	dbc->driver = NULL;
-	dbc->priv = NULL;
+	xhci_dbc_remove(dbc);
 	kfree(port);
 
 	/* dbc_tty_exit will be called by  module_exit() in the future */
@@ -550,7 +537,6 @@ static int dbc_tty_init(void)
 	dbc_tty_driver->type = TTY_DRIVER_TYPE_SERIAL;
 	dbc_tty_driver->subtype = SERIAL_TYPE_NORMAL;
 	dbc_tty_driver->init_termios = tty_std_termios;
-	dbc_tty_driver->init_termios.c_lflag &= ~ECHO;
 	dbc_tty_driver->init_termios.c_cflag =
 			B9600 | CS8 | CREAD | HUPCL | CLOCAL;
 	dbc_tty_driver->init_termios.c_ispeed = 9600;
@@ -561,7 +547,7 @@ static int dbc_tty_init(void)
 	ret = tty_register_driver(dbc_tty_driver);
 	if (ret) {
 		pr_err("Can't register dbc tty driver\n");
-		put_tty_driver(dbc_tty_driver);
+		tty_driver_kref_put(dbc_tty_driver);
 	}
 	return ret;
 }
@@ -570,7 +556,7 @@ static void dbc_tty_exit(void)
 {
 	if (dbc_tty_driver) {
 		tty_unregister_driver(dbc_tty_driver);
-		put_tty_driver(dbc_tty_driver);
+		tty_driver_kref_put(dbc_tty_driver);
 		dbc_tty_driver = NULL;
 	}
 }

@@ -117,7 +117,7 @@ struct menu_device {
 	int		interval_ptr;
 };
 
-static inline int which_bucket(u64 duration_ns, unsigned long nr_iowaiters)
+static inline int which_bucket(u64 duration_ns, unsigned int nr_iowaiters)
 {
 	int bucket = 0;
 
@@ -150,21 +150,13 @@ static inline int which_bucket(u64 duration_ns, unsigned long nr_iowaiters)
  * to be, the higher this multiplier, and thus the higher
  * the barrier to go to an expensive C state.
  */
-static inline int performance_multiplier(unsigned long nr_iowaiters)
+static inline int performance_multiplier(unsigned int nr_iowaiters)
 {
 	/* for IO wait tasks (per cpu!) we add 10x each */
 	return 1 + 10 * nr_iowaiters;
 }
 
 static DEFINE_PER_CPU(struct menu_device, menu_devices);
-
-static void menu_update_intervals(struct menu_device *data, unsigned int interval_us)
-{
-	/* Update the repeating-pattern data. */
-	data->intervals[data->interval_ptr++] = interval_us;
-	if (data->interval_ptr >= INTERVALS)
-		data->interval_ptr = 0;
-}
 
 static void menu_update(struct cpuidle_driver *drv, struct cpuidle_device *dev);
 
@@ -256,16 +248,8 @@ again:
 	 *
 	 * This can deal with workloads that have long pauses interspersed
 	 * with sporadic activity with a bunch of short pauses.
-	 *
-	 * However, if the number of remaining samples is too small to exclude
-	 * any more outliers, allow the deepest available idle state to be
-	 * selected because there are systems where the time spent by CPUs in
-	 * deep idle states is correlated to the maximum frequency the CPUs
-	 * can get to.  On those systems, shallow idle states should be avoided
-	 * unless there is a clear indication that the given CPU is most likley
-	 * going to be woken up shortly.
 	 */
-	if (divisor * 4 <= INTERVALS * 3)
+	if ((divisor * 4) <= INTERVALS * 3)
 		return UINT_MAX;
 
 	thresh = max - 1;
@@ -286,25 +270,22 @@ static int menu_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	unsigned int predicted_us;
 	u64 predicted_ns;
 	u64 interactivity_req;
-	unsigned long nr_iowaiters;
-	ktime_t delta_next;
+	unsigned int nr_iowaiters;
+	ktime_t delta, delta_tick;
 	int i, idx;
 
 	if (data->needs_update) {
 		menu_update(drv, dev);
 		data->needs_update = 0;
-	} else if (!dev->last_residency_ns) {
-		/*
-		 * This happens when the driver rejects the previously selected
-		 * idle state and returns an error, so update the recent
-		 * intervals table to prevent invalid information from being
-		 * used going forward.
-		 */
-		menu_update_intervals(data, UINT_MAX);
 	}
 
 	/* determine the expected residency time, round up */
-	data->next_timer_ns = tick_nohz_get_sleep_length(&delta_next);
+	delta = tick_nohz_get_sleep_length(&delta_tick);
+	if (unlikely(delta < 0)) {
+		delta = 0;
+		delta_tick = 0;
+	}
+	data->next_timer_ns = delta;
 
 	nr_iowaiters = nr_iowait_cpu(dev->cpu);
 	data->bucket = which_bucket(data->next_timer_ns, nr_iowaiters);
@@ -342,7 +323,7 @@ static int menu_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 		 * state selection.
 		 */
 		if (predicted_ns < TICK_NSEC)
-			predicted_ns = delta_next;
+			predicted_ns = data->next_timer_ns;
 	} else {
 		/*
 		 * Use the performance multiplier and the user-configurable
@@ -401,7 +382,7 @@ static int menu_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 			 * stuck in the shallow one for too long.
 			 */
 			if (drv->states[idx].target_residency_ns < TICK_NSEC &&
-			    s->target_residency_ns <= delta_next)
+			    s->target_residency_ns <= delta_tick)
 				idx = i;
 
 			return idx;
@@ -423,7 +404,7 @@ static int menu_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	     predicted_ns < TICK_NSEC) && !tick_nohz_tick_stopped()) {
 		*stop_tick = false;
 
-		if (idx > 0 && drv->states[idx].target_residency_ns > delta_next) {
+		if (idx > 0 && drv->states[idx].target_residency_ns > delta_tick) {
 			/*
 			 * The tick is not going to be stopped and the target
 			 * residency of the state to be returned is not within
@@ -435,7 +416,7 @@ static int menu_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 					continue;
 
 				idx = i;
-				if (drv->states[i].target_residency_ns <= delta_next)
+				if (drv->states[i].target_residency_ns <= delta_tick)
 					break;
 			}
 		}
@@ -550,7 +531,10 @@ static void menu_update(struct cpuidle_driver *drv, struct cpuidle_device *dev)
 
 	data->correction_factor[data->bucket] = new_factor;
 
-	menu_update_intervals(data, ktime_to_us(measured_ns));
+	/* update the repeating-pattern data */
+	data->intervals[data->interval_ptr++] = ktime_to_us(measured_ns);
+	if (data->interval_ptr >= INTERVALS)
+		data->interval_ptr = 0;
 }
 
 /**

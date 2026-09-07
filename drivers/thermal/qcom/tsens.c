@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2015, 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * Copyright (c) 2019, 2020, Linaro Ltd.
- * Copyright (c) 2021, 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -13,12 +13,13 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/mfd/syscon.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
-#include <linux/suspend.h>
+#include <linux/thermal_minidump.h>
 #include "tsens.h"
 #include "thermal_zone_internal.h"
 
@@ -88,7 +89,8 @@ void compute_intercept_slope(struct tsens_priv *priv, u32 *p1,
 			"%s: sensor%d - data_point1:%#x data_point2:%#x\n",
 			__func__, i, p1[i], p2[i]);
 
-		priv->sensor[i].slope = SLOPE_DEFAULT;
+		if (!priv->sensor[i].slope)
+			priv->sensor[i].slope = SLOPE_DEFAULT;
 		if (mode == TWO_PT_CALIB) {
 			/*
 			 * slope (m) = adc_code2 - adc_code1 (y2 - y1)/
@@ -272,7 +274,7 @@ static void tsens_set_interrupt(struct tsens_priv *priv, u32 hw_id,
 	TSENS_DBG_1(priv, "[%u] %s: %s -> %s\n", hw_id, __func__,
 		irq_type ? ((irq_type == 1) ? "UP" : "CRITICAL") : "LOW",
 		enable ? "en" : "dis");
-	if (tsens_version(priv) >= VER_2_X)
+	if (tsens_version(priv) > VER_1_X)
 		tsens_set_interrupt_v2(priv, hw_id, irq_type, enable);
 	else
 		tsens_set_interrupt_v1(priv, hw_id, irq_type, enable);
@@ -324,7 +326,7 @@ static int tsens_read_irq_state(struct tsens_priv *priv, u32 hw_id,
 	ret = regmap_field_read(priv->rf[LOW_INT_CLEAR_0 + hw_id], &d->low_irq_clear);
 	if (ret)
 		return ret;
-	if (tsens_version(priv) >= VER_2_X) {
+	if (tsens_version(priv) > VER_1_X) {
 		ret = regmap_field_read(priv->rf[UP_INT_MASK_0 + hw_id], &d->up_irq_mask);
 		if (ret)
 			return ret;
@@ -368,7 +370,7 @@ static int tsens_read_irq_state(struct tsens_priv *priv, u32 hw_id,
 
 static inline u32 masked_irq(u32 hw_id, u32 mask, enum tsens_ver ver)
 {
-	if (ver >= VER_2_X)
+	if (ver > VER_1_X)
 		return mask & (1 << hw_id);
 
 	/* v1, v0.1 don't have a irq mask register */
@@ -553,6 +555,15 @@ static irqreturn_t tsens_irq_thread(int irq, void *data)
 			dev_dbg(priv->dev, "[%u] %s: no violation:  %d\n",
 				hw_id, __func__, temp);
 		}
+
+		if (tsens_version(priv) < VER_0_1) {
+			/* Constraint: There is only 1 interrupt control register for all
+			 * 11 temperature sensor. So monitoring more than 1 sensor based
+			 * on interrupts will yield inconsistent result. To overcome this
+			 * issue we will monitor only sensor 0 which is the master sensor.
+			 */
+			break;
+		}
 		s->cached_temp = INT_MIN;
 	}
 	TSENS_DBG_1(priv, "%s: irq[%d] exit", __func__, irq);
@@ -569,6 +580,13 @@ static int tsens_set_trips(void *_sensor, int low, int high)
 	unsigned long flags;
 	int high_val, low_val, cl_high, cl_low;
 	u32 hw_id = s->hw_id;
+
+	if (tsens_version(priv) < VER_0_1) {
+		/* Pre v0.1 IP had a single register for each type of interrupt
+		 * and thresholds
+		 */
+		hw_id = 0;
+	}
 
 	dev_dbg(dev, "[%u] %s: proposed thresholds: (%d:%d)\n",
 		hw_id, __func__, low, high);
@@ -600,7 +618,7 @@ static int tsens_set_trips(void *_sensor, int low, int high)
 static int tsens_enable_irq(struct tsens_priv *priv)
 {
 	int ret;
-	int val = tsens_version(priv) >= VER_2_X ? 7 : 1;
+	int val = tsens_version(priv) > VER_1_X ? 7 : 1;
 
 	ret = regmap_field_write(priv->rf[INT_EN], val);
 	if (ret < 0)
@@ -639,28 +657,39 @@ int get_temp_tsens_valid(const struct tsens_sensor *s, int *temp)
 	u32 valid;
 	int ret;
 
-	ret = regmap_field_read(priv->rf[valid_idx], &valid);
-	if (ret)
-		return ret;
-	while (!valid) {
-		/* Valid bit is 0 for 6 AHB clock cycles.
-		 * At 19.2MHz, 1 AHB clock is ~60ns.
-		 * We should enter this loop very, very rarely.
-		 */
-		ndelay(400);
-		ret = regmap_field_read(priv->rf[valid_idx], &valid);
-		if (ret)
-			return ret;
+	if (s->cached_temp != INT_MIN) {
+		*temp = s->cached_temp;
+		goto dump_and_exit;
 	}
 
+	/* VER_0 doesn't have VALID bit */
+	if (tsens_version(priv) == VER_0)
+		goto get_temp;
+
+	/* Valid bit is 0 for 6 AHB clock cycles.
+	 * At 19.2MHz, 1 AHB clock is ~60ns.
+	 * We should enter this loop very, very rarely.
+	 * Wait 1 us since it's the min of poll_timeout macro.
+	 * Old value was 400 ns.
+	 */
+	ret = regmap_field_read_poll_timeout(priv->rf[valid_idx], valid,
+					     valid, 1, 20 * USEC_PER_MSEC);
+	if (ret)
+		return ret;
+
+get_temp:
 	/* Valid bit is set, OK to read the temperature */
 	*temp = tsens_hw_to_mC(s, temp_idx);
 
-	if (s->cached_temp != INT_MIN)
-		*temp = s->cached_temp;
+	/* Save temperature data to minidump */
+	if (s->priv->tsens_md != NULL && s->tzd)
+		thermal_minidump_update_data(s->priv->tsens_md,
+			s->tzd->type, temp);
 
+dump_and_exit:
 	if (s->tzd)
-		TSENS_DBG(priv, "Sensor_id: %d name:%s temp: %d", hw_id, s->tzd->type, *temp);
+		TSENS_DBG(priv, "Sensor_id: %d name:%s temp: %d",
+				hw_id, s->tzd->type, *temp);
 	else
 		TSENS_DBG(priv, "Sensor_id: %d temp: %d", hw_id, *temp);
 
@@ -671,17 +700,35 @@ int get_temp_common(const struct tsens_sensor *s, int *temp)
 {
 	struct tsens_priv *priv = s->priv;
 	int hw_id = s->hw_id;
-	int last_temp = 0, ret;
+	int last_temp = 0, ret, trdy;
+	unsigned long timeout;
 
-	ret = regmap_field_read(priv->rf[LAST_TEMP_0 + hw_id], &last_temp);
-	if (ret)
-		return ret;
+	timeout = jiffies + usecs_to_jiffies(TIMEOUT_US);
+	do {
+		if (tsens_version(priv) == VER_0) {
+			ret = regmap_field_read(priv->rf[TRDY], &trdy);
+			if (ret)
+				return ret;
+			if (!trdy)
+				continue;
+		}
 
-	*temp = code_to_degc(last_temp, s) * 1000;
+		ret = regmap_field_read(priv->rf[LAST_TEMP_0 + hw_id], &last_temp);
+		if (ret)
+			return ret;
 
-	TSENS_DBG(priv, "Sensor_id: %d temp: %d", hw_id, *temp);
+		*temp = code_to_degc(last_temp, s) * 1000;
 
-	return 0;
+		if (s->tzd)
+			TSENS_DBG(priv, "Sensor_id: %d name:%s temp: %d",
+					hw_id, s->tzd->type, *temp);
+		else
+			TSENS_DBG(priv, "Sensor_id: %d temp: %d", hw_id, *temp);
+
+		return 0;
+	} while (time_before(jiffies, timeout));
+
+	return -ETIMEDOUT;
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -823,18 +870,33 @@ int __init init_common(struct tsens_priv *priv)
 		priv->tm_offset = 0x1000;
 	}
 
-	res = platform_get_resource(op, IORESOURCE_MEM, 0);
-	tm_base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(tm_base)) {
-		ret = PTR_ERR(tm_base);
+	if (tsens_version(priv) >= VER_0_1) {
+		res = platform_get_resource(op, IORESOURCE_MEM, 0);
+		tm_base = devm_ioremap_resource(dev, res);
+		if (IS_ERR(tm_base)) {
+			ret = PTR_ERR(tm_base);
+			goto err_put_device;
+		}
+
+		priv->tm_map = devm_regmap_init_mmio(dev, tm_base, &tsens_config);
+	} else { /* VER_0 share the same gcc regs using a syscon */
+		struct device *parent = priv->dev->parent;
+
+		if (parent)
+			priv->tm_map = syscon_node_to_regmap(parent->of_node);
+	}
+
+	if (IS_ERR_OR_NULL(priv->tm_map)) {
+		if (!priv->tm_map)
+			ret = -ENODEV;
+		else
+			ret = PTR_ERR(priv->tm_map);
 		goto err_put_device;
 	}
 
-	priv->tm_map = devm_regmap_init_mmio(dev, tm_base, &tsens_config);
-	if (IS_ERR(priv->tm_map)) {
-		ret = PTR_ERR(priv->tm_map);
-		goto err_put_device;
-	}
+	/* VER_0 have only tm_map */
+	if (!priv->srot_map)
+		priv->srot_map = priv->tm_map;
 
 	if (tsens_version(priv) > VER_0_1) {
 		for (i = VER_MAJOR; i <= VER_STEP; i++) {
@@ -856,6 +918,10 @@ int __init init_common(struct tsens_priv *priv)
 		ret = PTR_ERR(priv->rf[TSENS_EN]);
 		goto err_put_device;
 	}
+	/* in VER_0 TSENS need to be explicitly enabled */
+	if (tsens_version(priv) == VER_0)
+		regmap_field_write(priv->rf[TSENS_EN], 1);
+
 	ret = regmap_field_read(priv->rf[TSENS_EN], &enabled);
 	if (ret)
 		goto err_put_device;
@@ -878,6 +944,19 @@ int __init init_common(struct tsens_priv *priv)
 		goto err_put_device;
 	}
 
+	priv->rf[TSENS_SW_RST] =
+		devm_regmap_field_alloc(dev, priv->srot_map, priv->fields[TSENS_SW_RST]);
+	if (IS_ERR(priv->rf[TSENS_SW_RST])) {
+		ret = PTR_ERR(priv->rf[TSENS_SW_RST]);
+		goto err_put_device;
+	}
+
+	priv->rf[TRDY] = devm_regmap_field_alloc(dev, priv->tm_map, priv->fields[TRDY]);
+	if (IS_ERR(priv->rf[TRDY])) {
+		ret = PTR_ERR(priv->rf[TRDY]);
+		goto err_put_device;
+	}
+
 	/* This loop might need changes if enum regfield_ids is reordered */
 	for (j = LAST_TEMP_0; j <= UP_THRESH_15; j += 16) {
 		for (i = 0; i < priv->feat->max_sensors; i++) {
@@ -893,7 +972,7 @@ int __init init_common(struct tsens_priv *priv)
 		}
 	}
 
-	if (priv->feat->crit_int) {
+	if (priv->feat->crit_int || tsens_version(priv) < VER_0_1) {
 		/* Loop might need changes if enum regfield_ids is reordered */
 		for (j = CRITICAL_STATUS_0; j <= CRIT_THRESH_15; j += 16) {
 			for (i = 0; i < priv->feat->max_sensors; i++) {
@@ -911,7 +990,7 @@ int __init init_common(struct tsens_priv *priv)
 		}
 	}
 
-	if (tsens_version(priv) >= VER_2_X &&  ver_minor > 2) {
+	if (tsens_version(priv) > VER_1_X &&  ver_minor > 2) {
 		/* Watchdog is present only on v2.3+ */
 		priv->feat->has_watchdog = 1;
 		for (i = WDOG_BARK_STATUS; i <= CC_MON_MASK; i++) {
@@ -944,7 +1023,11 @@ int __init init_common(struct tsens_priv *priv)
 	}
 
 	spin_lock_init(&priv->ul_lock);
-	tsens_enable_irq(priv);
+
+	/* VER_0 interrupt doesn't need to be enabled */
+	if (tsens_version(priv) >= VER_0_1)
+		tsens_enable_irq(priv);
+
 	tsens_debug_init(op);
 
 err_put_device:
@@ -993,15 +1076,19 @@ static int tsens_get_trend(void *data, int trip, enum thermal_trend *trend)
 	if (priv->ops->get_trend)
 		return priv->ops->get_trend(s, trend);
 
-	return qti_tz_get_trend(s->tzd, trip, trend);
+	return -ENOTSUPP;
+}
+
+static int tsens_tz_change_mode(void *data, enum thermal_device_mode mode)
+{
+	struct tsens_sensor *s = data;
+
+	return qti_tz_change_mode(s->tzd, mode);
 }
 
 static int  __maybe_unused tsens_suspend(struct device *dev)
 {
 	struct tsens_priv *priv = dev_get_drvdata(dev);
-
-	if (!pm_suspend_via_firmware())
-		return 0;
 
 	if (priv->ops && priv->ops->suspend)
 		return priv->ops->suspend(priv);
@@ -1013,37 +1100,22 @@ static int __maybe_unused tsens_resume(struct device *dev)
 {
 	struct tsens_priv *priv = dev_get_drvdata(dev);
 
-	if (!pm_suspend_via_firmware())
-		return 0;
-
 	if (priv->ops && priv->ops->resume)
 		return priv->ops->resume(priv);
 
 	return 0;
 }
 
-static int __maybe_unused tsens_freeze(struct device *dev)
-{
-	struct tsens_priv *priv = dev_get_drvdata(dev);
-
-	if (priv->ops && priv->ops->suspend)
-		return priv->ops->suspend(priv);
-
-	return 0;
-}
-
-static int __maybe_unused tsens_restore(struct device *dev)
-{
-	struct tsens_priv *priv = dev_get_drvdata(dev);
-
-	if (priv->ops && priv->ops->resume)
-		return priv->ops->resume(priv);
-
-	return 0;
-}
+static SIMPLE_DEV_PM_OPS(tsens_pm_ops, tsens_suspend, tsens_resume);
 
 static const struct of_device_id tsens_table[] = {
 	{
+		.compatible = "qcom,ipq8064-tsens",
+		.data = &data_8960,
+	}, {
+		.compatible = "qcom,mdm9607-tsens",
+		.data = &data_9607,
+	}, {
 		.compatible = "qcom,msm8916-tsens",
 		.data = &data_8916,
 	}, {
@@ -1079,6 +1151,7 @@ static const struct thermal_zone_of_device_ops tsens_of_ops = {
 	.get_temp = tsens_get_temp,
 	.get_trend = tsens_get_trend,
 	.set_trips = tsens_set_trips,
+	.change_mode = tsens_tz_change_mode,
 };
 
 static const struct thermal_zone_of_device_ops tsens_cold_of_ops = {
@@ -1087,7 +1160,7 @@ static const struct thermal_zone_of_device_ops tsens_cold_of_ops = {
 
 
 static int tsens_register_irq(struct tsens_priv *priv, char *irqname,
-			      irq_handler_t thread_fn, int *irq_num)
+			      irq_handler_t thread_fn)
 {
 	struct platform_device *pdev;
 	int ret, irq;
@@ -1097,17 +1170,25 @@ static int tsens_register_irq(struct tsens_priv *priv, char *irqname,
 		return -ENODEV;
 
 	irq = platform_get_irq_byname(pdev, irqname);
-	*irq_num = irq;
 	if (irq < 0) {
 		ret = irq;
 		/* For old DTs with no IRQ defined */
 		if (irq == -ENXIO)
 			ret = 0;
 	} else {
-		ret = devm_request_threaded_irq(&pdev->dev, irq,
-						NULL, thread_fn,
-						IRQF_ONESHOT,
-						dev_name(&pdev->dev), priv);
+		/* VER_0 interrupt is TRIGGER_RISING, VER_0_1 and up is ONESHOT */
+		if (tsens_version(priv) == VER_0)
+			ret = devm_request_threaded_irq(&pdev->dev, irq,
+							thread_fn, NULL,
+							IRQF_TRIGGER_RISING,
+							dev_name(&pdev->dev),
+							priv);
+		else
+			ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
+							thread_fn, IRQF_ONESHOT,
+							dev_name(&pdev->dev),
+							priv);
+
 		if (ret)
 			dev_err(&pdev->dev, "%s: failed to get irq\n",
 				__func__);
@@ -1117,66 +1198,6 @@ static int tsens_register_irq(struct tsens_priv *priv, char *irqname,
 
 	put_device(&pdev->dev);
 	return ret;
-}
-
-static int tsens_reinit(struct tsens_priv *priv)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&priv->ul_lock, flags);
-
-	if (priv->feat->has_watchdog) {
-		regmap_field_write(priv->rf[WDOG_BARK_MASK], 0);
-		regmap_field_write(priv->rf[CC_MON_MASK], 1);
-	}
-
-	if (tsens_version(priv) >= VER_0_1)
-		tsens_enable_irq(priv);
-
-	spin_unlock_irqrestore(&priv->ul_lock, flags);
-
-	return 0;
-}
-
-int tsens_v2_tsens_suspend(struct tsens_priv *priv)
-{
-	if (priv->uplow_irq > 0) {
-		disable_irq_nosync(priv->uplow_irq);
-		disable_irq_wake(priv->uplow_irq);
-	}
-
-	if (priv->feat->crit_int && priv->crit_irq > 0) {
-		disable_irq_nosync(priv->crit_irq);
-		disable_irq_wake(priv->crit_irq);
-	}
-
-	if (priv->cold_irq > 0) {
-		disable_irq_nosync(priv->cold_irq);
-		disable_irq_wake(priv->cold_irq);
-	}
-	return 0;
-}
-
-int tsens_v2_tsens_resume(struct tsens_priv *priv)
-{
-	tsens_reinit(priv);
-
-	if (priv->uplow_irq > 0) {
-		enable_irq(priv->uplow_irq);
-		enable_irq_wake(priv->uplow_irq);
-	}
-
-	if (priv->feat->crit_int && priv->crit_irq > 0) {
-		enable_irq(priv->crit_irq);
-		enable_irq_wake(priv->crit_irq);
-	}
-
-	if (priv->cold_irq > 0) {
-		enable_irq(priv->cold_irq);
-		enable_irq_wake(priv->cold_irq);
-	}
-
-	return 0;
 }
 
 static int tsens_register(struct tsens_priv *priv)
@@ -1208,15 +1229,27 @@ static int tsens_register(struct tsens_priv *priv)
 			priv->ops->enable(priv, i);
 	}
 
-	ret = tsens_register_irq(priv, "uplow",
-					tsens_irq_thread, &priv->uplow_irq);
+	/* VER_0 require to set MIN and MAX THRESH
+	 * These 2 regs are set using the:
+	 * - CRIT_THRESH_0 for MAX THRESH hardcoded to 120°C
+	 * - CRIT_THRESH_1 for MIN THRESH hardcoded to   0°C
+	 */
+	if (tsens_version(priv) < VER_0_1) {
+		regmap_field_write(priv->rf[CRIT_THRESH_0],
+				   tsens_mC_to_hw(priv->sensor, 120000));
+
+		regmap_field_write(priv->rf[CRIT_THRESH_1],
+				   tsens_mC_to_hw(priv->sensor, 0));
+	}
+
+	ret = tsens_register_irq(priv, "uplow", tsens_irq_thread);
 
 	if (ret < 0)
 		return ret;
 
 	if (priv->feat->crit_int)
 		ret = tsens_register_irq(priv, "critical",
-					 tsens_critical_irq_thread, &priv->crit_irq);
+					 tsens_critical_irq_thread);
 
 	if (priv->feat->cold_int) {
 		priv->cold_sensor = devm_kzalloc(priv->dev,
@@ -1231,11 +1264,13 @@ static int tsens_register(struct tsens_priv *priv)
 					priv->cold_sensor->hw_id,
 					priv->cold_sensor,
 					&tsens_cold_of_ops);
-		if (!IS_ERR_OR_NULL(tzd)) {
-			priv->cold_sensor->tzd = tzd;
-			tsens_register_irq(priv, "cold",
-					tsens_cold_irq_thread, &priv->cold_irq);
+		if (IS_ERR(tzd)) {
+			ret = 0;
+			return ret;
 		}
+
+		priv->cold_sensor->tzd = tzd;
+		ret = tsens_register_irq(priv, "cold", tsens_cold_irq_thread);
 	}
 	return ret;
 }
@@ -1312,6 +1347,8 @@ static int tsens_probe(struct platform_device *pdev)
 		}
 	}
 
+	priv->tsens_md = thermal_minidump_register(np->name);
+
 	return tsens_register(priv);
 }
 
@@ -1324,15 +1361,10 @@ static int tsens_remove(struct platform_device *pdev)
 	if (priv->ops->disable)
 		priv->ops->disable(priv);
 
+	thermal_minidump_unregister(priv->tsens_md);
+
 	return 0;
 }
-
-static const struct dev_pm_ops tsens_pm_ops = {
-	.freeze = tsens_freeze,
-	.restore = tsens_restore,
-	.suspend = tsens_suspend,
-	.resume = tsens_resume,
-};
 
 static struct platform_driver tsens_driver = {
 	.probe = tsens_probe,

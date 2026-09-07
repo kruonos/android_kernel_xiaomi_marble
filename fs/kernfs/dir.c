@@ -558,73 +558,6 @@ void kernfs_put(struct kernfs_node *kn)
 }
 EXPORT_SYMBOL_GPL(kernfs_put);
 
-static int kernfs_dop_revalidate(struct dentry *dentry, unsigned int flags)
-{
-	struct kernfs_node *kn;
-	struct kernfs_root *root;
-
-	if (flags & LOOKUP_RCU)
-		return -ECHILD;
-
-	/* Negative hashed dentry? */
-	if (d_really_is_negative(dentry)) {
-		struct kernfs_node *parent;
-
-		/* If the kernfs parent node has changed discard and
-		 * proceed to ->lookup.
-		 */
-		spin_lock(&dentry->d_lock);
-		parent = kernfs_dentry_node(dentry->d_parent);
-		if (parent) {
-			spin_unlock(&dentry->d_lock);
-			root = kernfs_root(parent);
-			down_read(kernfs_rwsem(root));
-			if (kernfs_dir_changed(parent, dentry)) {
-				up_read(kernfs_rwsem(root));
-				return 0;
-			}
-			up_read(kernfs_rwsem(root));
-		} else
-			spin_unlock(&dentry->d_lock);
-
-		/* The kernfs parent node hasn't changed, leave the
-		 * dentry negative and return success.
-		 */
-		return 1;
-	}
-
-	kn = kernfs_dentry_node(dentry);
-	root = kernfs_root(kn);
-	down_read(kernfs_rwsem(root));
-
-	/* The kernfs node has been deactivated */
-	if (!kernfs_active(kn))
-		goto out_bad;
-
-	/* The kernfs node has been moved? */
-	if (kernfs_dentry_node(dentry->d_parent) != kn->parent)
-		goto out_bad;
-
-	/* The kernfs node has been renamed */
-	if (strcmp(dentry->d_name.name, kn->name) != 0)
-		goto out_bad;
-
-	/* The kernfs node has been moved to a different namespace */
-	if (kn->parent && kernfs_ns_enabled(kn->parent) &&
-	    kernfs_info(dentry->d_sb)->ns != kn->ns)
-		goto out_bad;
-
-	up_read(kernfs_rwsem(root));
-	return 1;
-out_bad:
-	up_read(kernfs_rwsem(root));
-	return 0;
-}
-
-const struct dentry_operations kernfs_dops = {
-	.d_revalidate	= kernfs_dop_revalidate,
-};
-
 /**
  * kernfs_node_from_dentry - determine kernfs_node associated with a dentry
  * @dentry: the dentry in question
@@ -638,8 +571,7 @@ const struct dentry_operations kernfs_dops = {
  */
 struct kernfs_node *kernfs_node_from_dentry(struct dentry *dentry)
 {
-	if (dentry->d_sb->s_op == &kernfs_sops &&
-	    !d_really_is_negative(dentry))
+	if (dentry->d_sb->s_op == &kernfs_sops)
 		return kernfs_dentry_node(dentry);
 	return NULL;
 }
@@ -650,7 +582,6 @@ static struct kernfs_node *__kernfs_new_node(struct kernfs_root *root,
 					     kuid_t uid, kgid_t gid,
 					     unsigned flags)
 {
-	struct kernfs_node_ext *kn_ext;
 	struct kernfs_node *kn;
 	u32 id_highbits;
 	int ret;
@@ -659,11 +590,10 @@ static struct kernfs_node *__kernfs_new_node(struct kernfs_root *root,
 	if (!name)
 		return NULL;
 
-	kn_ext = kmem_cache_zalloc(kernfs_node_cache, GFP_KERNEL);
-	if (!kn_ext)
+	kn = kmem_cache_zalloc(kernfs_node_cache, GFP_KERNEL);
+	if (!kn)
 		goto err_out1;
 
-	kn = &kn_ext->node;
 	idr_preload(GFP_KERNEL);
 	spin_lock(&kernfs_idr_lock);
 	ret = idr_alloc_cyclic(&root->ino_idr, kn, 1, 0, GFP_ATOMIC);
@@ -1135,6 +1065,73 @@ struct kernfs_node *kernfs_create_empty_dir(struct kernfs_node *parent,
 	return ERR_PTR(rc);
 }
 
+static int kernfs_dop_revalidate(struct dentry *dentry, unsigned int flags)
+{
+	struct kernfs_node *kn;
+	struct kernfs_root *root;
+
+	if (flags & LOOKUP_RCU)
+		return -ECHILD;
+
+	/* Negative hashed dentry? */
+	if (d_really_is_negative(dentry)) {
+		struct kernfs_node *parent;
+
+		/* If the kernfs parent node has changed discard and
+		 * proceed to ->lookup.
+		 */
+		spin_lock(&dentry->d_lock);
+		parent = kernfs_dentry_node(dentry->d_parent);
+		if (parent) {
+			spin_unlock(&dentry->d_lock);
+			root = kernfs_root(parent);
+			down_read(kernfs_rwsem(root));
+			if (kernfs_dir_changed(parent, dentry)) {
+				up_read(kernfs_rwsem(root));
+				return 0;
+			}
+			up_read(kernfs_rwsem(root));
+		} else
+			spin_unlock(&dentry->d_lock);
+
+		/* The kernfs parent node hasn't changed, leave the
+		 * dentry negative and return success.
+		 */
+		return 1;
+	}
+
+	kn = kernfs_dentry_node(dentry);
+	root = kernfs_root(kn);
+	down_read(kernfs_rwsem(root));
+
+	/* The kernfs node has been deactivated */
+	if (!kernfs_active(kn))
+		goto out_bad;
+
+	/* The kernfs node has been moved? */
+	if (kernfs_dentry_node(dentry->d_parent) != kn->parent)
+		goto out_bad;
+
+	/* The kernfs node has been renamed */
+	if (strcmp(dentry->d_name.name, kn->name) != 0)
+		goto out_bad;
+
+	/* The kernfs node has been moved to a different namespace */
+	if (kn->parent && kernfs_ns_enabled(kn->parent) &&
+	    kernfs_info(dentry->d_sb)->ns != kn->ns)
+		goto out_bad;
+
+	up_read(kernfs_rwsem(root));
+	return 1;
+out_bad:
+	up_read(kernfs_rwsem(root));
+	return 0;
+}
+
+const struct dentry_operations kernfs_dops = {
+	.d_revalidate	= kernfs_dop_revalidate,
+};
+
 static struct dentry *kernfs_iop_lookup(struct inode *dir,
 					struct dentry *dentry,
 					unsigned int flags)
@@ -1178,7 +1175,8 @@ static struct dentry *kernfs_iop_lookup(struct inode *dir,
 	return d_splice_alias(inode, dentry);
 }
 
-static int kernfs_iop_mkdir(struct inode *dir, struct dentry *dentry,
+static int kernfs_iop_mkdir(struct user_namespace *mnt_userns,
+			    struct inode *dir, struct dentry *dentry,
 			    umode_t mode)
 {
 	struct kernfs_node *parent = dir->i_private;
@@ -1215,7 +1213,8 @@ static int kernfs_iop_rmdir(struct inode *dir, struct dentry *dentry)
 	return ret;
 }
 
-static int kernfs_iop_rename(struct inode *old_dir, struct dentry *old_dentry,
+static int kernfs_iop_rename(struct user_namespace *mnt_userns,
+			     struct inode *old_dir, struct dentry *old_dentry,
 			     struct inode *new_dir, struct dentry *new_dentry,
 			     unsigned int flags)
 {
@@ -1682,7 +1681,7 @@ int kernfs_rename_ns(struct kernfs_node *kn, struct kernfs_node *new_parent,
 	return error;
 }
 
-/* Relationship between s_mode and the DT_xxx types */
+/* Relationship between mode and the DT_xxx types */
 static inline unsigned char dt_type(struct kernfs_node *kn)
 {
 	return (kn->mode >> 12) & 15;

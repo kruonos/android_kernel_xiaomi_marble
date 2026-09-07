@@ -83,7 +83,6 @@
 
 #define MEI_DEV_ID_CMP_LP     0x02e0  /* Comet Point LP */
 #define MEI_DEV_ID_CMP_LP_3   0x02e4  /* Comet Point LP 3 (iTouch) */
-#define MEI_DEV_ID_CMP_V      0xA3BA  /* Comet Point Lake V */
 
 #define MEI_DEV_ID_CMP_V      0xA3BA  /* Comet Point Lake V */
 
@@ -113,17 +112,6 @@
 #define MEI_DEV_ID_RPL_S      0x7A68  /* Raptor Lake Point S */
 
 #define MEI_DEV_ID_MTL_M      0x7E70  /* Meteor Lake Point M */
-#define MEI_DEV_ID_ARL_S      0x7F68  /* Arrow Lake Point S */
-#define MEI_DEV_ID_ARL_H      0x7770  /* Arrow Lake Point H */
-
-#define MEI_DEV_ID_LNL_M      0xA870  /* Lunar Lake Point M */
-
-#define MEI_DEV_ID_PTL_H      0xE370  /* Panther Lake H */
-#define MEI_DEV_ID_PTL_P      0xE470  /* Panther Lake P */
-
-#define MEI_DEV_ID_WCL_P      0x4D70  /* Wildcat Lake P */
-
-#define MEI_DEV_ID_NVL_S      0x6E68  /* Nova Lake Point S */
 
 /*
  * MEI HW Section
@@ -137,6 +125,7 @@
 #define PCI_CFG_HFS_2         0x48
 #define PCI_CFG_HFS_3         0x60
 #  define PCI_CFG_HFS_3_FW_SKU_MSK   0x00000070
+#  define PCI_CFG_HFS_3_FW_SKU_IGN   0x00000000
 #  define PCI_CFG_HFS_3_FW_SKU_SPS   0x00000060
 #define PCI_CFG_HFS_4         0x64
 #define PCI_CFG_HFS_5         0x68

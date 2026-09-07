@@ -26,20 +26,6 @@
 MODULE_AUTHOR("Daniel Mack <daniel@caiaq.de>");
 MODULE_DESCRIPTION("caiaq USB audio");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{Native Instruments,RigKontrol2},"
-			 "{Native Instruments,RigKontrol3},"
-			 "{Native Instruments,Kore Controller},"
-			 "{Native Instruments,Kore Controller 2},"
-			 "{Native Instruments,Audio Kontrol 1},"
-			 "{Native Instruments,Audio 2 DJ},"
-			 "{Native Instruments,Audio 4 DJ},"
-			 "{Native Instruments,Audio 8 DJ},"
-			 "{Native Instruments,Traktor Audio 2},"
-			 "{Native Instruments,Session I/O},"
-			 "{Native Instruments,GuitarRig mobile},"
-			 "{Native Instruments,Traktor Kontrol X1},"
-			 "{Native Instruments,Traktor Kontrol S4},"
-			 "{Native Instruments,Maschine Controller}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX; /* Index 0-max */
 static char* id[SNDRV_CARDS] = SNDRV_DEFAULT_STR; /* Id for this card */
@@ -390,17 +376,6 @@ static void setup_card(struct snd_usb_caiaqdev *cdev)
 		dev_err(dev, "Unable to set up control system (ret=%d)\n", ret);
 }
 
-static void card_free(struct snd_card *card)
-{
-	struct snd_usb_caiaqdev *cdev = caiaqdev(card);
-
-#ifdef CONFIG_SND_USB_CAIAQ_INPUT
-	snd_usb_caiaq_input_free(cdev);
-#endif
-	snd_usb_caiaq_audio_free(cdev);
-	usb_reset_device(cdev->chip.dev);
-}
-
 static int create_card(struct usb_device *usb_dev,
 		       struct usb_interface *intf,
 		       struct snd_card **cardp)
@@ -488,9 +463,9 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 	usb_string(usb_dev, usb_dev->descriptor.iProduct,
 		   cdev->product_name, CAIAQ_USB_STR_LEN);
 
-	strlcpy(card->driver, MODNAME, sizeof(card->driver));
-	strlcpy(card->shortname, cdev->product_name, sizeof(card->shortname));
-	strlcpy(card->mixername, cdev->product_name, sizeof(card->mixername));
+	strscpy(card->driver, MODNAME, sizeof(card->driver));
+	strscpy(card->shortname, cdev->product_name, sizeof(card->shortname));
+	strscpy(card->mixername, cdev->product_name, sizeof(card->mixername));
 
 	/* if the id was not passed as module option, fill it with a shortened
 	 * version of the product string which does not contain any
@@ -502,7 +477,7 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 		memset(id, 0, sizeof(id));
 
 		for (c = card->shortname, len = 0;
-			*c && len < sizeof(card->id) - 1; c++)
+			*c && len < sizeof(card->id); c++)
 			if (*c != ' ')
 				id[len++] = *c;
 
@@ -514,7 +489,6 @@ static int init_card(struct snd_usb_caiaqdev *cdev)
 		       cdev->vendor_name, cdev->product_name, usbpath);
 
 	setup_card(cdev);
-	card->private_free = card_free;
 	return 0;
 
  err_kill_urb:
@@ -560,14 +534,15 @@ static void snd_disconnect(struct usb_interface *intf)
 	snd_card_disconnect(card);
 
 #ifdef CONFIG_SND_USB_CAIAQ_INPUT
-	snd_usb_caiaq_input_disconnect(cdev);
+	snd_usb_caiaq_input_free(cdev);
 #endif
-	snd_usb_caiaq_audio_disconnect(cdev);
+	snd_usb_caiaq_audio_free(cdev);
 
 	usb_kill_urb(&cdev->ep1_in_urb);
 	usb_kill_urb(&cdev->midi_out_urb);
 
-	snd_card_free_when_closed(card);
+	snd_card_free(card);
+	usb_reset_device(interface_to_usbdev(intf));
 }
 
 

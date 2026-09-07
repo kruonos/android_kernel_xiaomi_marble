@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2013, 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, 2016-2018, 2020-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
@@ -14,8 +14,8 @@
 #include <linux/delay.h>
 #include <linux/rational.h>
 #include <linux/regmap.h>
-#include <linux/rational.h>
 #include <linux/math64.h>
+#include <linux/minmax.h>
 #include <linux/slab.h>
 
 #include <asm/div64.h>
@@ -109,9 +109,25 @@ err:
 	return 0;
 }
 
+static int get_update_timeout(const struct clk_rcg2 *rcg)
+{
+	int timeout = 0;
+
+	/*
+	 * The time it takes an RCG to update is roughly 3 clock cycles of the
+	 * old and new clock rates.
+	 */
+	if (rcg->current_freq)
+		timeout += 3 * (1000000 / rcg->current_freq);
+	if (rcg->configured_freq)
+		timeout += 3 * (1000000 / rcg->configured_freq);
+
+	return max(timeout, 500);
+}
+
 static int update_config(struct clk_rcg2 *rcg)
 {
-	int count, ret;
+	int timeout, count, ret;
 	u32 cmd;
 	struct clk_hw *hw = &rcg->clkr.hw;
 
@@ -120,8 +136,10 @@ static int update_config(struct clk_rcg2 *rcg)
 	if (ret)
 		return ret;
 
+	timeout = get_update_timeout(rcg);
+
 	/* Wait for update to take effect */
-	for (count = 500; count > 0; count--) {
+	for (count = timeout; count > 0; count--) {
 		ret = regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + CMD_REG, &cmd);
 		if (ret)
 			return ret;
@@ -130,7 +148,7 @@ static int update_config(struct clk_rcg2 *rcg)
 		udelay(1);
 	}
 
-	WARN_CLK(hw, 1, "rcg didn't update its configuration.");
+	WARN_CLK(hw, 1, "rcg didn't update its configuration after %d us.", timeout);
 	return -EBUSY;
 }
 
@@ -264,9 +282,7 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 				|| !clk_hw_is_enabled(hw)) && !src) {
 		if (!rcg->current_freq)
 			rcg->current_freq = cxo_f.freq;
-
-		if (!(clk_hw_get_flags(hw) & CLK_GET_RATE_NOCACHE))
-			return rcg->current_freq;
+		return rcg->current_freq;
 	}
 
 	if (rcg->mnd_width) {
@@ -438,6 +454,8 @@ static int __clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
 		cfg |= CFG_MODE_DUAL_EDGE;
 	if (rcg->flags & HW_CLK_CTRL_MODE)
 		cfg |= CFG_HW_CLK_CTRL_MASK;
+
+	rcg->configured_freq = f->freq;
 
 	return regmap_update_bits(rcg->clkr.regmap, RCG_CFG_OFFSET(rcg),
 					mask, cfg);
@@ -625,6 +643,90 @@ static int clk_rcg2_set_floor_rate_and_parent(struct clk_hw *hw,
 	return __clk_rcg2_set_rate(hw, rate, FLOOR);
 }
 
+static int clk_rcg2_get_duty_cycle(struct clk_hw *hw, struct clk_duty *duty)
+{
+	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+	u32 notn_m, n, m, d, not2d, mask;
+
+	if (!rcg->mnd_width) {
+		/* 50 % duty-cycle for Non-MND RCGs */
+		duty->num = 1;
+		duty->den = 2;
+		return 0;
+	}
+
+	regmap_read(rcg->clkr.regmap, RCG_D_OFFSET(rcg), &not2d);
+	regmap_read(rcg->clkr.regmap, RCG_M_OFFSET(rcg), &m);
+	regmap_read(rcg->clkr.regmap, RCG_N_OFFSET(rcg), &notn_m);
+
+	if (!not2d && !m && !notn_m) {
+		/* 50 % duty-cycle always */
+		duty->num = 1;
+		duty->den = 2;
+		return 0;
+	}
+
+	mask = BIT(rcg->mnd_width) - 1;
+
+	d = ~(not2d) & mask;
+	d = DIV_ROUND_CLOSEST(d, 2);
+
+	n = (~(notn_m) + m) & mask;
+
+	duty->num = d;
+	duty->den = n;
+
+	return 0;
+}
+
+static int clk_rcg2_set_duty_cycle(struct clk_hw *hw, struct clk_duty *duty)
+{
+	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+	u32 notn_m, n, m, d, not2d, mask, duty_per, cfg;
+	int ret;
+
+	/* Duty-cycle cannot be modified for non-MND RCGs */
+	if (!rcg->mnd_width)
+		return -EINVAL;
+
+	mask = BIT(rcg->mnd_width) - 1;
+
+	regmap_read(rcg->clkr.regmap, RCG_N_OFFSET(rcg), &notn_m);
+	regmap_read(rcg->clkr.regmap, RCG_M_OFFSET(rcg), &m);
+	regmap_read(rcg->clkr.regmap, RCG_CFG_OFFSET(rcg), &cfg);
+
+	/* Duty-cycle cannot be modified if MND divider is in bypass mode. */
+	if (!(cfg & CFG_MODE_MASK))
+		return -EINVAL;
+
+	n = (~(notn_m) + m) & mask;
+
+	duty_per = (duty->num * 100) / duty->den;
+
+	/* Calculate 2d value */
+	d = DIV_ROUND_CLOSEST(n * duty_per * 2, 100);
+
+	/*
+	 * Check bit widths of 2d. If D is too big reduce duty cycle.
+	 * Also make sure it is never zero.
+	 */
+	d = clamp_val(d, 1, mask);
+
+	if ((d / 2) > (n - m))
+		d = (n - m) * 2;
+	else if ((d / 2) < (m / 2))
+		d = m;
+
+	not2d = ~d & mask;
+
+	ret = regmap_update_bits(rcg->clkr.regmap, RCG_D_OFFSET(rcg), mask,
+				 not2d);
+	if (ret)
+		return ret;
+
+	return update_config(rcg);
+}
+
 static int clk_rcg2_enable(struct clk_hw *hw)
 {
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
@@ -733,6 +835,8 @@ const struct clk_ops clk_rcg2_ops = {
 	.determine_rate = clk_rcg2_determine_rate,
 	.set_rate = clk_rcg2_set_rate,
 	.set_rate_and_parent = clk_rcg2_set_rate_and_parent,
+	.get_duty_cycle = clk_rcg2_get_duty_cycle,
+	.set_duty_cycle = clk_rcg2_set_duty_cycle,
 	.init = clk_rcg2_init,
 	.debug_init = clk_common_debug_init,
 };
@@ -744,12 +848,16 @@ const struct clk_ops clk_rcg2_floor_ops = {
 	.pre_rate_change = clk_pre_change_regmap,
 	.post_rate_change = clk_post_change_regmap,
 	.is_enabled = clk_rcg2_is_enabled,
+	.enable = clk_rcg2_enable,
+	.disable = clk_rcg2_disable,
 	.get_parent = clk_rcg2_get_parent,
 	.set_parent = clk_rcg2_set_parent,
 	.recalc_rate = clk_rcg2_recalc_rate,
 	.determine_rate = clk_rcg2_determine_floor_rate,
 	.set_rate = clk_rcg2_set_floor_rate,
 	.set_rate_and_parent = clk_rcg2_set_floor_rate_and_parent,
+	.get_duty_cycle = clk_rcg2_get_duty_cycle,
+	.set_duty_cycle = clk_rcg2_set_duty_cycle,
 	.init = clk_rcg2_init,
 	.debug_init = clk_common_debug_init,
 };
@@ -1133,104 +1241,26 @@ const struct clk_ops clk_pixel_ops = {
 };
 EXPORT_SYMBOL_GPL(clk_pixel_ops);
 
-static int clk_dp_set_rate(struct clk_hw *hw, unsigned long rate,
-			unsigned long parent_rate)
-{
-	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
-	struct clk_hw *parent = clk_hw_get_parent(hw);
-	struct freq_tbl f = { 0 };
-	unsigned long src_rate;
-	unsigned long num, den;
-	u32 mask = BIT(rcg->hid_width) - 1;
-	u32 hid_div, cfg;
-	int i, num_parents = clk_hw_get_num_parents(hw);
-
-	if (!parent)
-		return -EINVAL;
-
-	src_rate = clk_get_rate(parent->clk);
-	if (src_rate <= 0) {
-		pr_err("Invalid RCG parent rate\n");
-		return -EINVAL;
-	}
-
-	rational_best_approximation(src_rate, rate,
-			(unsigned long)(1 << 16) - 1,
-			(unsigned long)(1 << 16) - 1, &den, &num);
-
-	if (!num || !den) {
-		pr_err("Invalid MN values derived for requested rate %lu\n",
-							rate);
-		return -EINVAL;
-	}
-
-	regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + CFG_REG, &cfg);
-	hid_div = cfg;
-	cfg &= CFG_SRC_SEL_MASK;
-	cfg >>= CFG_SRC_SEL_SHIFT;
-
-	for (i = 0; i < num_parents; i++)
-		if (cfg == rcg->parent_map[i].cfg) {
-			f.src = rcg->parent_map[i].src;
-			break;
-	}
-
-	f.pre_div = hid_div;
-	f.pre_div >>= CFG_SRC_DIV_SHIFT;
-	f.pre_div &= mask;
-
-	if (num == den) {
-		f.m = 0;
-		f.n = 0;
-	} else {
-		f.m = num;
-		f.n = den;
-	}
-
-	return clk_rcg2_configure(rcg, &f);
-}
-
-static int clk_dp_set_rate_and_parent(struct clk_hw *hw, unsigned long rate,
-		unsigned long parent_rate, u8 index)
-{
-	return clk_dp_set_rate(hw, rate, parent_rate);
-}
-
-static int clk_dp_determine_rate(struct clk_hw *hw,
-		struct clk_rate_request *req)
-{
-	if (!req->best_parent_hw)
-		return -EINVAL;
-
-	req->best_parent_rate = clk_hw_round_rate(req->best_parent_hw,
-							req->best_parent_rate);
-	return 0;
-}
-
-const struct clk_ops clk_dp_ops = {
-	.prepare = clk_prepare_regmap,
-	.unprepare = clk_unprepare_regmap,
-	.pre_rate_change = clk_pre_change_regmap,
-	.post_rate_change = clk_post_change_regmap,
-	.is_enabled = clk_rcg2_is_enabled,
-	.get_parent = clk_rcg2_get_parent,
-	.set_parent = clk_rcg2_set_parent,
-	.recalc_rate = clk_rcg2_recalc_rate,
-	.set_rate = clk_dp_set_rate,
-	.set_rate_and_parent = clk_dp_set_rate_and_parent,
-	.determine_rate = clk_dp_determine_rate,
-	.init = clk_rcg2_init,
-	.debug_init = clk_common_debug_init,
-};
-EXPORT_SYMBOL(clk_dp_ops);
-
 static int clk_gfx3d_determine_rate(struct clk_hw *hw,
 				    struct clk_rate_request *req)
 {
 	struct clk_rate_request parent_req = { };
-	struct clk_hw *p2, *p8, *p9, *xo;
-	unsigned long p9_rate;
+	struct clk_rcg2_gfx3d *cgfx = to_clk_rcg2_gfx3d(hw);
+	struct clk_hw *xo, *p0, *p1, *p2;
+	unsigned long p0_rate;
+	u8 mux_div = cgfx->div;
 	int ret;
+
+	p0 = cgfx->hws[0];
+	p1 = cgfx->hws[1];
+	p2 = cgfx->hws[2];
+	/*
+	 * This function does ping-pong the RCG between PLLs: if we don't
+	 * have at least one fixed PLL and two variable ones,
+	 * then it's not going to work correctly.
+	 */
+	if (WARN_ON(!p0 || !p1 || !p2))
+		return -EINVAL;
 
 	xo = clk_hw_get_parent_by_index(hw, 0);
 	if (!xo)
@@ -1240,32 +1270,30 @@ static int clk_gfx3d_determine_rate(struct clk_hw *hw,
 		return 0;
 	}
 
-	p9 = clk_hw_get_parent_by_index(hw, 2);
-	p2 = clk_hw_get_parent_by_index(hw, 3);
-	p8 = clk_hw_get_parent_by_index(hw, 4);
-	if (!p9 || !p2 || !p8)
-		return -EINVAL;
+	if (mux_div == 0)
+		mux_div = 1;
 
-	/* PLL9 is a fixed rate PLL */
-	p9_rate = clk_hw_get_rate(p9);
+	parent_req.rate = req->rate * mux_div;
 
-	parent_req.rate = req->rate = min(req->rate, p9_rate);
-	if (req->rate == p9_rate) {
-		req->rate = req->best_parent_rate = p9_rate;
-		req->best_parent_hw = p9;
+	/* This has to be a fixed rate PLL */
+	p0_rate = clk_hw_get_rate(p0);
+
+	if (parent_req.rate == p0_rate) {
+		req->rate = req->best_parent_rate = p0_rate;
+		req->best_parent_hw = p0;
 		return 0;
 	}
 
-	if (req->best_parent_hw == p9) {
+	if (req->best_parent_hw == p0) {
 		/* Are we going back to a previously used rate? */
-		if (clk_hw_get_rate(p8) == req->rate)
-			req->best_parent_hw = p8;
-		else
+		if (clk_hw_get_rate(p2) == parent_req.rate)
 			req->best_parent_hw = p2;
-	} else if (req->best_parent_hw == p8) {
-		req->best_parent_hw = p2;
+		else
+			req->best_parent_hw = p1;
+	} else if (req->best_parent_hw == p2) {
+		req->best_parent_hw = p1;
 	} else {
-		req->best_parent_hw = p8;
+		req->best_parent_hw = p2;
 	}
 
 	ret = __clk_determine_rate(req->best_parent_hw, &parent_req);
@@ -1273,6 +1301,7 @@ static int clk_gfx3d_determine_rate(struct clk_hw *hw,
 		return ret;
 
 	req->rate = req->best_parent_rate = parent_req.rate;
+	req->rate /= mux_div;
 
 	return 0;
 }
@@ -1280,12 +1309,16 @@ static int clk_gfx3d_determine_rate(struct clk_hw *hw,
 static int clk_gfx3d_set_rate_and_parent(struct clk_hw *hw, unsigned long rate,
 		unsigned long parent_rate, u8 index)
 {
-	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+	struct clk_rcg2_gfx3d *cgfx = to_clk_rcg2_gfx3d(hw);
+	struct clk_rcg2 *rcg = &cgfx->rcg;
 	u32 cfg;
 	int ret;
 
-	/* Just mux it, we don't use the division or m/n hardware */
 	cfg = rcg->parent_map[index].cfg << CFG_SRC_SEL_SHIFT;
+	/* On some targets, the GFX3D RCG may need to divide PLL frequency */
+	if (cgfx->div > 1)
+		cfg |= ((2 * cgfx->div) - 1) << CFG_SRC_DIV_SHIFT;
+
 	ret = regmap_write(rcg->clkr.regmap, rcg->cmd_rcgr + CFG_REG, cfg);
 	if (ret)
 		return ret;
@@ -1467,7 +1500,6 @@ static int clk_rcg2_dfs_populate_freq(struct clk_hw *hw, unsigned int l,
 
 	mode = cfg & CFG_MODE_MASK;
 	mode >>= CFG_MODE_SHIFT;
-
 	if (mode) {
 		mask = BIT(rcg->mnd_width) - 1;
 		regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + SE_PERF_M_DFSR(l),
@@ -1628,7 +1660,7 @@ int qcom_cc_register_rcg_dfs(struct regmap *regmap,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(qcom_cc_register_rcg_dfs);
-#if 0
+
 static int clk_rcg2_dp_set_rate(struct clk_hw *hw, unsigned long rate,
 			unsigned long parent_rate)
 {
@@ -1702,6 +1734,10 @@ static int clk_rcg2_dp_determine_rate(struct clk_hw *hw,
 }
 
 const struct clk_ops clk_dp_ops = {
+	.prepare = clk_prepare_regmap,
+	.unprepare = clk_unprepare_regmap,
+	.pre_rate_change = clk_pre_change_regmap,
+	.post_rate_change = clk_post_change_regmap,
 	.is_enabled = clk_rcg2_is_enabled,
 	.get_parent = clk_rcg2_get_parent,
 	.set_parent = clk_rcg2_set_parent,
@@ -1709,6 +1745,7 @@ const struct clk_ops clk_dp_ops = {
 	.set_rate = clk_rcg2_dp_set_rate,
 	.set_rate_and_parent = clk_rcg2_dp_set_rate_and_parent,
 	.determine_rate = clk_rcg2_dp_determine_rate,
+	.init = clk_rcg2_init,
+	.debug_init = clk_common_debug_init,
 };
 EXPORT_SYMBOL_GPL(clk_dp_ops);
-#endif

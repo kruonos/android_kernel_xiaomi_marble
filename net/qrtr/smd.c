@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, Sony Mobile Communications Inc.
- * Copyright (c) 2013, 2018-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, 2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -26,14 +26,12 @@ static int qcom_smd_qrtr_callback(struct rpmsg_device *rpdev,
 	int rc;
 
 	if (!qdev) {
-		pr_err_ratelimited("%s:Not ready\n", __func__);
+		pr_err_ratelimited("%s: Not ready\n", __func__);
 		return -EAGAIN;
 	}
 
 	rc = qrtr_endpoint_post(&qdev->ep, data, len);
 	if (rc == -EINVAL) {
-		print_hex_dump(KERN_INFO, "qrtr: ", DUMP_PREFIX_OFFSET, 16, 1,
-			       data, 32, 1);
 		dev_err(qdev->dev, "invalid ipcrouter packet\n");
 		/* return 0 to let smd drop the packet */
 		rc = 0;
@@ -69,11 +67,10 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
 {
 	struct qrtr_array svc_arr = {NULL, 0};
 	struct qrtr_smd_dev *qdev;
-	int size;
 	u32 net_id;
+	int size;
 	bool rt;
 	int rc;
-	pr_info("%s:Entered\n", __func__);
 
 	qdev = devm_kzalloc(&rpdev->dev, sizeof(*qdev), GFP_KERNEL);
 	if (!qdev)

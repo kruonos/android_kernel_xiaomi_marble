@@ -1,6 +1,4 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/*
  *  linux/cluster/ssi/cfs/symlink.c
  *
  *	This program is free software; you can redistribute it and/or
@@ -66,7 +64,7 @@ static int ocfs2_fast_symlink_readpage(struct file *unused, struct page *page)
 
 	if (status < 0) {
 		mlog_errno(status);
-		goto out;
+		return status;
 	}
 
 	fe = (struct ocfs2_dinode *) bh->b_data;
@@ -77,10 +75,9 @@ static int ocfs2_fast_symlink_readpage(struct file *unused, struct page *page)
 	memcpy(kaddr, link, len + 1);
 	kunmap_atomic(kaddr);
 	SetPageUptodate(page);
-out:
 	unlock_page(page);
 	brelse(bh);
-	return status;
+	return 0;
 }
 
 const struct address_space_operations ocfs2_fast_symlink_aops = {

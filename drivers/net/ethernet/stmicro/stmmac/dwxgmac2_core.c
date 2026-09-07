@@ -97,41 +97,17 @@ static void dwxgmac2_rx_queue_prio(struct mac_device_info *hw, u32 prio,
 				   u32 queue)
 {
 	void __iomem *ioaddr = hw->pcsr;
-	u32 clear_mask = 0;
-	u32 ctrl2, ctrl3;
-	int i;
+	u32 value, reg;
 
-	ctrl2 = readl(ioaddr + XGMAC_RXQ_CTRL2);
-	ctrl3 = readl(ioaddr + XGMAC_RXQ_CTRL3);
-
-	/* The software must ensure that the same priority
-	 * is not mapped to multiple Rx queues
-	 */
-	for (i = 0; i < 4; i++)
-		clear_mask |= ((prio << XGMAC_PSRQ_SHIFT(i)) &
-						XGMAC_PSRQ(i));
-
-	ctrl2 &= ~clear_mask;
-	ctrl3 &= ~clear_mask;
-
-	/* First assign new priorities to a queue, then
-	 * clear them from others queues
-	 */
-	if (queue < 4) {
-		ctrl2 |= (prio << XGMAC_PSRQ_SHIFT(queue)) &
-						XGMAC_PSRQ(queue);
-
-		writel(ctrl2, ioaddr + XGMAC_RXQ_CTRL2);
-		writel(ctrl3, ioaddr + XGMAC_RXQ_CTRL3);
-	} else {
+	reg = (queue < 4) ? XGMAC_RXQ_CTRL2 : XGMAC_RXQ_CTRL3;
+	if (queue >= 4)
 		queue -= 4;
 
-		ctrl3 |= (prio << XGMAC_PSRQ_SHIFT(queue)) &
-						XGMAC_PSRQ(queue);
+	value = readl(ioaddr + reg);
+	value &= ~XGMAC_PSRQ(queue);
+	value |= (prio << XGMAC_PSRQ_SHIFT(queue)) & XGMAC_PSRQ(queue);
 
-		writel(ctrl3, ioaddr + XGMAC_RXQ_CTRL3);
-		writel(ctrl2, ioaddr + XGMAC_RXQ_CTRL2);
-	}
+	writel(value, ioaddr + reg);
 }
 
 static void dwxgmac2_tx_queue_prio(struct mac_device_info *hw, u32 prio,
@@ -359,7 +335,8 @@ static void dwxgmac2_pmt(struct mac_device_info *hw, unsigned long mode)
 }
 
 static void dwxgmac2_set_umac_addr(struct mac_device_info *hw,
-				   unsigned char *addr, unsigned int reg_n)
+				   const unsigned char *addr,
+				   unsigned int reg_n)
 {
 	void __iomem *ioaddr = hw->pcsr;
 	u32 value;
@@ -581,7 +558,7 @@ static int dwxgmac2_rss_configure(struct mac_device_info *hw,
 }
 
 static void dwxgmac2_update_vlan_hash(struct mac_device_info *hw, u32 hash,
-				      u16 perfect_match, bool is_double)
+				      __le16 perfect_match, bool is_double)
 {
 	void __iomem *ioaddr = hw->pcsr;
 
@@ -870,7 +847,9 @@ static void dwxgmac3_handle_dma_err(struct net_device *ndev,
 			   STAT_OFF(dma_dpp_errors), stats);
 }
 
-static int dwxgmac3_safety_feat_config(void __iomem *ioaddr, unsigned int asp)
+static int
+dwxgmac3_safety_feat_config(void __iomem *ioaddr, unsigned int asp,
+			    struct stmmac_safety_feature_cfg *safety_cfg)
 {
 	u32 value;
 
@@ -1110,6 +1089,11 @@ static int dwxgmac3_rxp_config(void __iomem *ioaddr,
 		entry->in_hw = false;
 	}
 
+	/* Specify that we are updating FRP instruction table */
+	val = readl(ioaddr + XGMAC_MTL_RXP_IACC_CTRL_ST);
+	val &= ~XGMAC_ACCSEL;
+	writel(val, ioaddr + XGMAC_MTL_RXP_IACC_CTRL_ST);
+
 	/* Update entries by reverse order */
 	while (1) {
 		entry = dwxgmac3_rxp_get_next_entry(entries, count, curr_prio);
@@ -1143,9 +1127,6 @@ static int dwxgmac3_rxp_config(void __iomem *ioaddr,
 		}
 	}
 
-	if (!nve)
-		goto re_enable;
-
 	/* Update all pass entry */
 	for (i = 0; i < count; i++) {
 		entry = &entries[i];
@@ -1158,6 +1139,9 @@ static int dwxgmac3_rxp_config(void __iomem *ioaddr,
 
 		entry->table_pos = nve++;
 	}
+
+	if (!nve)
+		goto re_enable;
 
 	/* Assume n. of parsable entries == n. of valid entries */
 	val = (nve << 16) & XGMAC_NPE;
@@ -1518,7 +1502,8 @@ static int dwxgmac3_est_configure(void __iomem *ioaddr, struct stmmac_est *cfg,
 	return 0;
 }
 
-static void dwxgmac3_fpe_configure(void __iomem *ioaddr, u32 num_txq,
+static void dwxgmac3_fpe_configure(void __iomem *ioaddr, struct stmmac_fpe_cfg *cfg,
+				   u32 num_txq,
 				   u32 num_rxq, bool enable)
 {
 	u32 value;

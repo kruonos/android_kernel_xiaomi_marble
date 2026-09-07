@@ -73,6 +73,17 @@ config INPUT_AD714X_SPI
 	  To compile this driver as a module, choose M here: the
 	  module will be called ad714x-spi.
 
+config INPUT_ARIEL_PWRBUTTON
+	tristate "Dell Wyse 3020 Power Button Driver"
+	depends on SPI
+	depends on MACH_MMP3_DT || COMPILE_TEST
+	help
+	  Say Y to enable support for reporting power button status on
+	  on Dell Wyse 3020 ("Ariel") thin client.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called ariel-pwrbutton.
+
 config INPUT_ARIZONA_HAPTICS
 	tristate "Arizona haptics support"
 	depends on MFD_ARIZONA && SND_SOC
@@ -82,6 +93,17 @@ config INPUT_ARIZONA_HAPTICS
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called arizona-haptics.
+
+config INPUT_ATC260X_ONKEY
+	tristate "Actions Semi ATC260x PMIC ONKEY"
+	depends on MFD_ATC260X
+	help
+	  Support the ONKEY of ATC260x PMICs as an input device reporting
+	  power button status. ONKEY can be used to wakeup from low power
+	  modes and force a reset on long press.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called atc260x-onkey.
 
 config INPUT_ATMEL_CAPTOUCH
 	tristate "Atmel Capacitive Touch Button Driver"
@@ -165,13 +187,22 @@ config INPUT_PMIC8XXX_PWRKEY
 	  module will be called pmic8xxx-pwrkey.
 
 config INPUT_QPNP_POWER_ON
-	tristate "QPNP PMIC Power-on support"
-	depends on SPMI
+        tristate "QPNP PMIC Power-on support"
+        depends on SPMI
+        help
+          This option enables device driver support for the power-on
+          functionality of Qualcomm Technologies, Inc. PNP PMICs.  It supports
+          reporting the change in status of the KPDPWR_N line (connected to the
+          power-key) as well as reset features.
+
+config INPUT_QTI_HAPTICS
+	tristate "Haptics support for QTI PMIC"
+	depends on MFD_SPMI_PMIC
 	help
-	  This option enables device driver support for the power-on
-	  functionality of Qualcomm Technologies, Inc. PNP PMICs.  It supports
-	  reporting the change in status of the KPDPWR_N line (connected to the
-	  power-key) as well as reset features.
+	  This option enables device driver support for the haptics peripheral
+	  found on Qualcomm Technologies, Inc. PMICs.  The haptics peripheral
+	  is capable of driving both LRA and ERM vibrators.  This module provides
+	  haptic feedback for user actions such as a long press on the touch screen.
 
 config INPUT_QCOM_HV_HAPTICS
 	tristate "QTI High Voltage Haptics support"
@@ -307,18 +338,6 @@ config INPUT_GPIO_VIBRA
 	  To compile this driver as a module, choose M here: the module will be
 	  called gpio-vibra.
 
-config INPUT_IXP4XX_BEEPER
-	tristate "IXP4XX Beeper support"
-	depends on ARCH_IXP4XX
-	help
-	  If you say yes here, you can connect a beeper to the
-	  ixp4xx gpio pins. This is used by the LinkSys NSLU2.
-
-	  If unsure, say Y.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called ixp4xx-beeper.
-
 config INPUT_COBALT_BTNS
 	tristate "Cobalt button interface"
 	depends on MIPS_COBALT
@@ -340,7 +359,7 @@ config INPUT_CPCAP_PWRBUTTON
 
 config INPUT_WISTRON_BTNS
 	tristate "x86 Wistron laptop button interface"
-	depends on X86_32
+	depends on X86_32 && !UML
 	select INPUT_SPARSEKMAP
 	select NEW_LEDS
 	select LEDS_CLASS
@@ -629,6 +648,18 @@ config INPUT_RB532_BUTTON
 	  To compile this driver as a module, choose M here: the
 	  module will be called rb532_button.
 
+config INPUT_DA7280_HAPTICS
+	tristate "Dialog Semiconductor DA7280 haptics support"
+	depends on INPUT && I2C
+	select REGMAP_I2C
+	help
+	  Say Y to enable support for the Dialog DA7280 haptics driver.
+	  The haptics can be controlled by PWM or GPIO
+	  with I2C communication.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called da7280.
+
 config INPUT_DA9052_ONKEY
 	tristate "Dialog DA9052/DA9053 Onkey"
 	depends on PMIC_DA9052
@@ -749,6 +780,17 @@ config INPUT_IQS269A
 	  To compile this driver as a module, choose M here: the
 	  module will be called iqs269a.
 
+config INPUT_IQS626A
+	tristate "Azoteq IQS626A capacitive touch controller"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y to enable support for the Azoteq IQS626A capacitive
+	  touch controller.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called iqs626a.
+
 config INPUT_CMA3000
 	tristate "VTI CMA3000 Tri-axis accelerometer"
 	help
@@ -785,16 +827,6 @@ config INPUT_XEN_KBDDEV_FRONTEND
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called xen-kbdfront.
-
-config INPUT_SIRFSOC_ONKEY
-	tristate "CSR SiRFSoC power on/off/suspend key support"
-	depends on ARCH_SIRF && OF
-	default y
-	help
-	  Say Y here if you want to support for the SiRFSoC power on/off/suspend key
-	  in Linux, after you press the onkey, system will suspend.
-
-	  If unsure, say N.
 
 config INPUT_IDEAPAD_SLIDEBAR
 	tristate "IdeaPad Laptop Slidebar"

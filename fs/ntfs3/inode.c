@@ -37,7 +37,7 @@ static struct inode *ntfs_read_mft(struct inode *inode,
 	bool is_dir;
 	unsigned long ino = inode->i_ino;
 	u32 rp_fa = 0, asize, t32;
-	u16 roff, rsize, names = 0, links = 0;
+	u16 roff, rsize, names = 0;
 	const struct ATTR_FILE_NAME *fname = NULL;
 	const struct INDEX_ROOT *root;
 	struct REPARSE_DATA_BUFFER rp; // 0x18 bytes
@@ -190,12 +190,11 @@ next_attr:
 		    rsize < SIZEOF_ATTRIBUTE_FILENAME)
 			goto out;
 
-		names += 1;
 		fname = Add2Ptr(attr, roff);
 		if (fname->type == FILE_NAME_DOS)
 			goto next_attr;
 
-		links += 1;
+		names += 1;
 		if (name && name->len == fname->name_len &&
 		    !ntfs_cmp_names_cpu(name, (struct le_str *)&fname->name_len,
 					NULL, false))
@@ -403,6 +402,7 @@ end_enum:
 		goto out;
 
 	if (!is_match && name) {
+		/* Reuse rec as buffer for ascii name. */
 		err = -ENOENT;
 		goto out;
 	}
@@ -417,12 +417,11 @@ end_enum:
 
 	if (names != le16_to_cpu(rec->hard_links)) {
 		/* Correct minor error on the fly. Do not mark inode as dirty. */
-		ntfs_inode_warn(inode, "Correct links count -> %u.", names);
 		rec->hard_links = cpu_to_le16(names);
 		ni->mi.dirty = true;
 	}
 
-	set_nlink(inode, links);
+	set_nlink(inode, names);
 
 	if (S_ISDIR(mode)) {
 		ni->std_fa |= FILE_ATTRIBUTE_DIRECTORY;
@@ -456,8 +455,6 @@ end_enum:
 		   fname->home.seq == cpu_to_le16(MFT_REC_EXTEND)) {
 		/* Records in $Extend are not a files or general directories. */
 		inode->i_op = &ntfs_file_inode_operations;
-		mode = S_IFREG;
-		init_rwsem(&ni->file.run_lock);
 	} else {
 		err = -EINVAL;
 		goto out;
@@ -1120,10 +1117,10 @@ int inode_write_data(struct inode *inode, const void *data, size_t bytes)
  * Number of bytes for REPARSE_DATA_BUFFER(IO_REPARSE_TAG_SYMLINK)
  * for unicode string of @uni_len length.
  */
-static inline u32 ntfs_reparse_bytes(u32 uni_len, bool is_absolute)
+static inline u32 ntfs_reparse_bytes(u32 uni_len)
 {
 	/* Header + unicode string + decorated unicode string. */
-	return sizeof(short) * (2 * uni_len + (is_absolute ? 4 : 0)) +
+	return sizeof(short) * (2 * uni_len + 4) +
 	       offsetof(struct REPARSE_DATA_BUFFER,
 			SymbolicLinkReparseBuffer.PathBuffer);
 }
@@ -1136,11 +1133,8 @@ ntfs_create_reparse_buffer(struct ntfs_sb_info *sbi, const char *symname,
 	struct REPARSE_DATA_BUFFER *rp;
 	__le16 *rp_name;
 	typeof(rp->SymbolicLinkReparseBuffer) *rs;
-	bool is_absolute;
 
-	is_absolute = (strlen(symname) > 1 && symname[1] == ':');
-
-	rp = kzalloc(ntfs_reparse_bytes(2 * size + 2, is_absolute), GFP_NOFS);
+	rp = kzalloc(ntfs_reparse_bytes(2 * size + 2), GFP_NOFS);
 	if (!rp)
 		return ERR_PTR(-ENOMEM);
 
@@ -1155,7 +1149,7 @@ ntfs_create_reparse_buffer(struct ntfs_sb_info *sbi, const char *symname,
 		goto out;
 
 	/* err = the length of unicode name of symlink. */
-	*nsize = ntfs_reparse_bytes(err, is_absolute);
+	*nsize = ntfs_reparse_bytes(err);
 
 	if (*nsize > sbi->reparse.max_size) {
 		err = -EFBIG;
@@ -1175,7 +1169,7 @@ ntfs_create_reparse_buffer(struct ntfs_sb_info *sbi, const char *symname,
 
 	/* PrintName + SubstituteName. */
 	rs->SubstituteNameOffset = cpu_to_le16(sizeof(short) * err);
-	rs->SubstituteNameLength = cpu_to_le16(sizeof(short) * err + (is_absolute ? 8 : 0));
+	rs->SubstituteNameLength = cpu_to_le16(sizeof(short) * err + 8);
 	rs->PrintNameLength = rs->SubstituteNameOffset;
 
 	/*
@@ -1183,18 +1177,16 @@ ntfs_create_reparse_buffer(struct ntfs_sb_info *sbi, const char *symname,
 	 * parse this path.
 	 * 0-absolute path 1- relative path (SYMLINK_FLAG_RELATIVE).
 	 */
-	rs->Flags = cpu_to_le32(is_absolute ? 0 : SYMLINK_FLAG_RELATIVE);
+	rs->Flags = 0;
 
-	memmove(rp_name + err + (is_absolute ? 4 : 0), rp_name, sizeof(short) * err);
+	memmove(rp_name + err + 4, rp_name, sizeof(short) * err);
 
-	if (is_absolute) {
-		/* Decorate SubstituteName. */
-		rp_name += err;
-		rp_name[0] = cpu_to_le16('\\');
-		rp_name[1] = cpu_to_le16('?');
-		rp_name[2] = cpu_to_le16('?');
-		rp_name[3] = cpu_to_le16('\\');
-	}
+	/* Decorate SubstituteName. */
+	rp_name += err;
+	rp_name[0] = cpu_to_le16('\\');
+	rp_name[1] = cpu_to_le16('?');
+	rp_name[2] = cpu_to_le16('?');
+	rp_name[3] = cpu_to_le16('\\');
 
 	return rp;
 out:
@@ -1202,7 +1194,7 @@ out:
 	return ERR_PTR(err);
 }
 
-struct inode *ntfs_create_inode(
+struct inode *ntfs_create_inode(struct user_namespace *mnt_userns,
 				struct inode *dir, struct dentry *dentry,
 				const struct cpu_str *uni, umode_t mode,
 				dev_t dev, const char *symname, u32 size,
@@ -1298,7 +1290,7 @@ struct inode *ntfs_create_inode(
 		fa |= FILE_ATTRIBUTE_READONLY;
 
 	/* Allocate PATH_MAX bytes. */
-	new_de = kmem_cache_zalloc(names_cachep, GFP_KERNEL);
+	new_de = __getname();
 	if (!new_de) {
 		err = -ENOMEM;
 		goto out1;
@@ -1319,7 +1311,7 @@ struct inode *ntfs_create_inode(
 		goto out3;
 	}
 	inode = &ni->vfs_inode;
-	inode_init_owner(inode, dir, mode);
+	inode_init_owner(mnt_userns, inode, dir, mode);
 	mode = inode->i_mode;
 
 	inode->i_atime = inode->i_mtime = inode->i_ctime = ni->i_crtime =
@@ -1472,7 +1464,7 @@ struct inode *ntfs_create_inode(
 			attr->size = cpu_to_le32(SIZEOF_NONRESIDENT_EX + 8);
 			attr->name_off = SIZEOF_NONRESIDENT_EX_LE;
 			attr->flags = ATTR_FLAG_COMPRESSED;
-			attr->nres.c_unit = NTFS_LZNT_CUNIT;
+			attr->nres.c_unit = COMPRESSION_UNIT;
 			asize = SIZEOF_NONRESIDENT_EX + 8;
 		} else {
 			attr->size = cpu_to_le32(SIZEOF_NONRESIDENT + 8);
@@ -1618,7 +1610,7 @@ struct inode *ntfs_create_inode(
 
 #ifdef CONFIG_NTFS3_FS_POSIX_ACL
 	if (!S_ISLNK(mode) && (sb->s_flags & SB_POSIXACL)) {
-		err = ntfs_init_acl(inode, dir);
+		err = ntfs_init_acl(mnt_userns, inode, dir);
 		if (err)
 			goto out7;
 	} else
@@ -1668,7 +1660,7 @@ out4:
 	ni->mi.dirty = false;
 	discard_new_inode(inode);
 out3:
-	ntfs_mark_rec_free(sbi, ino, false);
+	ntfs_mark_rec_free(sbi, ino);
 
 out2:
 	__putname(new_de);
@@ -1694,7 +1686,7 @@ int ntfs_link_inode(struct inode *inode, struct dentry *dentry)
 	struct ATTR_FILE_NAME *de_name;
 
 	/* Allocate PATH_MAX bytes. */
-	de = kmem_cache_zalloc(names_cachep, GFP_KERNEL);
+	de = __getname();
 	if (!de)
 		return -ENOMEM;
 
@@ -1741,7 +1733,7 @@ int ntfs_unlink_inode(struct inode *dir, const struct dentry *dentry)
 		return -EINVAL;
 
 	/* Allocate PATH_MAX bytes. */
-	de = kmem_cache_zalloc(names_cachep, GFP_KERNEL);
+	de = __getname();
 	if (!de)
 		return -ENOMEM;
 

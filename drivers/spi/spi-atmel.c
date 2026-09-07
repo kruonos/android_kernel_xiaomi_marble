@@ -500,14 +500,10 @@ static int atmel_spi_configure_dma(struct spi_master *master,
 	struct device *dev = &as->pdev->dev;
 	int err;
 
-	dma_cap_mask_t mask;
-	dma_cap_zero(mask);
-	dma_cap_set(DMA_SLAVE, mask);
-
 	master->dma_tx = dma_request_chan(dev, "tx");
 	if (IS_ERR(master->dma_tx)) {
-		err = dev_err_probe(dev, PTR_ERR(master->dma_tx),
-				    "No TX DMA channel, DMA is disabled\n");
+		err = PTR_ERR(master->dma_tx);
+		dev_dbg(dev, "No TX DMA channel, DMA is disabled\n");
 		goto error_clear;
 	}
 
@@ -518,7 +514,7 @@ static int atmel_spi_configure_dma(struct spi_master *master,
 		 * No reason to check EPROBE_DEFER here since we have already
 		 * requested tx channel.
 		 */
-		dev_err(dev, "No RX DMA channel, DMA is disabled\n");
+		dev_dbg(dev, "No RX DMA channel, DMA is disabled\n");
 		goto error;
 	}
 
@@ -698,7 +694,6 @@ static void atmel_spi_next_xfer_pio(struct spi_master *master,
 static int atmel_spi_next_xfer_dma_submit(struct spi_master *master,
 				struct spi_transfer *xfer,
 				u32 *plen)
-	__must_hold(&as->lock)
 {
 	struct atmel_spi	*as = spi_master_get_devdata(master);
 	struct dma_chan		*rxchan = master->dma_rx;
@@ -714,8 +709,6 @@ static int atmel_spi_next_xfer_dma_submit(struct spi_master *master,
 	if (!rxchan || !txchan)
 		return -ENODEV;
 
-	/* release lock for DMA operations */
-	atmel_spi_unlock(as);
 
 	*plen = xfer->len;
 
@@ -784,15 +777,12 @@ static int atmel_spi_next_xfer_dma_submit(struct spi_master *master,
 	rxchan->device->device_issue_pending(rxchan);
 	txchan->device->device_issue_pending(txchan);
 
-	/* take back lock */
-	atmel_spi_lock(as);
 	return 0;
 
 err_dma:
 	spi_writel(as, IDR, SPI_BIT(OVRES));
 	atmel_spi_stop_dma(master);
 err_exit:
-	atmel_spi_lock(as);
 	return -ENOMEM;
 }
 
@@ -1051,8 +1041,6 @@ atmel_spi_pump_pio_data(struct atmel_spi *as, struct spi_transfer *xfer)
 
 /* Interrupt
  *
- * No need for locking in this Interrupt handler: done_status is the
- * only information modified.
  */
 static irqreturn_t
 atmel_spi_pio_interrupt(int irq, void *dev_id)
@@ -1300,8 +1288,6 @@ static int atmel_spi_one_transfer(struct spi_master *master,
 	unsigned long		dma_timeout;
 
 	as = spi_master_get_devdata(master);
-	/* This lock was orignally taken in atmel_spi_trasfer_one_message */
-	atmel_spi_lock(as);
 
 	asd = spi->controller_state;
 	bits = (asd->csr >> 4) & 0xf;
@@ -1330,7 +1316,9 @@ static int atmel_spi_one_transfer(struct spi_master *master,
 		reinit_completion(&as->xfer_completion);
 
 		if (as->use_pdc) {
+			atmel_spi_lock(as);
 			atmel_spi_pdc_next_xfer(master, xfer);
+			atmel_spi_unlock(as);
 		} else if (atmel_spi_use_dma(as, xfer)) {
 			len = as->current_remaining_bytes;
 			ret = atmel_spi_next_xfer_dma_submit(master,
@@ -1346,14 +1334,13 @@ static int atmel_spi_one_transfer(struct spi_master *master,
 					as->current_remaining_bytes = 0;
 			}
 		} else {
+			atmel_spi_lock(as);
 			atmel_spi_next_xfer_pio(master, xfer);
+			atmel_spi_unlock(as);
 		}
 
-		/* interrupts are disabled, so free the lock for schedule */
-		atmel_spi_unlock(as);
 		dma_timeout = wait_for_completion_timeout(&as->xfer_completion,
 							  SPI_DMA_TIMEOUT);
-		atmel_spi_lock(as);
 		if (WARN_ON(dma_timeout == 0)) {
 			dev_err(&spi->dev, "spi transfer timeout\n");
 			as->done_status = -EIO;
@@ -1400,8 +1387,6 @@ static int atmel_spi_one_transfer(struct spi_master *master,
 
 	if (as->use_pdc)
 		atmel_spi_disable_pdc_transfer(as);
-
-	atmel_spi_unlock(as);
 
 	return as->done_status;
 }

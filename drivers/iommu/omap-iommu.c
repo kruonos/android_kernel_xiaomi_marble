@@ -22,7 +22,6 @@
 #include <linux/io.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
-#include <linux/of_iommu.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/regmap.h>
@@ -1235,10 +1234,7 @@ static int omap_iommu_probe(struct platform_device *pdev)
 		if (err)
 			goto out_group;
 
-		iommu_device_set_ops(&obj->iommu, &omap_iommu_ops);
-		iommu_device_set_fwnode(&obj->iommu, &of->fwnode);
-
-		err = iommu_device_register(&obj->iommu);
+		err = iommu_device_register(&obj->iommu, &omap_iommu_ops, &pdev->dev);
 		if (err)
 			goto out_sysfs;
 	}
@@ -1686,7 +1682,6 @@ static struct iommu_device *omap_iommu_probe_device(struct device *dev)
 		}
 
 		oiommu = platform_get_drvdata(pdev);
-		put_device(&pdev->dev);
 		if (!oiommu) {
 			of_node_put(np);
 			kfree(arch_data);
@@ -1694,6 +1689,7 @@ static struct iommu_device *omap_iommu_probe_device(struct device *dev)
 		}
 
 		tmp->iommu_dev = oiommu;
+		tmp->dev = &pdev->dev;
 
 		of_node_put(np);
 	}

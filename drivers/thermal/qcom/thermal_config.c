@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
@@ -234,9 +234,11 @@ ssize_t thermal_dbgfs_config_read(struct file *file, char __user *buf,
 				-15, "mode",
 				(tz->mode == THERMAL_DEVICE_DISABLED)?"disabled":"enabled");
 	offset += scnprintf(config_buf + offset, PAGE_SIZE - offset, "%*s%d\n",
-				-15, "polling_delay", tz->polling_delay);
+				-15, "polling_delay",
+				jiffies_to_msecs(tz->polling_delay_jiffies));
 	offset += scnprintf(config_buf + offset, PAGE_SIZE - offset, "%*s%d\n",
-				-15, "passive_delay", tz->passive_delay);
+				-15, "passive_delay",
+				jiffies_to_msecs(tz->passive_delay_jiffies));
 	if (!tz->trips || !tz->ops->get_trip_temp) {
 		if (offset >= PAGE_SIZE) {
 			pr_err("%s sensor config rule length is more than buffer size\n",
@@ -287,7 +289,7 @@ static ssize_t thermal_dbgfs_config_write(struct file *file,
 	if (copy_from_user(sensor_name, user_buf, count))
 		return -EFAULT;
 
-	if (sscanf(sensor_name, "%20[^\n\t ]", tzone_sensor_name) != 1)
+	if (sscanf(sensor_name, "%19[^\n\t ]", tzone_sensor_name) != 1)
 		return -EINVAL;
 
 	tz = thermal_zone_get_zone_by_name((const char *)tzone_sensor_name);
@@ -336,5 +338,5 @@ static void thermal_config_exit(void)
 
 module_init(thermal_config_init);
 module_exit(thermal_config_exit);
-MODULE_DESCRIPTION("ThermalZone config debug driver");
+MODULE_DESCRIPTION("Thermal Zone config debug driver");
 MODULE_LICENSE("GPL v2");

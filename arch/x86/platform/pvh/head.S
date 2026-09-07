@@ -30,10 +30,10 @@
  *          the boot start info structure.
  * - `cr0`: bit 0 (PE) must be set. All the other writeable bits are cleared.
  * - `cr4`: all bits are cleared.
- * - `cs `: must be a 32-bit read/execute code segment with a base of ‘0’
- *          and a limit of ‘0xFFFFFFFF’. The selector value is unspecified.
+ * - `cs `: must be a 32-bit read/execute code segment with a base of `0`
+ *          and a limit of `0xFFFFFFFF`. The selector value is unspecified.
  * - `ds`, `es`: must be a 32-bit read/write data segment with a base of
- *               ‘0’ and a limit of ‘0xFFFFFFFF’. The selector values are all
+ *               `0` and a limit of `0xFFFFFFFF`. The selector values are all
  *               unspecified.
  * - `tr`: must be a 32-bit TSS (active) with a base of '0' and a limit
  *         of '0x67'.
@@ -69,12 +69,10 @@ SYM_CODE_START_LOCAL(pvh_start_xen)
 
 	mov $_pa(early_stack_end), %esp
 
-#if defined(CONFIG_X86_64) || defined(CONFIG_X86_PAE)
 	/* Enable PAE mode. */
 	mov %cr4, %eax
 	orl $X86_CR4_PAE, %eax
 	mov %eax, %cr4
-#endif
 
 #ifdef CONFIG_X86_64
 	/* Enable Long mode. */
@@ -101,12 +99,7 @@ SYM_CODE_START_LOCAL(pvh_start_xen)
 	xor %edx, %edx
 	wrmsr
 
-	/* Call xen_prepare_pvh() via the kernel virtual mapping */
-	leaq xen_prepare_pvh(%rip), %rax
-	subq phys_base(%rip), %rax
-	addq $__START_KERNEL_map, %rax
-	ANNOTATE_RETPOLINE_SAFE
-	call *%rax
+	call xen_prepare_pvh
 
 	/* startup_64 expects boot_params in %rsi. */
 	mov $_pa(pvh_bootparams), %rsi

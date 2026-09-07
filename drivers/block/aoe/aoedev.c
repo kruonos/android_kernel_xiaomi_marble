@@ -198,7 +198,6 @@ aoedev_downdev(struct aoedev *d)
 {
 	struct aoetgt *t, **tt, **te;
 	struct list_head *head, *pos, *nx;
-	struct request *rq, *rqnext;
 	int i;
 
 	d->flags &= ~DEVFL_UP;
@@ -223,13 +222,6 @@ aoedev_downdev(struct aoedev *d)
 
 	/* clean out the in-process request (if any) */
 	aoe_failip(d);
-
-	/* clean out any queued block requests */
-	list_for_each_entry_safe(rq, rqnext, &d->rq_list, queuelist) {
-		list_del_init(&rq->queuelist);
-		blk_mq_start_request(rq);
-		blk_mq_end_request(rq, BLK_STS_IOERR);
-	}
 
 	/* fast fail all pending I/O */
 	if (d->blkq) {
@@ -285,9 +277,8 @@ freedev(struct aoedev *d)
 	if (d->gd) {
 		aoedisk_rm_debugfs(d);
 		del_gendisk(d->gd);
-		put_disk(d->gd);
+		blk_cleanup_disk(d->gd);
 		blk_mq_free_tag_set(&d->tag_set);
-		blk_cleanup_queue(d->blkq);
 	}
 	t = d->targets;
 	e = t + d->ntargets;

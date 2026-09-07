@@ -8,17 +8,15 @@ config ARCH_ACTIONS
 	help
 	  This enables support for the Actions Semiconductor S900 SoC family.
 
-config ARCH_AGILEX
-	bool "Intel's Agilex SoCFPGA Family"
-	help
-	  This enables support for Intel's Agilex SoCFPGA Family.
-
 config ARCH_SUNXI
 	bool "Allwinner sunxi 64-bit SoC Family"
 	select ARCH_HAS_RESET_CONTROLLER
 	select GENERIC_IRQ_CHIP
+	select IRQ_DOMAIN_HIERARCHY
+	select IRQ_FASTEOI_HIERARCHY_HANDLERS
 	select PINCTRL
 	select RESET_CONTROLLER
+	select SUN4I_TIMER
 	help
 	  This enables support for Allwinner sunxi based SoCs like the A64.
 
@@ -28,6 +26,13 @@ config ARCH_ALPINE
 	help
 	  This enables support for the Annapurna Labs Alpine
 	  Soc family.
+
+config ARCH_APPLE
+	bool "Apple Silicon SoC family"
+	select APPLE_AIC
+	help
+	  This enables support for Apple's in-house ARM SoC family, starting
+	  with the Apple M1.
 
 config ARCH_BCM2835
 	bool "Broadcom BCM2835 family"
@@ -39,9 +44,18 @@ config ARCH_BCM2835
 	select ARM_AMBA
 	select ARM_GIC
 	select ARM_TIMER_SP804
+	select BRCMSTB_L2_IRQ
 	help
 	  This enables support for the Broadcom BCM2837 and BCM2711 SoC.
 	  These SoCs are used in the Raspberry Pi 3 and 4 devices.
+
+config ARCH_BCM4908
+	bool "Broadcom BCM4908 family"
+	select GPIOLIB
+	help
+	  This enables support for the Broadcom BCM4906, BCM4908 and
+	  BCM49408 SoCs. These SoCs use Brahma-B53 cores and can be
+	  found in home routers.
 
 config ARCH_BCM_IPROC
 	bool "Broadcom iProc SoC Family"
@@ -201,29 +215,45 @@ config ARCH_QCOM
 	help
 	  This enables support for the ARMv8 based Qualcomm chipsets.
 
-config ARCH_LAHAINA
-	bool "Enable Support for Qualcomm Technologies, Inc. LAHAINA"
+config ARCH_QTI_VM
+        bool "Enable Virtual Machines Support for Qualcomm Technologies, Inc."
+        depends on ARCH_QCOM
+        help
+          This enables support for the Qualcomm Technologies, Inc.'s
+          Virtual Machines. If you wish to build a kernel that doesn't
+          require VM support or if you are unsure,
+          say 'N' here.
+
+config ARCH_KALAMA
+	bool "Enable Support for Qualcomm Technologies, Inc. KALAMA"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  LAHAINA chipset. If you do not wish to build a kernel that
+	  KALAMA chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_QTI_VM
-	bool "Enable Virtual Machines Support for Qualcomm Technologies, Inc."
+config ARCH_KAKA
+	bool "Enable Support for Qualcomm Technologies, Inc. KAKA"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  Virtual Machines. If you wish to build a kernel that doesn't
-	  require VM support or if you are unsure,
-	  say 'N' here.
+	  KAKA chipset. If you do not wish to build a kernel that
+	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_SHIMA
-	bool "Enable Support for Qualcomm Technologies, Inc. SHIMA"
+config ARCH_CROW
+	bool "Enable Support for Qualcomm Technologies, Inc. CROW"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  SHIMA chipset. If you do not wish to build a kernel that
+	  CROW chipset. If you do not wish to build a kernel that
+	  runs on this chipset or if you are unsure, say 'N' here.
+
+config ARCH_KONA
+	bool "Enable Support for Qualcomm Technologies, Inc. KONA"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.'s
+	  KONA chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
 config ARCH_WAIPIO
@@ -234,69 +264,127 @@ config ARCH_WAIPIO
 	  WAIPIO chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_ANORAK
-	bool "Enable Support for Qualcomm Technologies, Inc. ANORAK"
+config ARCH_BENGAL
+	bool "Enable Support for Qualcomm Technologies, Inc. BENGAL"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the BENGAL chipset. If you do not
+	  wish to build a kernel that runs on this chipset, say 'N' here.
+
+config ARCH_KHAJE
+	bool "Enable Support for Qualcomm Technologies, Inc. KHAJE"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the KHAJE chipset. If you do not
+	  wish to build a kernel that runs on this chipset, say 'N' here.
+
+config ARCH_MONACO
+	bool "Enable Support for Qualcomm Technologies, Inc. MONACO"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  ANORAK chipset. If you do not wish to build a kernel that
+	  MONACO chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_NEO
-	bool "Enable Support for Qualcomm Technologies, Inc. NEO"
+config ARCH_MONACO_AUTO
+	bool "Enable Support for Qualcomm Technologies, Inc. MONACO_AUTO"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  NEO chipset. If you do not wish to build a kernel that
+	  MONACO_AUTO chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_DIWALI
-	bool "Enable Support for Qualcomm Technologies, Inc. DIWALI"
+config ARCH_QCS405
+	bool "Enable Support for Qualcomm Technologies, Inc. QCS405"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  DIWALI chipset. If you do not wish to build a kernel that
+	  QCS405 chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_PALM
-        bool "Enable Support for Qualcomm Technologies, Inc. PALM"
-        depends on ARCH_QCOM
-        help
-          This enables support for the Qualcomm Technologies, Inc.'s
-          PALM chipset. If you do not wish to build a kernel that
-          runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_CAPE
-        bool "Enable Support for Qualcomm Technologies, Inc. CAPE"
-        depends on ARCH_QCOM
-        help
-          This enables support for the Qualcomm Technologies, Inc.'s
-          CAPE chipset. If you do not wish to build a kernel that
-          runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_PARROT
-	bool "Enable Support for Qualcomm Technologies, Inc. PARROT"
+config ARCH_TRINKET
+	bool "Enable Support for Qualcomm Technologies, Inc. TRINKET"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  PARROT chipset. If you do not wish to build a kernel that
+	  TRINKET chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_RAVELIN
-        bool "Enable Support for Qualcomm Technologies, Inc. RAVELIN"
-        depends on ARCH_QCOM
-        help
-          This enables support for the Qualcomm Technologies, Inc.'s
-          RAVELIN chipset. If you do not wish to build a kernel that
-          runs on this chipset or if you are unsure, say 'N' here.
+config ARCH_CINDER
+	bool "Enable Support for Qualcomm Technologies, Inc. CINDER"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.
+	  CINDER chipset. If you do not wish to build a kernel that
+	  runs on this chipset or if you are unsure, say 'N' here.
 
-config ARCH_HOLI
-	bool "Enable Support for Qualcomm Technologies, Inc. HOLI"
+config ARCH_SDXPINN
+	bool "Enable Support for Qualcomm Technologies, Inc. SDXPINN"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.
+	  SDXPINN chipset. Say 'Y' for SDXPINN chipset. If you do not
+	  wish to build a kernel that runs on this chipset or if you
+	  are unsure, say 'N' here.
+
+config ARCH_SA8155
+        bool "Enable Support for Qualcomm Technologies, Inc. SA8155"
 	depends on ARCH_QCOM
 	help
 	  This enables support for the Qualcomm Technologies, Inc.'s
-	  HOLI chipset. If you do not wish to build a kernel that
+	  SA8155 chipset. If you do not wish to build a kernel that
 	  runs on this chipset or if you are unsure, say 'N' here.
+
+config ARCH_SA8195
+        bool "Enable Support for Qualcomm Technologies, Inc. SA8195"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.'s
+	  SA8195 chipset. If you do not wish to build a kernel that
+	  runs on this chipset or if you are unsure, say 'N' here.
+
+config ARCH_SA6155
+        bool "Enable Support for Qualcomm Technologies, Inc. SA6155"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.'s
+	  SA6155 chipset. If you do not wish to build a kernel that
+	  runs on this chipset or if you are unsure, say 'N' here.
+
+config QTI_QUIN_GVM
+	bool "Enable Support for Qualcomm Technologies, Inc. Auto GVMs on QUIN"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.'s
+	  Auto GVM on the QUIN platform. If you do not wish to build a
+	  kernel that runs this configuration or if you are unsure,
+	  say 'N' here.
+
+config ARCH_LEMANS
+	bool "Enable Support for Qualcomm Technologies, Inc. LEMANS"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.'s
+	  LEMANS chipset. If you do not wish to build a kernel that
+	  runs on this chipset or if you are unsure, say 'N' here.
+
+config ARCH_SA410M
+	bool "Enable Support for Qualcomm Technologies, Inc. SA410M"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.
+	  SA410M chipset. Say 'Y' for SA410M chipset. If you do not
+	  wish to build a kernel that runs on this chipset or if you
+	  are unsure, say 'N' here
+
+config ARCH_SCUBA_AUTO
+	bool "Enable Support for Qualcomm Technologies, Inc. SCUBA AUTO"
+	depends on ARCH_QCOM
+	help
+	  This enables support for the Qualcomm Technologies, Inc.
+	  SA410M chipset. Say 'Y' for SCUBA_AUTO chipset. If you do not
+	  wish to build a kernel that runs on this chipset or if you
+	  are unsure, say 'N' here.
 
 config ARCH_REALTEK
 	bool "Realtek Platforms"
@@ -316,9 +404,7 @@ config ARCH_RENESAS
 config ARCH_ROCKCHIP
 	bool "Rockchip Platforms"
 	select ARCH_HAS_RESET_CONTROLLER
-	select GPIOLIB
 	select PINCTRL
-	select PINCTRL_ROCKCHIP
 	select PM
 	select ROCKCHIP_TIMER
 	help
@@ -335,10 +421,11 @@ config ARCH_SEATTLE
 	help
 	  This enables support for AMD Seattle SOC Family
 
-config ARCH_STRATIX10
-	bool "Altera's Stratix 10 SoCFPGA Family"
+config ARCH_INTEL_SOCFPGA
+	bool "Intel's SoCFPGA ARMv8 Families"
 	help
-	  This enables support for Altera's Stratix 10 SoCFPGA Family.
+	  This enables support for Intel's SoCFPGA ARMv8 families:
+	  Stratix 10 (ex. Altera), Agilex and eASIC N5X.
 
 config ARCH_SYNQUACER
 	bool "Socionext SynQuacer SoC Family"
@@ -350,7 +437,6 @@ config ARCH_TEGRA
 	select ARM_GIC_PM
 	select CLKSRC_MMIO
 	select TIMER_OF
-	select GENERIC_CLOCKEVENTS
 	select GPIOLIB
 	select PINCTRL
 	select PM
@@ -407,12 +493,6 @@ config ARCH_XGENE
 	bool "AppliedMicro X-Gene SOC Family"
 	help
 	  This enables support for AppliedMicro X-Gene SOC Family
-
-config ARCH_ZX
-	bool "ZTE ZX SoC Family"
-	select PINCTRL
-	help
-	  This enables support for ZTE ZX SoC Family
 
 config ARCH_ZYNQMP
 	bool "Xilinx ZynqMP Family"

@@ -104,7 +104,7 @@ void enable_surface_flip_reporting(struct dc_plane_state *plane_state,
 struct dc_plane_state *dc_create_plane_state(struct dc *dc)
 {
 	struct dc_plane_state *plane_state = kvzalloc(sizeof(*plane_state),
-							GFP_ATOMIC);
+							GFP_KERNEL);
 
 	if (NULL == plane_state)
 		return NULL;
@@ -115,7 +115,7 @@ struct dc_plane_state *dc_create_plane_state(struct dc *dc)
 	return plane_state;
 }
 
-/**
+/*
  *****************************************************************************
  *  Function: dc_plane_get_status
  *
@@ -154,8 +154,7 @@ const struct dc_plane_status *dc_plane_get_status(
 		if (pipe_ctx->plane_state != plane_state)
 			continue;
 
-		if (pipe_ctx->plane_state)
-			pipe_ctx->plane_state->status.is_flip_pending = false;
+		pipe_ctx->plane_state->status.is_flip_pending = false;
 
 		break;
 	}

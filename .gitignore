@@ -167,5 +167,9 @@ sphinx_*/
 # Custom
 /consolidation/
 /release/
+/out-5.15-probe/
+/bt_dump_tools/out/android-arm64/qca-bt-dump
+/bt_dump_tools/qca-bt-dump
+/nfc_tools/qti-nfc-function
 /build.sh
 Documentation/devicetree/bindings

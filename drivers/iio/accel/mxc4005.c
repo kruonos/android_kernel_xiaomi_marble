@@ -27,12 +27,8 @@
 #define MXC4005_REG_ZOUT_UPPER		0x07
 #define MXC4005_REG_ZOUT_LOWER		0x08
 
-#define MXC4005_REG_INT_MASK0		0x0A
-
 #define MXC4005_REG_INT_MASK1		0x0B
 #define MXC4005_REG_INT_MASK1_BIT_DRDYE	0x01
-
-#define MXC4005_REG_INT_CLR0		0x00
 
 #define MXC4005_REG_INT_CLR1		0x01
 #define MXC4005_REG_INT_CLR1_BIT_DRDYC	0x01
@@ -117,9 +113,7 @@ static bool mxc4005_is_readable_reg(struct device *dev, unsigned int reg)
 static bool mxc4005_is_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
-	case MXC4005_REG_INT_CLR0:
 	case MXC4005_REG_INT_CLR1:
-	case MXC4005_REG_INT_MASK0:
 	case MXC4005_REG_INT_MASK1:
 	case MXC4005_REG_CONTROL:
 		return true;
@@ -320,19 +314,15 @@ err:
 	return IRQ_HANDLED;
 }
 
-static int mxc4005_clr_intr(struct mxc4005_data *data)
+static void mxc4005_clr_intr(struct mxc4005_data *data)
 {
 	int ret;
 
 	/* clear interrupt */
 	ret = regmap_write(data->regmap, MXC4005_REG_INT_CLR1,
 			   MXC4005_REG_INT_CLR1_BIT_DRDYC);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(data->dev, "failed to write to reg_int_clr1\n");
-		return ret;
-	}
-
-	return 0;
 }
 
 static int mxc4005_set_trigger_state(struct iio_trigger *trig,
@@ -340,13 +330,17 @@ static int mxc4005_set_trigger_state(struct iio_trigger *trig,
 {
 	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
 	struct mxc4005_data *data = iio_priv(indio_dev);
-	unsigned int val;
 	int ret;
 
 	mutex_lock(&data->mutex);
+	if (state) {
+		ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK1,
+				   MXC4005_REG_INT_MASK1_BIT_DRDYE);
+	} else {
+		ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK1,
+				   ~MXC4005_REG_INT_MASK1_BIT_DRDYE);
+	}
 
-	val = state ? MXC4005_REG_INT_MASK1_BIT_DRDYE : 0;
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK1, val);
 	if (ret < 0) {
 		mutex_unlock(&data->mutex);
 		dev_err(data->dev, "failed to update reg_int_mask1");
@@ -359,20 +353,20 @@ static int mxc4005_set_trigger_state(struct iio_trigger *trig,
 	return 0;
 }
 
-static int mxc4005_trigger_try_reen(struct iio_trigger *trig)
+static void mxc4005_trigger_reen(struct iio_trigger *trig)
 {
 	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
 	struct mxc4005_data *data = iio_priv(indio_dev);
 
 	if (!data->dready_trig)
-		return 0;
+		return;
 
-	return mxc4005_clr_intr(data);
+	mxc4005_clr_intr(data);
 }
 
 static const struct iio_trigger_ops mxc4005_trigger_ops = {
 	.set_trigger_state = mxc4005_set_trigger_state,
-	.try_reenable = mxc4005_trigger_try_reen,
+	.reenable = mxc4005_trigger_reen,
 };
 
 static int mxc4005_chip_init(struct mxc4005_data *data)
@@ -387,14 +381,6 @@ static int mxc4005_chip_init(struct mxc4005_data *data)
 	}
 
 	dev_dbg(data->dev, "MXC4005 chip id %02x\n", reg);
-
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK0, 0);
-	if (ret < 0)
-		return dev_err_probe(data->dev, ret, "writing INT_MASK0\n");
-
-	ret = regmap_write(data->regmap, MXC4005_REG_INT_MASK1, 0);
-	if (ret < 0)
-		return dev_err_probe(data->dev, ret, "writing INT_MASK1\n");
 
 	return 0;
 }
@@ -451,7 +437,7 @@ static int mxc4005_probe(struct i2c_client *client,
 		data->dready_trig = devm_iio_trigger_alloc(&client->dev,
 							   "%s-dev%d",
 							   indio_dev->name,
-							   indio_dev->id);
+							   iio_device_id(indio_dev));
 		if (!data->dready_trig)
 			return -ENOMEM;
 
@@ -468,7 +454,6 @@ static int mxc4005_probe(struct i2c_client *client,
 			return ret;
 		}
 
-		data->dready_trig->dev.parent = &client->dev;
 		data->dready_trig->ops = &mxc4005_trigger_ops;
 		iio_trigger_set_drvdata(data->dready_trig, indio_dev);
 		ret = devm_iio_trigger_register(&client->dev,

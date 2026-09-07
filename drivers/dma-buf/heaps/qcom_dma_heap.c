@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -9,6 +10,7 @@
 #include <linux/err.h>
 
 #include <linux/qcom_dma_heap.h>
+#include <linux/qcom_tui_heap.h>
 #include "qcom_cma_heap.h"
 #include "qcom_dt_parser.h"
 #include "qcom_system_heap.h"
@@ -41,35 +43,27 @@ static int qcom_dma_heap_probe(struct platform_device *pdev)
 		switch (heap_data->type) {
 		case HEAP_TYPE_SECURE_CARVEOUT:
 			ret = qcom_secure_carveout_heap_create(heap_data);
-			if (ret < 0)
-				pr_err("%s: DMA-BUF Heap: Failed to create %s, error is %d\n",
-				       __func__, heap_data->name, ret);
-			else if (!ret)
-				pr_info("%s: DMA-BUF Heap: Created %s\n", __func__,
-					heap_data->name);
 			break;
 		case HEAP_TYPE_CARVEOUT:
 			ret = qcom_carveout_heap_create(heap_data);
-			if (ret < 0)
-				pr_err("%s: DMA-BUF Heap: Failed to create %s, error is %d\n",
-				       __func__, heap_data->name, ret);
-			else if (!ret)
-				pr_info("%s: DMA-BUF Heap: Created %s\n", __func__,
-					heap_data->name);
 			break;
 		case HEAP_TYPE_CMA:
 			ret = qcom_add_cma_heap(heap_data);
-			if (ret < 0)
-				pr_err("%s: DMA-BUF Heap: Failed to create %s, error is %d\n",
-				       __func__, heap_data->name, ret);
-			else if (!ret)
-				pr_info("%s: DMA-BUF Heap: Created %s\n", __func__,
-					heap_data->name);
+			break;
+		case HEAP_TYPE_TUI_CARVEOUT:
+			ret = qcom_tui_carveout_heap_create(heap_data);
 			break;
 		default:
 			pr_err("%s: Unknown heap type %u\n", __func__, heap_data->type);
 			break;
 		}
+
+		if (ret)
+			pr_err("%s: DMA-BUF Heap: Failed to create %s, error is %d\n",
+			       __func__, heap_data->name, ret);
+		else
+			pr_info("%s: DMA-BUF Heap: Created %s\n", __func__,
+				heap_data->name);
 	}
 
 	qcom_add_bitstream_contig_heap("system-secure");
@@ -83,13 +77,13 @@ static int qcom_dma_heaps_freeze(struct device *dev)
 {
 	int ret;
 
-	ret = qcom_secure_carveout_freeze();
+	ret = qcom_secure_carveout_heap_freeze();
 	if (ret) {
 		pr_err("Failed to freeze secure carveout heap: %d\n", ret);
 		return ret;
 	}
 
-	ret = qcom_secure_system_freeze();
+	ret = qcom_secure_system_heap_freeze();
 	if (ret) {
 		pr_err("Failed to freeze secure system heap: %d\n", ret);
 		goto err;
@@ -97,7 +91,7 @@ static int qcom_dma_heaps_freeze(struct device *dev)
 
 	return 0;
 err:
-	ret = qcom_secure_carveout_restore();
+	ret = qcom_secure_carveout_heap_restore();
 	if (ret) {
 		pr_err("Failed to restore secure carveout heap: %d\n", ret);
 		return ret;
@@ -109,11 +103,11 @@ static int qcom_dma_heaps_restore(struct device *dev)
 {
 	int ret;
 
-	ret = qcom_secure_carveout_restore();
+	ret = qcom_secure_carveout_heap_restore();
 	if (ret)
 		pr_err("Failed to restore secure carveout heap: %d\n", ret);
 
-	ret = qcom_secure_system_restore();
+	ret = qcom_secure_system_heap_restore();
 	if (ret)
 		pr_err("Failed to restore secure system heap: %d\n", ret);
 
@@ -121,8 +115,8 @@ static int qcom_dma_heaps_restore(struct device *dev)
 }
 
 static const struct dev_pm_ops qcom_dma_heaps_pm_ops = {
-	.freeze = qcom_dma_heaps_freeze,
-	.restore = qcom_dma_heaps_restore,
+	.freeze_late = qcom_dma_heaps_freeze,
+	.restore_early = qcom_dma_heaps_restore,
 };
 
 static const struct of_device_id qcom_dma_heap_match_table[] = {

@@ -12,7 +12,6 @@
  * Specification version 2.4.
  */
 
-#include <linux/bitmap.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/time.h>
@@ -105,65 +104,6 @@ void cper_print_bits(const char *pfx, unsigned int bits,
 	if (len)
 		printk("%s\n", buf);
 }
-
-/**
- * cper_bits_to_str - return a string for set bits
- * @buf: buffer to store the output string
- * @buf_size: size of the output string buffer
- * @bits: bit mask
- * @strs: string array, indexed by bit position
- * @strs_size: size of the string array: @strs
- *
- * Add to @buf the bitmask in hexadecimal. Then, for each set bit in @bits,
- * add the corresponding string describing the bit in @strs to @buf.
- *
- * A typical example is::
- *
- *	const char * const bits[] = {
- *		"bit 3 name",
- *		"bit 4 name",
- *		"bit 5 name",
- *	};
- *	char str[120];
- *	unsigned int bitmask = BIT(3) | BIT(5);
- *	#define MASK GENMASK(5,3)
- *
- *	cper_bits_to_str(str, sizeof(str), FIELD_GET(MASK, bitmask),
- *			 bits, ARRAY_SIZE(bits));
- *
- * The above code fills the string ``str`` with ``bit 3 name|bit 5 name``.
- *
- * Return: number of bytes stored or an error code if lower than zero.
- */
-int cper_bits_to_str(char *buf, int buf_size, unsigned long bits,
-		     const char * const strs[], unsigned int strs_size)
-{
-	int len = buf_size;
-	char *str = buf;
-	int i, size;
-
-	*buf = '\0';
-
-	for_each_set_bit(i, &bits, strs_size) {
-		if (!(bits & BIT_ULL(i)))
-			continue;
-
-		if (*buf && len > 0) {
-			*str = '|';
-			len--;
-			str++;
-		}
-
-		size = strscpy(str, strs[i], len);
-		if (size < 0)
-			return size;
-
-		len -= size;
-		str += size;
-	}
-	return buf_size - len;
-}
-EXPORT_SYMBOL_GPL(cper_bits_to_str);
 
 static const char * const proc_type_strs[] = {
 	"IA32/X64",
@@ -279,7 +219,7 @@ static int cper_mem_err_location(struct cper_mem_err_compact *mem, char *msg)
 		return 0;
 
 	n = 0;
-	len = CPER_REC_LEN - 1;
+	len = CPER_REC_LEN;
 	if (mem->validation_bits & CPER_MEM_VALID_NODE)
 		n += scnprintf(msg + n, len - n, "node: %d ", mem->node);
 	if (mem->validation_bits & CPER_MEM_VALID_CARD)
@@ -316,13 +256,12 @@ static int cper_mem_err_location(struct cper_mem_err_compact *mem, char *msg)
 		n += scnprintf(msg + n, len - n, "responder_id: 0x%016llx ",
 			       mem->responder_id);
 	if (mem->validation_bits & CPER_MEM_VALID_TARGET_ID)
-		scnprintf(msg + n, len - n, "target_id: 0x%016llx ",
-			  mem->target_id);
+		n += scnprintf(msg + n, len - n, "target_id: 0x%016llx ",
+			       mem->target_id);
 	if (mem->validation_bits & CPER_MEM_VALID_CHIP_ID)
-		scnprintf(msg + n, len - n, "chip_id: %d ",
-			  mem->extended >> CPER_MEM_CHIP_ID_SHIFT);
+		n += scnprintf(msg + n, len - n, "chip_id: %d ",
+			       mem->extended >> CPER_MEM_CHIP_ID_SHIFT);
 
-	msg[n] = '\0';
 	return n;
 }
 
@@ -524,11 +463,6 @@ static void cper_print_fw_err(const char *pfx,
 	} else {
 		offset = sizeof(*fw_err);
 	}
-	if (offset > length) {
-		printk("%s""error section length is too small: offset=%d, length=%d\n",
-		       pfx, offset, length);
-		return;
-	}
 
 	buf += offset;
 	length -= offset;
@@ -609,8 +543,7 @@ cper_estatus_print_section(const char *pfx, struct acpi_hest_generic_data *gdata
 
 		printk("%ssection_type: ARM processor error\n", newpfx);
 		if (gdata->error_data_length >= sizeof(*arm_err))
-			cper_print_proc_arm(newpfx, arm_err,
-					    gdata->error_data_length);
+			cper_print_proc_arm(newpfx, arm_err);
 		else
 			goto err_section_too_small;
 #endif
@@ -699,7 +632,7 @@ int cper_estatus_check(const struct acpi_hest_generic_status *estatus)
 	data_len = estatus->data_length;
 
 	apei_estatus_for_each_section(estatus, gdata) {
-		if (sizeof(struct acpi_hest_generic_data) > data_len)
+		if (acpi_hest_get_size(gdata) > data_len)
 			return -EINVAL;
 
 		record_size = acpi_hest_get_record_size(gdata);

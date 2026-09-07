@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI DaVinci EVM board support
  *
  * Author: Kevin Hilman, MontaVista Software, Inc. <source@mvista.com>
  *
- * 2007 (c) MontaVista Software, Inc. This file is licensed under
- * the terms of the GNU General Public License version 2. This program
- * is licensed "as is" without any warranty of any kind, whether express
- * or implied.
+ * 2007 (c) MontaVista Software, Inc.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -541,6 +539,10 @@ static const struct property_entry eeprom_properties[] = {
 	{ }
 };
 
+static const struct software_node eeprom_node = {
+	.properties = eeprom_properties,
+};
+
 /*
  * MSP430 supports RTC, card detection, input from IR remote, and
  * a bit more.  It triggers interrupts on GPIO(7) from pressing
@@ -647,7 +649,7 @@ static struct i2c_board_info __initdata i2c_info[] =  {
 	},
 	{
 		I2C_BOARD_INFO("24c256", 0x50),
-		.properties = eeprom_properties,
+		.swnode = &eeprom_node,
 	},
 	{
 		I2C_BOARD_INFO("tlv320aic33", 0x1b),

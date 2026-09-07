@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mem_buf_vm: " fmt
@@ -81,6 +82,12 @@ struct mem_buf_vm *pdata_array[] = {
 	NULL,
 };
 
+int mem_buf_current_vmid(void)
+{
+	return current_vmid;
+}
+EXPORT_SYMBOL(mem_buf_current_vmid);
+
 /*
  * Opening this file acquires a refcount on vm->dev's kobject - see
  * chrdev_open(). So private data won't be free'd out from
@@ -159,20 +166,6 @@ int mem_buf_fd_to_vmid(int fd)
 	return ret;
 }
 EXPORT_SYMBOL(mem_buf_fd_to_vmid);
-
-int mem_buf_check_vmids(int *vmids, unsigned long nr)
-{
-	int i;
-
-	for (i = 0; i < nr; i++) {
-		if (!xa_load(&mem_buf_vms, vmids[i])) {
-			pr_err_ratelimited("Unknown vmid %d\n", vmids[i]);
-			return -EINVAL;
-		}
-	}
-	return 0;
-}
-EXPORT_SYMBOL(mem_buf_check_vmids);
 
 static void mem_buf_vm_device_release(struct device *dev)
 {

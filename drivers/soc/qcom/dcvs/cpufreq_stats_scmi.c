@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/scmi_protocol.h>
@@ -24,7 +24,7 @@
 #define CPUFREQ_STATS_USAGE_FILENAME "usage"
 #define CPUFREQ_STATS_RESIDENCY_FILENAME "time_in_state"
 
-const static struct scmi_cpufreq_stats_vendor_ops *ops;
+static const struct scmi_cpufreq_stats_vendor_ops *ops;
 static struct scmi_protocol_handle *ph;
 
 enum entry_type {
@@ -230,15 +230,14 @@ static int qcom_cpufreq_stats_init(struct scmi_handle *handle)
 	u32 stats_signature;
 	u16 num_clkdom = 0, revision, num_lvl = 0;
 	int i, j, ret;
-	struct cpufreq_stats_prot_attr prot_attr;
+	struct cpufreq_stats_prot_attr prot_attr = {0};
 
 	ret = ops->cpufreq_stats_info_get(ph, &prot_attr);
 	if (ret) {
 		pr_err("SCMI CPUFREQ Stats CPUFREQSTATS_GET_MEM_INFO error: %d\n", ret);
 		return ret;
 	}
-
-	if (prot_attr.statistics_len) {
+	if (prot_attr.statistics_len && prot_attr.statistics_address_low) {
 		pinfo = kcalloc(1, sizeof(struct stats_info), GFP_KERNEL);
 		if (!pinfo)
 			return -ENOMEM;
@@ -278,7 +277,7 @@ static int qcom_cpufreq_stats_init(struct scmi_handle *handle)
 		}
 		pinfo->num_clkdom = num_clkdom;
 	} else {
-		pr_err("SCMI cpufreq stats length is zero\n");
+		pr_err("SCMI cpufreq stats length or base address is zero\n");
 		return -EPERM;
 	}
 	// allocate structures for each clkdom/entry pair
@@ -289,7 +288,6 @@ static int qcom_cpufreq_stats_init(struct scmi_handle *handle)
 		kfree(pinfo);
 		return -ENOMEM;
 	}
-
 	// initialize structures for each clkdom/entry pair
 	for (i = 0; i < num_clkdom; i++) {
 		for (j = 0; j < ENTRY_MAX; j++) {
@@ -347,7 +345,7 @@ static int scmi_cpufreq_stats_probe(struct scmi_device *sdev)
 	if (!sdev)
 		return -ENODEV;
 
-	ops = sdev->handle->devm_get_protocol(sdev, SCMI_CPUFREQ_STATS_PROTOCOL, &ph);
+	ops = sdev->handle->devm_protocol_get(sdev, SCMI_CPUFREQ_STATS_PROTOCOL, &ph);
 	if (IS_ERR(ops))
 		return PTR_ERR(ops);
 	return qcom_cpufreq_stats_init(sdev->handle);

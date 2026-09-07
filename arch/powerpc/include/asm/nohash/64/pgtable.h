@@ -12,8 +12,6 @@
 #include <asm/barrier.h>
 #include <asm/asm-const.h>
 
-#define FIRST_USER_ADDRESS	0UL
-
 /*
  * Size of EA range mapped by our pagetables.
  */
@@ -118,11 +116,6 @@ static inline pte_t pte_mkyoung(pte_t pte)
 static inline pte_t pte_wrprotect(pte_t pte)
 {
 	return __pte(pte_val(pte) & ~_PAGE_RW);
-}
-
-static inline pte_t pte_mkexec(pte_t pte)
-{
-	return __pte(pte_val(pte) | _PAGE_EXEC);
 }
 
 #define PMD_BAD_BITS		(PTE_TABLE_SIZE-1)

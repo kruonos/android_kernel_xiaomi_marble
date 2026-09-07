@@ -378,8 +378,13 @@ static int input_get_disposition(struct input_dev *dev,
 static void input_handle_event(struct input_dev *dev,
 			       unsigned int type, unsigned int code, int value)
 {
-	int disposition = input_get_disposition(dev, type, code, &value);
+	int disposition;
 
+	/* filter-out events from inhibited devices */
+	if (dev->inhibited)
+		return;
+
+	disposition = input_get_disposition(dev, type, code, &value);
 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
 		add_input_randomness(type, code, value);
 
@@ -623,10 +628,10 @@ int input_open_device(struct input_handle *handle)
 
 	handle->open++;
 
-	if (dev->users++) {
+	if (dev->users++ || dev->inhibited) {
 		/*
-		 * Device is already opened, so we can exit immediately and
-		 * report success.
+		 * Device is already opened and/or inhibited,
+		 * so we can exit immediately and report success.
 		 */
 		goto out;
 	}
@@ -686,10 +691,9 @@ void input_close_device(struct input_handle *handle)
 
 	__input_release_device(handle);
 
-	if (!--dev->users) {
+	if (!--dev->users && !dev->inhibited) {
 		if (dev->poller)
 			input_dev_poller_stop(dev->poller);
-
 		if (dev->close)
 			dev->close(dev);
 	}
@@ -1356,19 +1360,19 @@ static int input_print_modalias_bits(char *buf, int size,
 				     char name, unsigned long *bm,
 				     unsigned int min_bit, unsigned int max_bit)
 {
-	int bit = min_bit;
-	int len = 0;
+	int len = 0, i;
 
 	len += snprintf(buf, max(size, 0), "%c", name);
-	for_each_set_bit_from(bit, bm, max_bit)
-		len += snprintf(buf + len, max(size - len, 0), "%X,", bit);
+	for (i = min_bit; i < max_bit; i++)
+		if (bm[BIT_WORD(i)] & BIT_MASK(i))
+			len += snprintf(buf + len, max(size - len, 0), "%X,", i);
 	return len;
 }
 
-static int input_print_modalias_parts(char *buf, int size, int full_len,
-				      struct input_dev *id)
+static int input_print_modalias(char *buf, int size, struct input_dev *id,
+				int add_cr)
 {
-	int len, klen, remainder, space;
+	int len;
 
 	len = snprintf(buf, max(size, 0),
 		       "input:b%04Xv%04Xp%04Xe%04X-",
@@ -1377,49 +1381,8 @@ static int input_print_modalias_parts(char *buf, int size, int full_len,
 
 	len += input_print_modalias_bits(buf + len, size - len,
 				'e', id->evbit, 0, EV_MAX);
-
-	/*
-	 * Calculate the remaining space in the buffer making sure we
-	 * have place for the terminating 0.
-	 */
-	space = max(size - (len + 1), 0);
-
-	klen = input_print_modalias_bits(buf + len, size - len,
+	len += input_print_modalias_bits(buf + len, size - len,
 				'k', id->keybit, KEY_MIN_INTERESTING, KEY_MAX);
-	len += klen;
-
-	/*
-	 * If we have more data than we can fit in the buffer, check
-	 * if we can trim key data to fit in the rest. We will indicate
-	 * that key data is incomplete by adding "+" sign at the end, like
-	 * this: * "k1,2,3,45,+,".
-	 *
-	 * Note that we shortest key info (if present) is "k+," so we
-	 * can only try to trim if key data is longer than that.
-	 */
-	if (full_len && size < full_len + 1 && klen > 3) {
-		remainder = full_len - len;
-		/*
-		 * We can only trim if we have space for the remainder
-		 * and also for at least "k+," which is 3 more characters.
-		 */
-		if (remainder <= space - 3) {
-			int i;
-			/*
-			 * We are guaranteed to have 'k' in the buffer, so
-			 * we need at least 3 additional bytes for storing
-			 * "+," in addition to the remainder.
-			 */
-			for (i = size - 1 - remainder - 3; i >= 0; i--) {
-				if (buf[i] == 'k' || buf[i] == ',') {
-					strcpy(buf + i + 1, "+,");
-					len = i + 3; /* Not counting '\0' */
-					break;
-				}
-			}
-		}
-	}
-
 	len += input_print_modalias_bits(buf + len, size - len,
 				'r', id->relbit, 0, REL_MAX);
 	len += input_print_modalias_bits(buf + len, size - len,
@@ -1435,23 +1398,10 @@ static int input_print_modalias_parts(char *buf, int size, int full_len,
 	len += input_print_modalias_bits(buf + len, size - len,
 				'w', id->swbit, 0, SW_MAX);
 
+	if (add_cr)
+		len += snprintf(buf + len, max(size - len, 0), "\n");
+
 	return len;
-}
-
-static int input_print_modalias(char *buf, int size, struct input_dev *id)
-{
-	int full_len;
-
-	/*
-	 * Printing is done in 2 passes: first one figures out total length
-	 * needed for the modalias string, second one will try to trim key
-	 * data in case when buffer is too small for the entire modalias.
-	 * If the buffer is too small regardless, it will fill as much as it
-	 * can (without trimming key data) into the buffer and leave it to
-	 * the caller to figure out what to do with the result.
-	 */
-	full_len = input_print_modalias_parts(NULL, 0, 0, id);
-	return input_print_modalias_parts(buf, size, full_len, id);
 }
 
 static ssize_t input_dev_show_modalias(struct device *dev,
@@ -1461,9 +1411,7 @@ static ssize_t input_dev_show_modalias(struct device *dev,
 	struct input_dev *id = to_input_dev(dev);
 	ssize_t len;
 
-	len = input_print_modalias(buf, PAGE_SIZE, id);
-	if (len < PAGE_SIZE - 2)
-		len += snprintf(buf + len, PAGE_SIZE - len, "\n");
+	len = input_print_modalias(buf, PAGE_SIZE, id, 1);
 
 	return min_t(int, len, PAGE_SIZE);
 }
@@ -1483,12 +1431,49 @@ static ssize_t input_dev_show_properties(struct device *dev,
 }
 static DEVICE_ATTR(properties, S_IRUGO, input_dev_show_properties, NULL);
 
+static int input_inhibit_device(struct input_dev *dev);
+static int input_uninhibit_device(struct input_dev *dev);
+
+static ssize_t inhibited_show(struct device *dev,
+			      struct device_attribute *attr,
+			      char *buf)
+{
+	struct input_dev *input_dev = to_input_dev(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", input_dev->inhibited);
+}
+
+static ssize_t inhibited_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t len)
+{
+	struct input_dev *input_dev = to_input_dev(dev);
+	ssize_t rv;
+	bool inhibited;
+
+	if (strtobool(buf, &inhibited))
+		return -EINVAL;
+
+	if (inhibited)
+		rv = input_inhibit_device(input_dev);
+	else
+		rv = input_uninhibit_device(input_dev);
+
+	if (rv != 0)
+		return rv;
+
+	return len;
+}
+
+static DEVICE_ATTR_RW(inhibited);
+
 static struct attribute *input_dev_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_phys.attr,
 	&dev_attr_uniq.attr,
 	&dev_attr_modalias.attr,
 	&dev_attr_properties.attr,
+	&dev_attr_inhibited.attr,
 	NULL
 };
 
@@ -1638,23 +1623,6 @@ static int input_add_uevent_bm_var(struct kobj_uevent_env *env,
 	return 0;
 }
 
-/*
- * This is a pretty gross hack. When building uevent data the driver core
- * may try adding more environment variables to kobj_uevent_env without
- * telling us, so we have no idea how much of the buffer we can use to
- * avoid overflows/-ENOMEM elsewhere. To work around this let's artificially
- * reduce amount of memory we will use for the modalias environment variable.
- *
- * The potential additions are:
- *
- * SEQNUM=18446744073709551615 - (%llu - 28 bytes)
- * HOME=/ (6 bytes)
- * PATH=/sbin:/bin:/usr/sbin:/usr/bin (34 bytes)
- *
- * 68 bytes total. Allow extra buffer - 96 bytes
- */
-#define UEVENT_ENV_EXTRA_LEN	96
-
 static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
 					 struct input_dev *dev)
 {
@@ -1664,11 +1632,9 @@ static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
 		return -ENOMEM;
 
 	len = input_print_modalias(&env->buf[env->buflen - 1],
-				   (int)sizeof(env->buf) - env->buflen -
-					UEVENT_ENV_EXTRA_LEN,
-				   dev);
-	if (len >= ((int)sizeof(env->buf) - env->buflen -
-					UEVENT_ENV_EXTRA_LEN))
+				   sizeof(env->buf) - env->buflen,
+				   dev, 0);
+	if (len >= (sizeof(env->buf) - env->buflen))
 		return -ENOMEM;
 
 	env->buflen += len;
@@ -1788,6 +1754,63 @@ void input_reset_device(struct input_dev *dev)
 	mutex_unlock(&dev->mutex);
 }
 EXPORT_SYMBOL(input_reset_device);
+
+static int input_inhibit_device(struct input_dev *dev)
+{
+	int ret = 0;
+
+	mutex_lock(&dev->mutex);
+
+	if (dev->inhibited)
+		goto out;
+
+	if (dev->users) {
+		if (dev->close)
+			dev->close(dev);
+		if (dev->poller)
+			input_dev_poller_stop(dev->poller);
+	}
+
+	spin_lock_irq(&dev->event_lock);
+	input_dev_release_keys(dev);
+	input_dev_toggle(dev, false);
+	spin_unlock_irq(&dev->event_lock);
+
+	dev->inhibited = true;
+
+out:
+	mutex_unlock(&dev->mutex);
+	return ret;
+}
+
+static int input_uninhibit_device(struct input_dev *dev)
+{
+	int ret = 0;
+
+	mutex_lock(&dev->mutex);
+
+	if (!dev->inhibited)
+		goto out;
+
+	if (dev->users) {
+		if (dev->open) {
+			ret = dev->open(dev);
+			if (ret)
+				goto out;
+		}
+		if (dev->poller)
+			input_dev_poller_start(dev->poller);
+	}
+
+	dev->inhibited = false;
+	spin_lock_irq(&dev->event_lock);
+	input_dev_toggle(dev, true);
+	spin_unlock_irq(&dev->event_lock);
+
+out:
+	mutex_unlock(&dev->mutex);
+	return ret;
+}
 
 #ifdef CONFIG_PM_SLEEP
 static int input_dev_suspend(struct device *dev)
@@ -2220,6 +2243,14 @@ void input_enable_softrepeat(struct input_dev *dev, int delay, int period)
 	dev->rep[REP_PERIOD] = period;
 }
 EXPORT_SYMBOL(input_enable_softrepeat);
+
+bool input_device_enabled(struct input_dev *dev)
+{
+	lockdep_assert_held(&dev->mutex);
+
+	return !dev->inhibited && dev->users > 0;
+}
+EXPORT_SYMBOL_GPL(input_device_enabled);
 
 /**
  * input_register_device - register device with input core

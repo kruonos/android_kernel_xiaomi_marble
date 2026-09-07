@@ -337,11 +337,11 @@ static void reset_ip_core(struct axis_fifo *fifo)
 }
 
 /**
- * axis_fifo_write() - Read a packet from AXIS-FIFO character device.
- * @f Open file.
- * @buf User space buffer to read to.
- * @len User space buffer length.
- * @off Buffer offset.
+ * axis_fifo_read() - Read a packet from AXIS-FIFO character device.
+ * @f: Open file.
+ * @buf: User space buffer to read to.
+ * @len: User space buffer length.
+ * @off: Buffer offset.
  *
  * As defined by the device's documentation, we need to check the device's
  * occupancy before reading the length register and then the data. All these
@@ -400,28 +400,32 @@ static ssize_t axis_fifo_read(struct file *f, char __user *buf,
 	}
 
 	bytes_available = ioread32(fifo->base_addr + XLLF_RLR_OFFSET);
-	words_available = bytes_available / sizeof(u32);
 	if (!bytes_available) {
-		dev_err(fifo->dt_device, "received a packet of length 0\n");
+		dev_err(fifo->dt_device, "received a packet of length 0 - fifo core will be reset\n");
+		reset_ip_core(fifo);
 		ret = -EIO;
 		goto end_unlock;
 	}
 
 	if (bytes_available > len) {
-		dev_err(fifo->dt_device, "user read buffer too small (available bytes=%zu user buffer bytes=%zu)\n",
+		dev_err(fifo->dt_device, "user read buffer too small (available bytes=%zu user buffer bytes=%zu) - fifo core will be reset\n",
 			bytes_available, len);
+		reset_ip_core(fifo);
 		ret = -EINVAL;
-		goto err_flush_rx;
+		goto end_unlock;
 	}
 
 	if (bytes_available % sizeof(u32)) {
 		/* this probably can't happen unless IP
 		 * registers were previously mishandled
 		 */
-		dev_err(fifo->dt_device, "received a packet that isn't word-aligned\n");
+		dev_err(fifo->dt_device, "received a packet that isn't word-aligned - fifo core will be reset\n");
+		reset_ip_core(fifo);
 		ret = -EIO;
-		goto err_flush_rx;
+		goto end_unlock;
 	}
+
+	words_available = bytes_available / sizeof(u32);
 
 	/* read data into an intermediate buffer, copying the contents
 	 * to userspace when the buffer is full
@@ -434,23 +438,19 @@ static ssize_t axis_fifo_read(struct file *f, char __user *buf,
 			tmp_buf[i] = ioread32(fifo->base_addr +
 					      XLLF_RDFD_OFFSET);
 		}
-		words_available -= copy;
 
 		if (copy_to_user(buf + copied * sizeof(u32), tmp_buf,
 				 copy * sizeof(u32))) {
+			reset_ip_core(fifo);
 			ret = -EFAULT;
-			goto err_flush_rx;
+			goto end_unlock;
 		}
 
 		copied += copy;
+		words_available -= copy;
 	}
-	mutex_unlock(&fifo->read_lock);
 
-	return bytes_available;
-
-err_flush_rx:
-	while (words_available--)
-		ioread32(fifo->base_addr + XLLF_RDFD_OFFSET);
+	ret = bytes_available;
 
 end_unlock:
 	mutex_unlock(&fifo->read_lock);
@@ -460,10 +460,10 @@ end_unlock:
 
 /**
  * axis_fifo_write() - Write buffer to AXIS-FIFO character device.
- * @f Open file.
- * @buf User space buffer to write to the device.
- * @len User space buffer length.
- * @off Buffer offset.
+ * @f: Open file.
+ * @buf: User space buffer to write to the device.
+ * @len: User space buffer length.
+ * @off: Buffer offset.
  *
  * As defined by the device's documentation, we need to write to the device's
  * data buffer then to the device's packet length register atomically. Also,
@@ -498,17 +498,11 @@ static ssize_t axis_fifo_write(struct file *f, const char __user *buf,
 		return -EINVAL;
 	}
 
-	/*
-	 * In 'Store-and-Forward' mode, the maximum packet that can be
-	 * transmitted is limited by the size of the FIFO, which is
-	 * (C_TX_FIFO_DEPTH–4)*(data interface width/8) bytes.
-	 *
-	 * Do not attempt to send a packet larger than 'tx_fifo_depth - 4',
-	 * otherwise a 'Transmit Packet Overrun Error' interrupt will be
-	 * raised, which requires a reset of the TX circuit to recover.
-	 */
-	if (words_to_write > (fifo->tx_fifo_depth - 4))
+	if (words_to_write > fifo->tx_fifo_depth) {
+		dev_err(fifo->dt_device, "tried to write more words [%u] than slots in the fifo buffer [%u]\n",
+			words_to_write, fifo->tx_fifo_depth);
 		return -EINVAL;
+	}
 
 	if (fifo->write_flags & O_NONBLOCK) {
 		/*
@@ -558,6 +552,7 @@ static ssize_t axis_fifo_write(struct file *f, const char __user *buf,
 
 		if (copy_from_user(tmp_buf, buf + copied * sizeof(u32),
 				   copy * sizeof(u32))) {
+			reset_ip_core(fifo);
 			ret = -EFAULT;
 			goto end_unlock;
 		}
@@ -790,6 +785,9 @@ static int axis_fifo_parse_dt(struct axis_fifo *fifo)
 		goto end;
 	}
 
+	/* IP sets TDFV to fifo depth - 4 so we will do the same */
+	fifo->tx_fifo_depth -= 4;
+
 	ret = get_dts_property(fifo, "xlnx,use-rx-data", &fifo->has_rx_fifo);
 	if (ret) {
 		dev_err(fifo->dt_device, "missing xlnx,use-rx-data property\n");
@@ -855,7 +853,6 @@ static int axis_fifo_probe(struct platform_device *pdev)
 	fifo->base_addr = devm_ioremap_resource(fifo->dt_device, r_mem);
 	if (IS_ERR(fifo->base_addr)) {
 		rc = PTR_ERR(fifo->base_addr);
-		dev_err(fifo->dt_device, "can't remap IO resource (%d)\n", rc);
 		goto err_initial;
 	}
 

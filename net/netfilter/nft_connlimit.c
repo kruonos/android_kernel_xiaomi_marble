@@ -24,22 +24,28 @@ static inline void nft_connlimit_do_eval(struct nft_connlimit *priv,
 					 const struct nft_pktinfo *pkt,
 					 const struct nft_set_ext *ext)
 {
+	const struct nf_conntrack_zone *zone = &nf_ct_zone_dflt;
+	const struct nf_conntrack_tuple *tuple_ptr;
+	struct nf_conntrack_tuple tuple;
+	enum ip_conntrack_info ctinfo;
+	const struct nf_conn *ct;
 	unsigned int count;
-	int err;
 
-	err = nf_conncount_add_skb(nft_net(pkt), pkt->skb, nft_pf(pkt), priv->list);
-	if (err) {
-		if (err == -EEXIST) {
-			/* Call gc to update the list count if any connection has
-			 * been closed already. This is useful for softlimit
-			 * connections like limiting bandwidth based on a number
-			 * of open connections.
-			 */
-			nf_conncount_gc_list(nft_net(pkt), priv->list);
-		} else {
-			regs->verdict.code = NF_DROP;
-			return;
-		}
+	tuple_ptr = &tuple;
+
+	ct = nf_ct_get(pkt->skb, &ctinfo);
+	if (ct != NULL) {
+		tuple_ptr = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
+		zone = nf_ct_zone(ct);
+	} else if (!nf_ct_get_tuplepr(pkt->skb, skb_network_offset(pkt->skb),
+				      nft_pf(pkt), nft_net(pkt), &tuple)) {
+		regs->verdict.code = NF_DROP;
+		return;
+	}
+
+	if (nf_conncount_add(nft_net(pkt), priv->list, tuple_ptr, zone)) {
+		regs->verdict.code = NF_DROP;
+		return;
 	}
 
 	count = priv->list->count;
@@ -71,7 +77,7 @@ static int nft_connlimit_do_init(const struct nft_ctx *ctx,
 			invert = true;
 	}
 
-	priv->list = kmalloc(sizeof(*priv->list), GFP_KERNEL);
+	priv->list = kmalloc(sizeof(*priv->list), GFP_KERNEL_ACCOUNT);
 	if (!priv->list)
 		return -ENOMEM;
 
@@ -203,7 +209,7 @@ static void nft_connlimit_destroy(const struct nft_ctx *ctx,
 	nft_connlimit_do_destroy(ctx, priv);
 }
 
-static int nft_connlimit_clone(struct nft_expr *dst, const struct nft_expr *src, gfp_t gfp)
+static int nft_connlimit_clone(struct nft_expr *dst, const struct nft_expr *src)
 {
 	struct nft_connlimit *priv_dst = nft_expr_priv(dst);
 	struct nft_connlimit *priv_src = nft_expr_priv(src);
@@ -231,8 +237,13 @@ static void nft_connlimit_destroy_clone(const struct nft_ctx *ctx,
 static bool nft_connlimit_gc(struct net *net, const struct nft_expr *expr)
 {
 	struct nft_connlimit *priv = nft_expr_priv(expr);
+	bool ret;
 
-	return nf_conncount_gc_list(net, priv->list);
+	local_bh_disable();
+	ret = nf_conncount_gc_list(net, priv->list);
+	local_bh_enable();
+
+	return ret;
 }
 
 static struct nft_expr_type nft_connlimit_type;

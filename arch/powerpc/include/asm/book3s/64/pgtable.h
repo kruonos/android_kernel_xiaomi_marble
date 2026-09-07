@@ -117,6 +117,7 @@
  */
 #define _PAGE_KERNEL_RW		(_PAGE_PRIVILEGED | _PAGE_RW | _PAGE_DIRTY)
 #define _PAGE_KERNEL_RO		 (_PAGE_PRIVILEGED | _PAGE_READ)
+#define _PAGE_KERNEL_ROX	 (_PAGE_PRIVILEGED | _PAGE_READ | _PAGE_EXEC)
 #define _PAGE_KERNEL_RWX	(_PAGE_PRIVILEGED | _PAGE_DIRTY |	\
 				 _PAGE_RW | _PAGE_EXEC)
 /*
@@ -231,6 +232,9 @@ extern unsigned long __pmd_frag_size_shift;
 #define PTRS_PER_PUD	(1 << PUD_INDEX_SIZE)
 #define PTRS_PER_PGD	(1 << PGD_INDEX_SIZE)
 
+#define MAX_PTRS_PER_PGD	(1 << (H_PGD_INDEX_SIZE > RADIX_PGD_INDEX_SIZE ? \
+				       H_PGD_INDEX_SIZE : RADIX_PGD_INDEX_SIZE))
+
 /* PMD_SHIFT determines what a second-level page table entry can map */
 #define PMD_SHIFT	(PAGE_SHIFT + PTE_INDEX_SIZE)
 #define PMD_SIZE	(1UL << PMD_SHIFT)
@@ -332,6 +336,32 @@ extern unsigned long pci_io_base;
 
 #ifndef __ASSEMBLY__
 
+/*
+ * This is the default implementation of various PTE accessors, it's
+ * used in all cases except Book3S with 64K pages where we have a
+ * concept of sub-pages
+ */
+#ifndef __real_pte
+
+#define __real_pte(e, p, o)		((real_pte_t){(e)})
+#define __rpte_to_pte(r)	((r).pte)
+#define __rpte_to_hidx(r,index)	(pte_val(__rpte_to_pte(r)) >> H_PAGE_F_GIX_SHIFT)
+
+#define pte_iterate_hashed_subpages(rpte, psize, va, index, shift)       \
+	do {							         \
+		index = 0;					         \
+		shift = mmu_psize_defs[psize].shift;		         \
+
+#define pte_iterate_hashed_end() } while(0)
+
+/*
+ * We expect this to be called only for user addresses or kernel virtual
+ * addresses other than the linear mapping.
+ */
+#define pte_pagesize_index(mm, addr, pte)	MMU_PAGE_4K
+
+#endif /* __real_pte */
+
 static inline unsigned long pte_update(struct mm_struct *mm, unsigned long addr,
 				       pte_t *ptep, unsigned long clr,
 				       unsigned long set, int huge)
@@ -364,10 +394,27 @@ static inline int __ptep_test_and_clear_young(struct mm_struct *mm,
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG
 #define ptep_test_and_clear_young(__vma, __addr, __ptep)	\
 ({								\
-	int __r;						\
-	__r = __ptep_test_and_clear_young((__vma)->vm_mm, __addr, __ptep); \
-	__r;							\
+	__ptep_test_and_clear_young((__vma)->vm_mm, __addr, __ptep); \
 })
+
+/*
+ * On Book3S CPUs, clearing the accessed bit without a TLB flush
+ * doesn't cause data corruption. [ It could cause incorrect
+ * page aging and the (mistaken) reclaim of hot pages, but the
+ * chance of that should be relatively low. ]
+ *
+ * So as a performance optimization don't flush the TLB when
+ * clearing the accessed bit, it will eventually be flushed by
+ * a context switch or a VM operation anyway. [ In the rare
+ * event of it not getting flushed for a long time the delay
+ * shouldn't really matter because there's no real memory
+ * pressure for swapout to react to. ]
+ */
+#define __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH
+#define ptep_clear_flush_young ptep_test_and_clear_young
+
+#define __HAVE_ARCH_PMDP_CLEAR_YOUNG_FLUSH
+#define pmdp_clear_flush_young pmdp_test_and_clear_young
 
 static inline int __pte_write(pte_t pte)
 {
@@ -1216,11 +1263,26 @@ static inline int pmd_same(pmd_t pmd_a, pmd_t pmd_b)
 	return hash__pmd_same(pmd_a, pmd_b);
 }
 
-static inline pmd_t pmd_mkhuge(pmd_t pmd)
+static inline pmd_t __pmd_mkhuge(pmd_t pmd)
 {
 	if (radix_enabled())
 		return radix__pmd_mkhuge(pmd);
 	return hash__pmd_mkhuge(pmd);
+}
+
+/*
+ * pfn_pmd return a pmd_t that can be used as pmd pte entry.
+ */
+static inline pmd_t pmd_mkhuge(pmd_t pmd)
+{
+#ifdef CONFIG_DEBUG_VM
+	if (radix_enabled())
+		WARN_ON((pmd_raw(pmd) & cpu_to_be64(_PAGE_PTE)) == 0);
+	else
+		WARN_ON((pmd_raw(pmd) & cpu_to_be64(_PAGE_PTE | H_PAGE_THP_HUGE)) !=
+			cpu_to_be64(_PAGE_PTE | H_PAGE_THP_HUGE));
+#endif
+	return pmd;
 }
 
 #define __HAVE_ARCH_PMDP_SET_ACCESS_FLAGS

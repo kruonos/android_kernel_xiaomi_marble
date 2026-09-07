@@ -15,8 +15,8 @@
 
 /* debug */
 #ifdef CONFIG_DVB_B2C2_FLEXCOP_DEBUG
-#define dprintk(level,args...) \
-	do { if ((debug & level)) printk(args); } while (0)
+#define dprintk(level, args...) \
+	do { if ((debug & (level))) printk(args); } while (0)
 
 #define debug_dump(b, l, method) do {\
 	int i; \
@@ -27,8 +27,8 @@
 
 #define DEBSTATUS ""
 #else
-#define dprintk(level, args...)
-#define debug_dump(b, l, method)
+#define dprintk(level, args...) no_printk(args)
+#define debug_dump(b, l, method) do { } while (0)
 #define DEBSTATUS " (debugging is not enabled)"
 #endif
 
@@ -195,7 +195,6 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 		break;
 	default:
 		return -EINVAL;
-		break;
 	}
 	for (i = 0; i < len;) {
 		pagechunk =
@@ -502,21 +501,17 @@ urb_error:
 
 static int flexcop_usb_init(struct flexcop_usb *fc_usb)
 {
-	struct usb_host_interface *alt;
-	int ret;
+	/* use the alternate setting with the larges buffer */
+	int ret = usb_set_interface(fc_usb->udev, 0, 1);
 
-	/* use the alternate setting with the largest buffer */
-	ret = usb_set_interface(fc_usb->udev, 0, 1);
 	if (ret) {
 		err("set interface failed.");
 		return ret;
 	}
 
-	alt = fc_usb->uintf->cur_altsetting;
-
-	if (alt->desc.bNumEndpoints < 2)
+	if (fc_usb->uintf->cur_altsetting->desc.bNumEndpoints < 1)
 		return -ENODEV;
-	if (!usb_endpoint_is_isoc_in(&alt->endpoint[0].desc))
+	if (!usb_endpoint_is_isoc_in(&fc_usb->uintf->cur_altsetting->endpoint[0].desc))
 		return -ENODEV;
 
 	switch (fc_usb->udev->speed) {

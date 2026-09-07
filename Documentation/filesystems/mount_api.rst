@@ -774,16 +774,15 @@ process the parameters it is given.
      should just be set to lie inside the low-to-high range.
 
      If all is good, true is returned.  If the table is invalid, errors are
-     logged to dmesg and false is returned.
+     logged to the kernel log buffer and false is returned.
 
    * ::
 
-       bool fs_validate_description(const char *name,
-                                    const struct fs_parameter_description *desc);
+       bool fs_validate_description(const struct fs_parameter_description *desc);
 
      This performs some validation checks on a parameter description.  It
      returns true if the description is good and false if it is not.  It will
-     log errors to dmesg if validation fails.
+     log errors to the kernel log buffer if validation fails.
 
    * ::
 

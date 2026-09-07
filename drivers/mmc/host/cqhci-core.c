@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2015, 2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -50,17 +50,23 @@ static inline u8 *get_link_desc(struct cqhci_host *cq_host, u8 tag)
 	return desc + cq_host->task_desc_len;
 }
 
+static inline size_t get_trans_desc_offset(struct cqhci_host *cq_host, u8 tag)
+{
+	return cq_host->trans_desc_len * cq_host->mmc->max_segs * tag;
+}
+
 static inline dma_addr_t get_trans_desc_dma(struct cqhci_host *cq_host, u8 tag)
 {
-	return cq_host->trans_desc_dma_base +
-		(cq_host->mmc->max_segs * tag *
-		 cq_host->trans_desc_len);
+	size_t offset = get_trans_desc_offset(cq_host, tag);
+
+	return cq_host->trans_desc_dma_base + offset;
 }
 
 static inline u8 *get_trans_desc(struct cqhci_host *cq_host, u8 tag)
 {
-	return cq_host->trans_desc_base +
-		(cq_host->trans_desc_len * cq_host->mmc->max_segs * tag);
+	size_t offset = get_trans_desc_offset(cq_host, tag);
+
+	return cq_host->trans_desc_base + offset;
 }
 
 static void setup_trans_desc(struct cqhci_host *cq_host, u8 tag)
@@ -107,6 +113,10 @@ static void cqhci_set_irqs(struct cqhci_host *cq_host, u32 set)
 static void cqhci_dumpregs(struct cqhci_host *cq_host)
 {
 	struct mmc_host *mmc = cq_host->mmc;
+	int offset = 0;
+
+	if (cq_host->offset_changed)
+		offset = CQE_V5_VENDOR_CFG;
 
 	CQHCI_DUMP("============ CQHCI REGISTER DUMP ===========\n");
 
@@ -143,6 +153,8 @@ static void cqhci_dumpregs(struct cqhci_host *cq_host)
 	CQHCI_DUMP("Resp idx:  0x%08x | Resp arg: 0x%08x\n",
 		   cqhci_readl(cq_host, CQHCI_CRI),
 		   cqhci_readl(cq_host, CQHCI_CRA));
+	CQHCI_DUMP("Vendor cfg 0x%08x\n",
+		   cqhci_readl(cq_host, CQHCI_VENDOR_CFG + offset));
 
 	if (cq_host->ops->dumpregs)
 		cq_host->ops->dumpregs(mmc);
@@ -151,7 +163,7 @@ static void cqhci_dumpregs(struct cqhci_host *cq_host)
 }
 
 /*
- * The allocated descriptor table for task, link & transfer descritors
+ * The allocated descriptor table for task, link & transfer descriptors
  * looks like:
  * |----------|
  * |task desc |  |->|----------|
@@ -199,8 +211,7 @@ static int cqhci_host_alloc_tdl(struct cqhci_host *cq_host)
 
 	cq_host->desc_size = cq_host->slot_sz * cq_host->num_slots;
 
-	cq_host->data_size = cq_host->trans_desc_len * cq_host->mmc->max_segs *
-		cq_host->mmc->cqe_qdepth;
+	cq_host->data_size = get_trans_desc_offset(cq_host, cq_host->mmc->cqe_qdepth);
 
 	pr_debug("%s: cqhci: desc_size: %zu data_sz: %zu slot-sz: %d\n",
 		 mmc_hostname(cq_host->mmc), cq_host->desc_size, cq_host->data_size,
@@ -353,6 +364,9 @@ static int cqhci_enable(struct mmc_host *mmc, struct mmc_card *card)
 
 	__cqhci_enable(cq_host);
 
+	if (cq_host->ops->enhanced_strobe_mask)
+		cq_host->ops->enhanced_strobe_mask(mmc, true);
+
 	cq_host->enabled = true;
 
 #ifdef DEBUG
@@ -407,6 +421,9 @@ static void cqhci_disable(struct mmc_host *mmc)
 
 	__cqhci_disable(cq_host);
 
+	if (cq_host->ops->enhanced_strobe_mask)
+		cq_host->ops->enhanced_strobe_mask(mmc, false);
+
 	dmam_free_coherent(mmc_dev(mmc), cq_host->data_size,
 			   cq_host->trans_desc_base,
 			   cq_host->trans_desc_dma_base);
@@ -437,7 +454,6 @@ static void cqhci_prep_task_desc(struct mmc_request *mrq,
 		CQHCI_DATA_DIR(!!(req_flags & MMC_DATA_READ)) |
 		CQHCI_PRIORITY(!!(req_flags & MMC_DATA_PRIO)) |
 		CQHCI_QBAR(!!(req_flags & MMC_DATA_QBR)) |
-		CQHCI_REL_WRITE(!!(req_flags & MMC_DATA_REL_WR)) |
 		CQHCI_BLK_COUNT(mrq->data->blocks) |
 		CQHCI_BLK_ADDR((u64)mrq->data->blk_addr);
 
@@ -622,7 +638,7 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		cqhci_writel(cq_host, 0, CQHCI_CTL);
 		mmc->cqe_on = true;
 		pr_debug("%s: cqhci: CQE on\n", mmc_hostname(mmc));
-		if (cqhci_readl(cq_host, CQHCI_CTL) & CQHCI_HALT) {
+		if (cqhci_readl(cq_host, CQHCI_CTL) && CQHCI_HALT) {
 			pr_err("%s: cqhci: CQE failed to exit halt state\n",
 			       mmc_hostname(mmc));
 		}
@@ -791,6 +807,10 @@ static void cqhci_finish_mrq(struct mmc_host *mmc, unsigned int tag)
 	struct cqhci_slot *slot = &cq_host->slot[tag];
 	struct mmc_request *mrq = slot->mrq;
 	struct mmc_data *data;
+	int offset = 0;
+
+	if (cq_host->offset_changed)
+		offset = CQE_V5_VENDOR_CFG;
 
 	if (!mrq) {
 		WARN_ONCE(1, "%s: cqhci: spurious TCN for tag %d\n",
@@ -814,6 +834,11 @@ static void cqhci_finish_mrq(struct mmc_host *mmc, unsigned int tag)
 			data->bytes_xfered = 0;
 		else
 			data->bytes_xfered = data->blksz * data->blocks;
+	} else {
+		cqhci_writel(cq_host, cqhci_readl(cq_host,
+			CQHCI_VENDOR_CFG + offset) |
+			CMDQ_SEND_STATUS_TRIGGER,
+			CQHCI_VENDOR_CFG + offset);
 	}
 
 	mmc_cqe_request_done(mmc, mrq);
@@ -832,15 +857,22 @@ irqreturn_t cqhci_irq(struct mmc_host *mmc, u32 intmask, int cmd_error,
 
 	if ((status & (CQHCI_IS_RED | CQHCI_IS_GCE | CQHCI_IS_ICCE)) ||
 	    cmd_error || data_error) {
+		if (status & CQHCI_IS_RED)
+			mmc_debugfs_err_stats_inc(mmc, MMC_ERR_CMDQ_RED);
+		if (status & CQHCI_IS_GCE)
+			mmc_debugfs_err_stats_inc(mmc, MMC_ERR_CMDQ_GCE);
+		if (status & CQHCI_IS_ICCE)
+			mmc_debugfs_err_stats_inc(mmc, MMC_ERR_CMDQ_ICCE);
 		pr_err("%s: cqhci: error IRQ status: 0x%08x cmd error %d data error %d\n",
-			mmc_hostname(mmc), status, cmd_error, data_error);
+				mmc_hostname(mmc), status, cmd_error, data_error);
 		cqhci_dumpregs(cq_host);
 		cqhci_writel(cq_host, status, CQHCI_IS);
 		cqhci_error_irq(mmc, status, cmd_error, data_error);
 	} else {
-		/* Clear interrupt */
+		 /* Clear interrupt */
 		cqhci_writel(cq_host, status, CQHCI_IS);
 	}
+
 	if (status & CQHCI_IS_TCC) {
 		/* read TCN and complete the request */
 		comp_status = cqhci_readl(cq_host, CQHCI_TCN);

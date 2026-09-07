@@ -5,7 +5,6 @@
  */
 
 #include <linux/errno.h>
-#include <linux/of.h>
 #include <linux/percpu.h>
 #include <linux/spinlock.h>
 
@@ -15,7 +14,6 @@
 void __iomem *mips_gcr_base;
 void __iomem *mips_cm_l2sync_base;
 int mips_cm_is64;
-bool mips_cm_is_l2_hci_broken;
 
 static char *cm2_tr[8] = {
 	"mem",	"gcr",	"gic",	"mmio",
@@ -240,18 +238,6 @@ static void mips_cm_probe_l2sync(void)
 	mips_cm_l2sync_base = ioremap(addr, MIPS_CM_L2SYNC_SIZE);
 }
 
-void mips_cm_update_property(void)
-{
-	struct device_node *cm_node;
-
-	cm_node = of_find_compatible_node(of_root, NULL, "mobileye,eyeq6-cm");
-	if (!cm_node)
-		return;
-	pr_info("HCI (Hardware Cache Init for the L2 cache) in GCR_L2_RAM_CONFIG from the CM3 is broken");
-	mips_cm_is_l2_hci_broken = true;
-	of_node_put(cm_node);
-}
-
 int mips_cm_probe(void)
 {
 	phys_addr_t addr;
@@ -279,6 +265,7 @@ int mips_cm_probe(void)
 	if ((base_reg & CM_GCR_BASE_GCRBASE) != addr) {
 		pr_err("GCRs appear to have been moved (expected them at 0x%08lx)!\n",
 		       (unsigned long)addr);
+		iounmap(mips_gcr_base);
 		mips_gcr_base = NULL;
 		return -ENODEV;
 	}

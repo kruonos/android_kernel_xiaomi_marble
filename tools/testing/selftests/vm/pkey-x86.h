@@ -119,6 +119,18 @@ static inline int cpu_has_pkeys(void)
 	return 1;
 }
 
+static inline int cpu_max_xsave_size(void)
+{
+	unsigned long XSTATE_CPUID = 0xd;
+	unsigned int eax;
+	unsigned int ebx;
+	unsigned int ecx;
+	unsigned int edx;
+
+	__cpuid_count(XSTATE_CPUID, 0, eax, ebx, ecx, edx);
+	return ecx;
+}
+
 static inline u32 pkey_bit_position(int pkey)
 {
 	return pkey * PKEY_BITS_PER_PKEY;
@@ -126,6 +138,7 @@ static inline u32 pkey_bit_position(int pkey)
 
 #define XSTATE_PKEY_BIT	(9)
 #define XSTATE_PKEY	0x200
+#define XSTATE_BV_OFFSET	512
 
 int pkey_reg_xstate_offset(void)
 {

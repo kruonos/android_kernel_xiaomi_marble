@@ -81,11 +81,12 @@ static int at91_reset(struct notifier_block *this, unsigned long mode,
 		"	str	%4, [%0, %6]\n\t"
 		/* Disable SDRAM1 accesses */
 		"1:	tst	%1, #0\n\t"
+		"	beq	2f\n\t"
 		"	strne	%3, [%1, #" __stringify(AT91_DDRSDRC_RTR) "]\n\t"
 		/* Power down SDRAM1 */
 		"	strne	%4, [%1, %6]\n\t"
 		/* Reset CPU */
-		"	str	%5, [%2, #" __stringify(AT91_RSTC_CR) "]\n\t"
+		"2:	str	%5, [%2, #" __stringify(AT91_RSTC_CR) "]\n\t"
 
 		"	b	.\n\t"
 		:
@@ -96,7 +97,7 @@ static int at91_reset(struct notifier_block *this, unsigned long mode,
 		  "r" cpu_to_le32(AT91_DDRSDRC_LPCB_POWER_DOWN),
 		  "r" (reset->args),
 		  "r" (reset->ramc_lpr)
-	);
+		: "r4");
 
 	return NOTIFY_DONE;
 }
@@ -191,8 +192,8 @@ static int __init at91_reset_probe(struct platform_device *pdev)
 	if (!reset)
 		return -ENOMEM;
 
-	reset->rstc_base = of_iomap(pdev->dev.of_node, 0);
-	if (!reset->rstc_base) {
+	reset->rstc_base = devm_of_iomap(&pdev->dev, pdev->dev.of_node, 0, NULL);
+	if (IS_ERR(reset->rstc_base)) {
 		dev_err(&pdev->dev, "Could not map reset controller address\n");
 		return -ENODEV;
 	}
@@ -201,8 +202,8 @@ static int __init at91_reset_probe(struct platform_device *pdev)
 		/* we need to shutdown the ddr controller, so get ramc base */
 		for_each_matching_node_and_match(np, at91_ramc_of_match, &match) {
 			reset->ramc_lpr = (u32)match->data;
-			reset->ramc_base[idx] = of_iomap(np, 0);
-			if (!reset->ramc_base[idx]) {
+			reset->ramc_base[idx] = devm_of_iomap(&pdev->dev, np, 0, NULL);
+			if (IS_ERR(reset->ramc_base[idx])) {
 				dev_err(&pdev->dev, "Could not map ram controller address\n");
 				of_node_put(np);
 				return -ENODEV;

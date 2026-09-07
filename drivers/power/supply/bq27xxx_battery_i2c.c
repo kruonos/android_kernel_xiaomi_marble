@@ -6,7 +6,6 @@
  *	Andrew F. Davis <afd@ti.com>
  */
 
-#include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -33,7 +32,6 @@ static int bq27xxx_battery_i2c_read(struct bq27xxx_device_info *di, u8 reg,
 	struct i2c_msg msg[2];
 	u8 data[2];
 	int ret;
-	int retry = 0;
 
 	if (!client->adapter)
 		return -ENODEV;
@@ -50,16 +48,7 @@ static int bq27xxx_battery_i2c_read(struct bq27xxx_device_info *di, u8 reg,
 	else
 		msg[1].len = 2;
 
-	do {
-		ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
-		if (ret == -EBUSY && ++retry < 3) {
-			/* sleep 10 milliseconds when busy */
-			usleep_range(10000, 11000);
-			continue;
-		}
-		break;
-	} while (1);
-
+	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
 	if (ret < 0)
 		return ret;
 
@@ -147,46 +136,6 @@ static int bq27xxx_battery_i2c_bulk_write(struct bq27xxx_device_info *di,
 	return 0;
 }
 
-#ifdef CONFIG_BATTERY_BQ27XXX_RESIST_TABLE_UPDATES_NVM
-static void bq27xx_parse_dt(struct bq27xxx_device_info *di,
-					struct device *dev, struct device_node
-					*battery_np)
-{
-	int ret;
-
-	ret = of_property_read_u32(battery_np, "qmax-cell0", &di->qmax_cell0);
-	if (ret)
-		dev_err(dev, "Undefined Qmax-Cell0\n");
-
-	ret = of_property_read_u32_array(battery_np, "resist-table",
-				   di->resist_table, 15);
-	if (ret)
-		dev_err(dev, "Undefined resistance table\n");
-}
-#endif
-
-static int bq27xxx_restore(struct device *dev)
-{
-	int ret = 0;
-	struct i2c_client *client = to_i2c_client(dev);
-	struct bq27xxx_device_info *di = i2c_get_clientdata(client);
-
-	if (client->irq > 0) {
-		disable_irq_nosync(client->irq);
-		devm_free_irq(dev, client->irq, di);
-		ret = request_threaded_irq(client->irq,
-					   NULL, bq27xxx_battery_irq_handler_thread,
-					   IRQF_ONESHOT,
-					   di->name, di);
-	}
-
-	return ret;
-}
-
-static const struct dev_pm_ops bq27xxx_pm_ops = {
-	.restore = bq27xxx_restore,
-};
-
 static int bq27xxx_battery_i2c_probe(struct i2c_client *client,
 				     const struct i2c_device_id *id)
 {
@@ -194,9 +143,6 @@ static int bq27xxx_battery_i2c_probe(struct i2c_client *client,
 	int ret;
 	char *name;
 	int num;
-#ifdef CONFIG_BATTERY_BQ27XXX_RESIST_TABLE_UPDATES_NVM
-	struct device_node *battery_np_rt;
-#endif
 
 	/* Get new ID for the new battery device */
 	mutex_lock(&battery_mutex);
@@ -222,14 +168,6 @@ static int bq27xxx_battery_i2c_probe(struct i2c_client *client,
 	di->bus.write = bq27xxx_battery_i2c_write;
 	di->bus.read_bulk = bq27xxx_battery_i2c_bulk_read;
 	di->bus.write_bulk = bq27xxx_battery_i2c_bulk_write;
-
-#ifdef CONFIG_BATTERY_BQ27XXX_RESIST_TABLE_UPDATES_NVM
-	battery_np_rt = of_parse_phandle(client->dev.of_node,
-					 "bat-resist-table", 0);
-	if (!battery_np_rt)
-		return -ENODEV;
-	bq27xx_parse_dt(di, di->dev, battery_np_rt);
-#endif
 
 	ret = bq27xxx_battery_setup(di);
 	if (ret)
@@ -271,9 +209,7 @@ static int bq27xxx_battery_i2c_remove(struct i2c_client *client)
 {
 	struct bq27xxx_device_info *di = i2c_get_clientdata(client);
 
-	if (client->irq)
-		free_irq(client->irq, di);
-
+	free_irq(client->irq, di);
 	bq27xxx_battery_teardown(di);
 
 	mutex_lock(&battery_mutex);
@@ -314,6 +250,7 @@ static const struct i2c_device_id bq27xxx_i2c_id_table[] = {
 	{ "bq27z561", BQ27Z561 },
 	{ "bq28z610", BQ28Z610 },
 	{ "bq34z100", BQ34Z100 },
+	{ "bq78z100", BQ78Z100 },
 	{},
 };
 MODULE_DEVICE_TABLE(i2c, bq27xxx_i2c_id_table);
@@ -350,6 +287,7 @@ static const struct of_device_id bq27xxx_battery_i2c_of_match_table[] = {
 	{ .compatible = "ti,bq27z561" },
 	{ .compatible = "ti,bq28z610" },
 	{ .compatible = "ti,bq34z100" },
+	{ .compatible = "ti,bq78z100" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, bq27xxx_battery_i2c_of_match_table);
@@ -359,7 +297,6 @@ static struct i2c_driver bq27xxx_battery_i2c_driver = {
 	.driver = {
 		.name = "bq27xxx-battery",
 		.of_match_table = of_match_ptr(bq27xxx_battery_i2c_of_match_table),
-		.pm = &bq27xxx_pm_ops,
 	},
 	.probe = bq27xxx_battery_i2c_probe,
 	.remove = bq27xxx_battery_i2c_remove,

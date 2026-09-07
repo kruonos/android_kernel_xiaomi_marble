@@ -63,8 +63,8 @@ static u16 bulk_read_device_counter; /* =0 as per C standard */
 #define EEPROM_CMD_READ     "restore"	/* cmd for read eeprom sysfs */
 #define BULK_TRIGGER_CMD    "trigger"	/* cmd to trigger a bulk read */
 
-#define MIN_TEMP	-55	/* min temperature that can be mesured */
-#define MAX_TEMP	125	/* max temperature that can be mesured */
+#define MIN_TEMP	-55	/* min temperature that can be measured */
+#define MAX_TEMP	125	/* max temperature that can be measured */
 
 /* Allowed values for sysfs conv_time attribute */
 #define CONV_TIME_DEFAULT 0
@@ -315,7 +315,7 @@ static ssize_t resolution_show(struct device *device,
 static ssize_t resolution_store(struct device *device,
 	struct device_attribute *attr, const char *buf, size_t size);
 
-static ssize_t eeprom_store(struct device *device,
+static ssize_t eeprom_cmd_store(struct device *device,
 	struct device_attribute *attr, const char *buf, size_t size);
 
 static ssize_t alarms_store(struct device *device,
@@ -350,7 +350,7 @@ static DEVICE_ATTR_RO(w1_seq);
 static DEVICE_ATTR_RO(temperature);
 static DEVICE_ATTR_RO(ext_power);
 static DEVICE_ATTR_RW(resolution);
-static DEVICE_ATTR_WO(eeprom);
+static DEVICE_ATTR_WO(eeprom_cmd);
 static DEVICE_ATTR_RW(alarms);
 static DEVICE_ATTR_RW(conv_time);
 static DEVICE_ATTR_RW(features);
@@ -386,7 +386,7 @@ static struct attribute *w1_therm_attrs[] = {
 	&dev_attr_temperature.attr,
 	&dev_attr_ext_power.attr,
 	&dev_attr_resolution.attr,
-	&dev_attr_eeprom.attr,
+	&dev_attr_eeprom_cmd.attr,
 	&dev_attr_alarms.attr,
 	&dev_attr_conv_time.attr,
 	&dev_attr_features.attr,
@@ -397,7 +397,7 @@ static struct attribute *w1_ds18s20_attrs[] = {
 	&dev_attr_w1_slave.attr,
 	&dev_attr_temperature.attr,
 	&dev_attr_ext_power.attr,
-	&dev_attr_eeprom.attr,
+	&dev_attr_eeprom_cmd.attr,
 	&dev_attr_alarms.attr,
 	&dev_attr_conv_time.attr,
 	&dev_attr_features.attr,
@@ -410,7 +410,7 @@ static struct attribute *w1_ds28ea00_attrs[] = {
 	&dev_attr_temperature.attr,
 	&dev_attr_ext_power.attr,
 	&dev_attr_resolution.attr,
-	&dev_attr_eeprom.attr,
+	&dev_attr_eeprom_cmd.attr,
 	&dev_attr_alarms.attr,
 	&dev_attr_conv_time.attr,
 	&dev_attr_features.attr,
@@ -834,7 +834,7 @@ static int check_family_data(struct w1_slave *sl)
 }
 
 /**
- * support_bulk_read() - check if slave support bulk read
+ * bulk_read_support() - check if slave support bulk read
  * @sl: device to check the ability
  *
  * Return: true if bulk read is supported, false if not or error
@@ -906,8 +906,7 @@ static inline int temperature_from_RAM(struct w1_slave *sl, u8 rom[9])
 static inline s8 int_to_short(int i)
 {
 	/* Prepare to cast to short by eliminating out of range values */
-	i = i > MAX_TEMP ? MAX_TEMP : i;
-	i = i < MIN_TEMP ? MIN_TEMP : i;
+	i = clamp(i, MIN_TEMP, MAX_TEMP);
 	return (s8) i;
 }
 
@@ -1733,7 +1732,7 @@ static ssize_t resolution_store(struct device *device,
 	return size;
 }
 
-static ssize_t eeprom_store(struct device *device,
+static ssize_t eeprom_cmd_store(struct device *device,
 	struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct w1_slave *sl = dev_to_w1_slave(device);
@@ -1781,43 +1780,62 @@ static ssize_t alarms_store(struct device *device,
 	struct w1_slave *sl = dev_to_w1_slave(device);
 	struct therm_info info;
 	u8 new_config_register[3];	/* array of data to be written */
-	long long temp;
-	int ret = 0;
-	s8 tl, th;	/* 1 byte per value + temp ring order */
-	const char *p = buf;
-	char *endp;
+	int temp, ret;
+	char *token = NULL;
+	s8 tl, th, tt;	/* 1 byte per value + temp ring order */
+	char *p_args, *orig;
 
-	temp = simple_strtoll(p, &endp, 10);
-	if (p == endp || *endp != ' ')
-		ret = -EINVAL;
-	else if (temp < INT_MIN || temp > INT_MAX)
-		ret = -ERANGE;
+	p_args = orig = kmalloc(size, GFP_KERNEL);
+	/* Safe string copys as buf is const */
+	if (!p_args) {
+		dev_warn(device,
+			"%s: error unable to allocate memory %d\n",
+			__func__, -ENOMEM);
+		return size;
+	}
+	strcpy(p_args, buf);
+
+	/* Split string using space char */
+	token = strsep(&p_args, " ");
+
+	if (!token)	{
+		dev_info(device,
+			"%s: error parsing args %d\n", __func__, -EINVAL);
+		goto free_m;
+	}
+
+	/* Convert 1st entry to int */
+	ret = kstrtoint (token, 10, &temp);
 	if (ret) {
 		dev_info(device,
 			"%s: error parsing args %d\n", __func__, ret);
-		return size;
+		goto free_m;
 	}
 
 	tl = int_to_short(temp);
 
-	p = endp + 1;
-	temp = simple_strtoll(p, &endp, 10);
-	if (p == endp)
-		ret = -EINVAL;
-	else if (temp < INT_MIN || temp > INT_MAX)
-		ret = -ERANGE;
+	/* Split string using space char */
+	token = strsep(&p_args, " ");
+	if (!token)	{
+		dev_info(device,
+			"%s: error parsing args %d\n", __func__, -EINVAL);
+		goto free_m;
+	}
+	/* Convert 2nd entry to int */
+	ret = kstrtoint (token, 10, &temp);
 	if (ret) {
 		dev_info(device,
 			"%s: error parsing args %d\n", __func__, ret);
-		return size;
+		goto free_m;
 	}
 
 	/* Prepare to cast to short by eliminating out of range values */
 	th = int_to_short(temp);
 
 	/* Reorder if required th and tl */
-	if (tl > th)
-		swap(tl, th);
+	if (tl > th) {
+		tt = tl; tl = th; th = tt;
+	}
 
 	/*
 	 * Read the scratchpad to change only the required bits
@@ -1832,7 +1850,7 @@ static ssize_t alarms_store(struct device *device,
 		dev_info(device,
 			"%s: error reading from the slave device %d\n",
 			__func__, ret);
-		return size;
+		goto free_m;
 	}
 
 	/* Write data in the device RAM */
@@ -1840,7 +1858,7 @@ static ssize_t alarms_store(struct device *device,
 		dev_info(device,
 			"%s: Device not supported by the driver %d\n",
 			__func__, -ENODEV);
-		return size;
+		goto free_m;
 	}
 
 	ret = SLAVE_SPECIFIC_FUNC(sl)->write_data(sl, new_config_register);
@@ -1848,6 +1866,10 @@ static ssize_t alarms_store(struct device *device,
 		dev_info(device,
 			"%s: error writing to the slave device %d\n",
 			__func__, ret);
+
+free_m:
+	/* free allocated memory */
+	kfree(orig);
 
 	return size;
 }
@@ -2031,7 +2053,6 @@ static ssize_t w1_seq_show(struct device *device,
 {
 	struct w1_slave *sl = dev_to_w1_slave(device);
 	ssize_t c = PAGE_SIZE;
-	int rv;
 	int i;
 	u8 ack;
 	u64 rn;
@@ -2059,7 +2080,7 @@ static ssize_t w1_seq_show(struct device *device,
 			goto error;
 
 		w1_write_8(sl->master, W1_42_COND_READ);
-		rv = w1_read_block(sl->master, (u8 *)&rn, 8);
+		w1_read_block(sl->master, (u8 *)&rn, 8);
 		reg_num = (struct w1_reg_num *) &rn;
 		if (reg_num->family == W1_42_FINISHED_BYTE)
 			break;

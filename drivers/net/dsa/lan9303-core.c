@@ -6,11 +6,11 @@
 #include <linux/module.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regmap.h>
-#include <linux/iopoll.h>
 #include <linux/mutex.h>
 #include <linux/mii.h>
 #include <linux/phy.h>
 #include <linux/if_bridge.h>
+#include <linux/if_vlan.h>
 #include <linux/etherdevice.h>
 
 #include "lan9303.h"
@@ -820,8 +820,6 @@ static void lan9303_handle_reset(struct lan9303 *chip)
 	if (!chip->reset_gpio)
 		return;
 
-	gpiod_set_value_cansleep(chip->reset_gpio, 1);
-
 	if (chip->reset_duration != 0)
 		msleep(chip->reset_duration);
 
@@ -847,33 +845,7 @@ static int lan9303_disable_processing(struct lan9303 *chip)
 static int lan9303_check_device(struct lan9303 *chip)
 {
 	int ret;
-	int err;
 	u32 reg;
-
-	/* In I2C-managed configurations this polling loop will clash with
-	 * switch's reading of EEPROM right after reset and this behaviour is
-	 * not configurable. While lan9303_read() already has quite long retry
-	 * timeout, seems not all cases are being detected as arbitration error.
-	 *
-	 * According to datasheet, EEPROM loader has 30ms timeout (in case of
-	 * missing EEPROM).
-	 *
-	 * Loading of the largest supported EEPROM is expected to take at least
-	 * 5.9s.
-	 */
-	err = read_poll_timeout(lan9303_read, ret,
-				!ret && reg & LAN9303_HW_CFG_READY,
-				20000, 6000000, false,
-				chip->regmap, LAN9303_HW_CFG, &reg);
-	if (ret) {
-		dev_err(chip->dev, "failed to read HW_CFG reg: %pe\n",
-			ERR_PTR(ret));
-		return ret;
-	}
-	if (err) {
-		dev_err(chip->dev, "HW_CFG not ready: 0x%08x\n", reg);
-		return err;
-	}
 
 	ret = lan9303_read(chip->regmap, LAN9303_CHIP_REV, &reg);
 	if (ret) {
@@ -1114,20 +1086,26 @@ static void lan9303_adjust_link(struct dsa_switch *ds, int port,
 static int lan9303_port_enable(struct dsa_switch *ds, int port,
 			       struct phy_device *phy)
 {
+	struct dsa_port *dp = dsa_to_port(ds, port);
 	struct lan9303 *chip = ds->priv;
 
-	if (!dsa_is_user_port(ds, port))
+	if (!dsa_port_is_user(dp))
 		return 0;
+
+	vlan_vid_add(dp->cpu_dp->master, htons(ETH_P_8021Q), port);
 
 	return lan9303_enable_processing_port(chip, port);
 }
 
 static void lan9303_port_disable(struct dsa_switch *ds, int port)
 {
+	struct dsa_port *dp = dsa_to_port(ds, port);
 	struct lan9303 *chip = ds->priv;
 
-	if (!dsa_is_user_port(ds, port))
+	if (!dsa_port_is_user(dp))
 		return;
+
+	vlan_vid_del(dp->cpu_dp->master, htons(ETH_P_8021Q), port);
 
 	lan9303_disable_processing_port(chip, port);
 	lan9303_phy_write(ds, chip->phy_addr_base + port, MII_BMCR, BMCR_PDOWN);
@@ -1263,14 +1241,19 @@ static int lan9303_port_mdb_prepare(struct dsa_switch *ds, int port,
 	return 0;
 }
 
-static void lan9303_port_mdb_add(struct dsa_switch *ds, int port,
-				 const struct switchdev_obj_port_mdb *mdb)
+static int lan9303_port_mdb_add(struct dsa_switch *ds, int port,
+				const struct switchdev_obj_port_mdb *mdb)
 {
 	struct lan9303 *chip = ds->priv;
+	int err;
+
+	err = lan9303_port_mdb_prepare(ds, port, mdb);
+	if (err)
+		return err;
 
 	dev_dbg(chip->dev, "%s(%d, %pM, %d)\n", __func__, port, mdb->addr,
 		mdb->vid);
-	lan9303_alr_add_port(chip, mdb->addr, port, false);
+	return lan9303_alr_add_port(chip, mdb->addr, port, false);
 }
 
 static int lan9303_port_mdb_del(struct dsa_switch *ds, int port,
@@ -1305,7 +1288,6 @@ static const struct dsa_switch_ops lan9303_switch_ops = {
 	.port_fdb_add           = lan9303_port_fdb_add,
 	.port_fdb_del           = lan9303_port_fdb_del,
 	.port_fdb_dump          = lan9303_port_fdb_dump,
-	.port_mdb_prepare       = lan9303_port_mdb_prepare,
 	.port_mdb_add           = lan9303_port_mdb_add,
 	.port_mdb_del           = lan9303_port_mdb_del,
 };
@@ -1401,6 +1383,12 @@ int lan9303_remove(struct lan9303 *chip)
 	return 0;
 }
 EXPORT_SYMBOL(lan9303_remove);
+
+void lan9303_shutdown(struct lan9303 *chip)
+{
+	dsa_switch_shutdown(chip->ds);
+}
+EXPORT_SYMBOL(lan9303_shutdown);
 
 MODULE_AUTHOR("Juergen Borleis <kernel@pengutronix.de>");
 MODULE_DESCRIPTION("Core driver for SMSC/Microchip LAN9303 three port ethernet switch");

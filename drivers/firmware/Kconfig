@@ -6,128 +6,7 @@
 
 menu "Firmware Drivers"
 
-config ARM_SCMI_PROTOCOL
-	tristate "ARM System Control and Management Interface (SCMI) Message Protocol"
-	depends on ARM || ARM64 || COMPILE_TEST
-	depends on MAILBOX || HAVE_ARM_SMCCC_DISCOVERY
-	help
-	  ARM System Control and Management Interface (SCMI) protocol is a
-	  set of operating system-independent software interfaces that are
-	  used in system management. SCMI is extensible and currently provides
-	  interfaces for: Discovery and self-description of the interfaces
-	  it supports, Power domain management which is the ability to place
-	  a given device or domain into the various power-saving states that
-	  it supports, Performance management which is the ability to control
-	  the performance of a domain that is composed of compute engines
-	  such as application processors and other accelerators, Clock
-	  management which is the ability to set and inquire rates on platform
-	  managed clocks and Sensor management which is the ability to read
-	  sensor data, and be notified of sensor value.
-
-	  This protocol library provides interface for all the client drivers
-	  making use of the features offered by the SCMI.
-
-config QTI_SCMI_PMU_PROTOCOL
-        tristate "Qualcomm Technologies, Inc. SCMI PMU vendor Protocol"
-        depends on ARM || ARM64 || COMPILE_TEST
-        depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-        help
-          System Control and Management Interface (SCMI) pmu vendor protocol.
-          This protocol provides interface to communicate with micro controller
-          which maintains the PMU configuration for multiple clients.
-
-          This driver defines the comands or message ID's used for this
-          communication and also exposes the ops used by clients.
-
-config QTI_SCMI_C1DCVS_PROTOCOL
-        tristate "Qualcomm Technologies, Inc. SCMI C1DCVS vendor Protocol"
-        depends on ARM || ARM64 || COMPILE_TEST
-        depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-        help
-          System Control and Management Interface (SCMI) c1dcvs vendor protocol.
-          This protocol provides interface to communicate with micro controller
-          which maintains the c1dcvs algorithm.
-
-          This driver defines the comands or message ID's used for this
-          communication and also exposes the ops used by clients.
-
-config QTI_SCMI_PLH_PROTOCOL
-	tristate "Qualcomm Technologies, Inc. SCMI PLH vendor Protocol"
-	depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-	help
-	  System Control and Management Interface (SCMI) plh vendor protocol
-	  this protocol provides interface to communicate with micro controller
-	  which is executing the plh algorithm
-
-	  This driver defines the comands or message ID's used for this
-	  communication and also exposes the ops used by clients.
-
-config QTI_SCMI_MEMLAT_PROTOCOL
-	tristate "Qualcomm Technologies, Inc. SCMI MEMLAT vendor Protocol"
-	depends on ARM || ARM64 || COMPILE_TEST
-	depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-	help
-	  System Control and Management Interface (SCMI) memlat vendor protocol
-	  this protocol provides interface to communicate with micro controller
-	  which is executing the hw memlat governor
-
-config QTI_SCMI_BWPROF_PROTOCOL
-	tristate "Qualcomm Technologies, Inc. SCMI BWPROF vendor Protocol"
-	depends on ARM || ARM64 || COMPILE_TEST
-	depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-	help
-	  System Control and Management Interface (SCMI) bwprof vendor protocol
-	  this protocol provides interface to communicate with micro controller
-	  which is executing the bandwidth profiling.
-
-	  This driver defines the commands or message ID's used for this
-	  communication and also exposes the operations used by clients.
-
-config QTI_SCMI_GPLAF_PROTOCOL
-	tristate "Qualcomm Technologies, Inc. SCMI GPLAF vendor Protocol"
-	depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-	help
-	  System Control and Management Interface (SCMI) gplaf vendor protocol
-	  this protocol provides interface to communicate with micro controller
-	  which is executing the gplaf algorithm
-
-	  This driver defines the commands or message ID's used for this
-	  communication and also exposes the ops used by clients.
-
-config QTI_SCMI_CPUFREQ_STATS_PROTOCOL
-        tristate "Qualcomm Technologies, Inc. CPUFREQ STATS vendor Protocol"
-        depends on ARM || ARM64
-        depends on ARM_SCMI_PROTOCOL && QCOM_RIMPS
-        help
-          System Control and Management Interface (SCMI) SCMI CPUFREQ STATS vendor protocol.
-          This protocol provides interface to communicate with micro controller
-          which maintains the CPU FREQ stats.
-
-          This driver defines the comands or message ID's used for this
-          communication and also exposes the ops used by clients.
-
-config QTI_SCMI_SHARED_RAIL_PROTOCOL
-	tristate "Qualcomm Technologies, Inc. SCMI SHARED RAIL vendor Protocol"
-	depends on ARM_SCMI_PROTOCOL
-	help
-	  System Control and Management Interface (SCMI) shared rail vendor protocol
-	  this protocol provides interface to communicate with micro controller.
-
-	  This driver defines the commands or message ID's used for this
-	  communication and also exposes the ops used by clients.
-
-config ARM_SCMI_POWER_DOMAIN
-	tristate "SCMI power domain driver"
-	depends on ARM_SCMI_PROTOCOL || (COMPILE_TEST && OF)
-	default y
-	select PM_GENERIC_DOMAINS if PM
-	help
-	  This enables support for the SCMI power domains which can be
-	  enabled or disabled via the SCP firmware
-
-	  This driver can also be built as a module.  If so, the module
-	  will be called scmi_pm_domain. Note this may needed early in boot
-	  before rootfs may be available.
+source "drivers/firmware/arm_scmi/Kconfig"
 
 config ARM_SCPI_PROTOCOL
 	tristate "ARM System Control and Power Interface (SCPI) Message Protocol"
@@ -140,7 +19,7 @@ config ARM_SCPI_PROTOCOL
 	  provides a mechanism for inter-processor communication between SCP
 	  and AP.
 
-	  SCP controls most of the power managament on the Application
+	  SCP controls most of the power management on the Application
 	  Processors. It offers control and management of: the core/cluster
 	  power states, various power domain DVFS including the core/cluster,
 	  certain system clocks configuration, thermal sensors and many
@@ -161,6 +40,7 @@ config ARM_SCPI_POWER_DOMAIN
 config ARM_SDE_INTERFACE
 	bool "ARM Software Delegated Exception Interface (SDEI)"
 	depends on ARM64
+	depends on ACPI_APEI_GHES
 	help
 	  The Software Delegated Exception Interface (SDEI) is an ARM
 	  standard for registering callbacks from the platform firmware
@@ -259,7 +139,7 @@ config ISCSI_IBFT
 	select ISCSI_BOOT_SYSFS
 	select ISCSI_IBFT_FIND if X86
 	depends on ACPI && SCSI && SCSI_LOWLEVEL
-	default n
+	default	n
 	help
 	  This option enables support for detection and exposing of iSCSI
 	  Boot Firmware Table (iBFT) via sysfs to userspace. If you wish to
@@ -295,7 +175,7 @@ config FW_CFG_SYSFS_CMDLINE
 
 config INTEL_STRATIX10_SERVICE
 	tristate "Intel Stratix10 Service Layer"
-	depends on (ARCH_STRATIX10 || ARCH_AGILEX) && HAVE_ARM_SMCCC
+	depends on ARCH_INTEL_SOCFPGA && ARM64 && HAVE_ARM_SMCCC
 	default n
 	help
 	  Intel Stratix10 service layer runs at privileged exception level,
@@ -324,15 +204,38 @@ config INTEL_STRATIX10_RSU
 	  Say Y here if you want Intel RSU support.
 
 config QCOM_SCM
-	tristate "Qualcomm Technologies, Inc. SCM Interface"
-	depends on ARM || ARM64
-	depends on HAVE_ARM_SMCCC
-	select RESET_CONTROLLER
+	tristate
+
+config QCOM_SCM_DOWNLOAD_MODE_DEFAULT
+	bool "Qualcomm download mode enabled by default"
+	depends on QCOM_SCM
 	help
-	  This option enables support for communicating with
-	  Qualcomm Technologies, Inc. secure worlds using
-	  Qualcomm Technologies, Inc. "Secure Channel Manager"
-	  interface.
+	  A device with "download mode" enabled will upon an unexpected
+	  warm-restart enter a special debug mode that allows the user to
+	  "download" memory content over USB for offline postmortem analysis.
+	  The feature can be enabled/disabled on the kernel command line.
+
+	  Say Y here to enable "download mode" by default.
+
+config QCOM_SCM_QCPE
+	bool "Para-Virtualized Secure Channel Manager (SCM) support over QCPE"
+	depends on QCOM_SCM && MSM_HAB
+	default n
+	help
+	  To enable Secure Channel Mananger(SCM) support for SoC
+	  in virtualized Linux, where SCM backend is QCPE (QCOM Protected
+	  environment). The SCM channel will use QCOM HAB interface for
+	  front-end to back-end communication.
+
+config QCOM_SCM_HAB
+	tristate "To enable QCOM SCM HAB for QCPE-TZ virtualization"
+	depends on QCOM_SCM && MSM_HAB
+	help
+	  QCOM SCM HAB serves the scm with HAB channel with Secure Channel
+	  Mananger(SCM) support for SoC in virtualized Linux,
+	  where SCM backend is QCPE (QCOM Protected environment). The SCM
+	  channel will use QCOM HAB interface for front-end to back-end
+	  communication.
 
 config QTEE_SHM_BRIDGE
 	bool "QTI TEE shared memory bridge"
@@ -344,6 +247,38 @@ config QTEE_SHM_BRIDGE
 	  It allows kernel clients to create bridge, delete bridge, and do
 	  memory sub-allocation and free from the default kernel bridge
 	  created by bridge driver.
+
+config SYSFB
+	bool
+	default y
+	depends on X86 || EFI
+
+config SYSFB_SIMPLEFB
+	bool "Mark VGA/VBE/EFI FB as generic system framebuffer"
+	depends on SYSFB
+	help
+	  Firmwares often provide initial graphics framebuffers so the BIOS,
+	  bootloader or kernel can show basic video-output during boot for
+	  user-guidance and debugging. Historically, x86 used the VESA BIOS
+	  Extensions and EFI-framebuffers for this, which are mostly limited
+	  to x86 BIOS or EFI systems.
+	  This option, if enabled, marks VGA/VBE/EFI framebuffers as generic
+	  framebuffers so the new generic system-framebuffer drivers can be
+	  used instead. If the framebuffer is not compatible with the generic
+	  modes, it is advertised as fallback platform framebuffer so legacy
+	  drivers like efifb, vesafb and uvesafb can pick it up.
+	  If this option is not selected, all system framebuffers are always
+	  marked as fallback platform framebuffers as usual.
+
+	  Note: Legacy fbdev drivers, including vesafb, efifb, uvesafb, will
+	  not be able to pick up generic system framebuffers if this option
+	  is selected. You are highly encouraged to enable simplefb as
+	  replacement if you select this option. simplefb can correctly deal
+	  with generic system framebuffers. But you should still keep vesafb
+	  and others enabled as fallback if a system framebuffer is
+	  incompatible with simplefb.
+
+	  If unsure, say Y.
 
 config TI_SCI_PROTOCOL
 	tristate "TI System Control Interface (TISCI) Message Protocol"
@@ -390,6 +325,7 @@ config TURRIS_MOX_RWTM
 	  other manufacturing data and also utilize the Entropy Bit Generator
 	  for hardware random number generation.
 
+source "drivers/firmware/arm_ffa/Kconfig"
 source "drivers/firmware/broadcom/Kconfig"
 source "drivers/firmware/google/Kconfig"
 source "drivers/firmware/efi/Kconfig"
@@ -399,6 +335,5 @@ source "drivers/firmware/psci/Kconfig"
 source "drivers/firmware/smccc/Kconfig"
 source "drivers/firmware/tegra/Kconfig"
 source "drivers/firmware/xilinx/Kconfig"
-source "drivers/firmware/qcom/Kconfig"
 
 endmenu

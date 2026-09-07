@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2012-2014, 2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, 2019-2021 The Linux Foundation. All rights reserved.
  * Copyright (c) 2017, Linaro Ltd.
  */
 #ifndef __QMI_HELPERS_H__
@@ -16,7 +16,7 @@
 struct socket;
 
 /**
- * qmi_header - wireformat header of QMI messages
+ * struct qmi_header - wireformat header of QMI messages
  * @type:	type of message
  * @txn_id:	transaction id
  * @msg_id:	message id
@@ -87,14 +87,13 @@ struct qmi_elem_info {
 #define QMI_ERR_INTERNAL_V01			3
 #define QMI_ERR_CLIENT_IDS_EXHAUSTED_V01	5
 #define QMI_ERR_INVALID_ID_V01			41
-#define QMI_ERR_NETWORK_NOT_READY_V01		53
 #define QMI_ERR_ENCODING_V01			58
-#define QMI_ERR_DISABLED_V01			69
+#define QMI_ERR_DISABLED_V01                    69
 #define QMI_ERR_INCOMPATIBLE_STATE_V01		90
 #define QMI_ERR_NOT_SUPPORTED_V01		94
 
 /**
- * qmi_response_type_v01 - common response header (decoded)
+ * struct qmi_response_type_v01 - common response header (decoded)
  * @result:	result of the transaction
  * @error:	error value, when @result is QMI_RESULT_FAILURE_V01
  */

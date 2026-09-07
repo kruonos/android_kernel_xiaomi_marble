@@ -89,17 +89,6 @@ static const struct hal_srng_config hw_srng_config_template[] = {
 		.entry_size = sizeof(struct hal_ce_srng_src_desc) >> 2,
 		.lmac_ring = false,
 		.ring_dir = HAL_SRNG_DIR_SRC,
-		.reg_start = {
-			(HAL_SEQ_WCSS_UMAC_CE0_SRC_REG +
-			 HAL_CE_DST_RING_BASE_LSB),
-			HAL_SEQ_WCSS_UMAC_CE0_SRC_REG + HAL_CE_DST_RING_HP,
-		},
-		.reg_size = {
-			(HAL_SEQ_WCSS_UMAC_CE1_SRC_REG -
-			 HAL_SEQ_WCSS_UMAC_CE0_SRC_REG),
-			(HAL_SEQ_WCSS_UMAC_CE1_SRC_REG -
-			 HAL_SEQ_WCSS_UMAC_CE0_SRC_REG),
-		},
 		.max_size = HAL_CE_SRC_RING_BASE_MSB_RING_SIZE,
 	},
 	{ /* CE_DST */
@@ -108,17 +97,6 @@ static const struct hal_srng_config hw_srng_config_template[] = {
 		.entry_size = sizeof(struct hal_ce_srng_dest_desc) >> 2,
 		.lmac_ring = false,
 		.ring_dir = HAL_SRNG_DIR_SRC,
-		.reg_start = {
-			(HAL_SEQ_WCSS_UMAC_CE0_DST_REG +
-			 HAL_CE_DST_RING_BASE_LSB),
-			HAL_SEQ_WCSS_UMAC_CE0_DST_REG + HAL_CE_DST_RING_HP,
-		},
-		.reg_size = {
-			(HAL_SEQ_WCSS_UMAC_CE1_DST_REG -
-			 HAL_SEQ_WCSS_UMAC_CE0_DST_REG),
-			(HAL_SEQ_WCSS_UMAC_CE1_DST_REG -
-			 HAL_SEQ_WCSS_UMAC_CE0_DST_REG),
-		},
 		.max_size = HAL_CE_DST_RING_BASE_MSB_RING_SIZE,
 	},
 	{ /* CE_DST_STATUS */
@@ -127,18 +105,6 @@ static const struct hal_srng_config hw_srng_config_template[] = {
 		.entry_size = sizeof(struct hal_ce_srng_dst_status_desc) >> 2,
 		.lmac_ring = false,
 		.ring_dir = HAL_SRNG_DIR_DST,
-		.reg_start = {
-			(HAL_SEQ_WCSS_UMAC_CE0_DST_REG +
-			 HAL_CE_DST_STATUS_RING_BASE_LSB),
-			(HAL_SEQ_WCSS_UMAC_CE0_DST_REG +
-			 HAL_CE_DST_STATUS_RING_HP),
-		},
-		.reg_size = {
-			(HAL_SEQ_WCSS_UMAC_CE1_DST_REG -
-			 HAL_SEQ_WCSS_UMAC_CE0_DST_REG),
-			(HAL_SEQ_WCSS_UMAC_CE1_DST_REG -
-			 HAL_SEQ_WCSS_UMAC_CE0_DST_REG),
-		},
 		.max_size = HAL_CE_DST_STATUS_RING_BASE_MSB_RING_SIZE,
 	},
 	{ /* WBM_IDLE_LINK */
@@ -147,11 +113,6 @@ static const struct hal_srng_config hw_srng_config_template[] = {
 		.entry_size = sizeof(struct hal_wbm_link_desc) >> 2,
 		.lmac_ring = false,
 		.ring_dir = HAL_SRNG_DIR_SRC,
-		.reg_start = {
-			(HAL_SEQ_WCSS_UMAC_WBM_REG +
-			 HAL_WBM_IDLE_LINK_RING_BASE_LSB),
-			(HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM_IDLE_LINK_RING_HP),
-		},
 		.max_size = HAL_WBM_IDLE_LINK_RING_BASE_MSB_RING_SIZE,
 	},
 	{ /* SW2WBM_RELEASE */
@@ -160,11 +121,6 @@ static const struct hal_srng_config hw_srng_config_template[] = {
 		.entry_size = sizeof(struct hal_wbm_release_ring) >> 2,
 		.lmac_ring = false,
 		.ring_dir = HAL_SRNG_DIR_SRC,
-		.reg_start = {
-			(HAL_SEQ_WCSS_UMAC_WBM_REG +
-			 HAL_WBM_RELEASE_RING_BASE_LSB),
-			(HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM_RELEASE_RING_HP),
-		},
 		.max_size = HAL_SW2WBM_RELEASE_RING_BASE_MSB_RING_SIZE,
 	},
 	{ /* WBM2SW_RELEASE */
@@ -173,16 +129,6 @@ static const struct hal_srng_config hw_srng_config_template[] = {
 		.entry_size = sizeof(struct hal_wbm_release_ring) >> 2,
 		.lmac_ring = false,
 		.ring_dir = HAL_SRNG_DIR_DST,
-		.reg_start = {
-			(HAL_SEQ_WCSS_UMAC_WBM_REG +
-			 HAL_WBM0_RELEASE_RING_BASE_LSB),
-			(HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM0_RELEASE_RING_HP),
-		},
-		.reg_size = {
-			(HAL_WBM1_RELEASE_RING_BASE_LSB -
-			 HAL_WBM0_RELEASE_RING_BASE_LSB),
-			(HAL_WBM1_RELEASE_RING_HP - HAL_WBM0_RELEASE_RING_HP),
-		},
 		.max_size = HAL_WBM2SW_RELEASE_RING_BASE_MSB_RING_SIZE,
 	},
 	{ /* RXDMA_BUF */
@@ -435,6 +381,16 @@ static void ath11k_hal_srng_src_hw_init(struct ath11k_base *ab,
 
 	val = FIELD_PREP(HAL_REO1_RING_ID_ENTRY_SIZE, srng->entry_size);
 	ath11k_hif_write32(ab, reg_base + HAL_TCL1_RING_ID_OFFSET(ab), val);
+
+	if (srng->ring_id == HAL_SRNG_RING_ID_WBM_IDLE_LINK) {
+		ath11k_hif_write32(ab, reg_base, (u32)srng->ring_base_paddr);
+		val = FIELD_PREP(HAL_TCL1_RING_BASE_MSB_RING_BASE_ADDR_MSB,
+				 ((u64)srng->ring_base_paddr >>
+				 HAL_ADDR_MSB_REG_SHIFT)) |
+			FIELD_PREP(HAL_TCL1_RING_BASE_MSB_RING_SIZE,
+				   (srng->entry_size * srng->num_entries));
+		ath11k_hif_write32(ab, reg_base + HAL_TCL1_RING_BASE_MSB_OFFSET(ab), val);
+	}
 
 	/* interrupt setup */
 	/* NOTE: IPQ8074 v2 requires the interrupt timer threshold in the
@@ -833,6 +789,7 @@ void ath11k_hal_srng_access_end(struct ath11k_base *ab, struct hal_srng *srng)
 {
 	lockdep_assert_held(&srng->lock);
 
+	/* TODO: See if we need a write memory barrier here */
 	if (srng->flags & HAL_SRNG_FLAGS_LMAC_RING) {
 		/* For LMAC rings, ring pointer updates are done through FW and
 		 * hence written to a shared memory location that is read by FW
@@ -840,37 +797,21 @@ void ath11k_hal_srng_access_end(struct ath11k_base *ab, struct hal_srng *srng)
 		if (srng->ring_dir == HAL_SRNG_DIR_SRC) {
 			srng->u.src_ring.last_tp =
 				*(volatile u32 *)srng->u.src_ring.tp_addr;
-			/* Make sure descriptor is written before updating the
-			 * head pointer.
-			 */
-			dma_wmb();
-			WRITE_ONCE(*srng->u.src_ring.hp_addr, srng->u.src_ring.hp);
+			*srng->u.src_ring.hp_addr = srng->u.src_ring.hp;
 		} else {
 			srng->u.dst_ring.last_hp = *srng->u.dst_ring.hp_addr;
-			/* Make sure descriptor is read before updating the
-			 * tail pointer.
-			 */
-			dma_mb();
-			WRITE_ONCE(*srng->u.dst_ring.tp_addr, srng->u.dst_ring.tp);
+			*srng->u.dst_ring.tp_addr = srng->u.dst_ring.tp;
 		}
 	} else {
 		if (srng->ring_dir == HAL_SRNG_DIR_SRC) {
 			srng->u.src_ring.last_tp =
 				*(volatile u32 *)srng->u.src_ring.tp_addr;
-			/* Assume implementation use an MMIO write accessor
-			 * which has the required wmb() so that the descriptor
-			 * is written before the updating the head pointer.
-			 */
 			ath11k_hif_write32(ab,
 					   (unsigned long)srng->u.src_ring.hp_addr -
 					   (unsigned long)ab->mem,
 					   srng->u.src_ring.hp);
 		} else {
 			srng->u.dst_ring.last_hp = *srng->u.dst_ring.hp_addr;
-			/* Make sure descriptor is read before updating the
-			 * tail pointer.
-			 */
-			mb();
 			ath11k_hif_write32(ab,
 					   (unsigned long)srng->u.dst_ring.tp_addr -
 					   (unsigned long)ab->mem,
@@ -970,7 +911,7 @@ void ath11k_hal_setup_link_idle_list(struct ath11k_base *ab,
 	/* Enable the SRNG */
 	ath11k_hif_write32(ab,
 			   HAL_SEQ_WCSS_UMAC_WBM_REG +
-			   HAL_WBM_IDLE_LINK_RING_MISC_ADDR, 0x40);
+			   HAL_WBM_IDLE_LINK_RING_MISC_ADDR(ab), 0x40);
 }
 
 int ath11k_hal_srng_setup(struct ath11k_base *ab, enum hal_ring_type type,
@@ -1250,6 +1191,46 @@ static int ath11k_hal_srng_create_config(struct ath11k_base *ab)
 	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_TCL_REG + HAL_TCL_STATUS_RING_BASE_LSB(ab);
 	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_TCL_REG + HAL_TCL_STATUS_RING_HP;
 
+	s = &hal->srng_config[HAL_CE_SRC];
+	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab) + HAL_CE_DST_RING_BASE_LSB;
+	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab) + HAL_CE_DST_RING_HP;
+	s->reg_size[0] = HAL_SEQ_WCSS_UMAC_CE1_SRC_REG(ab) -
+		HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab);
+	s->reg_size[1] = HAL_SEQ_WCSS_UMAC_CE1_SRC_REG(ab) -
+		HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab);
+
+	s = &hal->srng_config[HAL_CE_DST];
+	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_RING_BASE_LSB;
+	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_RING_HP;
+	s->reg_size[0] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+		HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab);
+	s->reg_size[1] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+		HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab);
+
+	s = &hal->srng_config[HAL_CE_DST_STATUS];
+	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) +
+		HAL_CE_DST_STATUS_RING_BASE_LSB;
+	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_STATUS_RING_HP;
+	s->reg_size[0] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+		HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab);
+	s->reg_size[1] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+		HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab);
+
+	s = &hal->srng_config[HAL_WBM_IDLE_LINK];
+	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM_IDLE_LINK_RING_BASE_LSB(ab);
+	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM_IDLE_LINK_RING_HP;
+
+	s = &hal->srng_config[HAL_SW2WBM_RELEASE];
+	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM_RELEASE_RING_BASE_LSB(ab);
+	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM_RELEASE_RING_HP;
+
+	s = &hal->srng_config[HAL_WBM2SW_RELEASE];
+	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM0_RELEASE_RING_BASE_LSB(ab);
+	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_WBM_REG + HAL_WBM0_RELEASE_RING_HP;
+	s->reg_size[0] = HAL_WBM1_RELEASE_RING_BASE_LSB(ab) -
+		HAL_WBM0_RELEASE_RING_BASE_LSB(ab);
+	s->reg_size[1] = HAL_WBM1_RELEASE_RING_HP - HAL_WBM0_RELEASE_RING_HP;
+
 	return 0;
 }
 
@@ -1305,10 +1286,6 @@ EXPORT_SYMBOL(ath11k_hal_srng_init);
 void ath11k_hal_srng_deinit(struct ath11k_base *ab)
 {
 	struct ath11k_hal *hal = &ab->hal;
-	int i;
-
-	for (i = 0; i < HAL_SRNG_RING_ID_MAX; i++)
-		ab->hal.srng_list[i].initialized = 0;
 
 	ath11k_hal_unregister_srng_key(ab);
 	ath11k_hal_free_cont_rdp(ab);
@@ -1316,22 +1293,6 @@ void ath11k_hal_srng_deinit(struct ath11k_base *ab)
 	kfree(hal->srng_config);
 }
 EXPORT_SYMBOL(ath11k_hal_srng_deinit);
-
-void ath11k_hal_srng_clear(struct ath11k_base *ab)
-{
-	/* No need to memset rdp and wrp memory since each individual
-	 * segment would get cleared in ath11k_hal_srng_src_hw_init()
-	 * and ath11k_hal_srng_dst_hw_init().
-	 */
-	memset(ab->hal.srng_list, 0,
-	       sizeof(ab->hal.srng_list));
-	memset(ab->hal.shadow_reg_addr, 0,
-	       sizeof(ab->hal.shadow_reg_addr));
-	ab->hal.avail_blk_resource = 0;
-	ab->hal.current_blk_index = 0;
-	ab->hal.num_shadow_reg_configured = 0;
-}
-EXPORT_SYMBOL(ath11k_hal_srng_clear);
 
 void ath11k_hal_dump_srng_stats(struct ath11k_base *ab)
 {

@@ -137,14 +137,14 @@ struct sh_msiof_spi_priv {
 
 /* SIFCTR */
 #define SIFCTR_TFWM_MASK	GENMASK(31, 29)	/* Transmit FIFO Watermark */
-#define SIFCTR_TFWM_64		(0UL << 29)	/*  Transfer Request when 64 empty stages */
-#define SIFCTR_TFWM_32		(1UL << 29)	/*  Transfer Request when 32 empty stages */
-#define SIFCTR_TFWM_24		(2UL << 29)	/*  Transfer Request when 24 empty stages */
-#define SIFCTR_TFWM_16		(3UL << 29)	/*  Transfer Request when 16 empty stages */
-#define SIFCTR_TFWM_12		(4UL << 29)	/*  Transfer Request when 12 empty stages */
-#define SIFCTR_TFWM_8		(5UL << 29)	/*  Transfer Request when 8 empty stages */
-#define SIFCTR_TFWM_4		(6UL << 29)	/*  Transfer Request when 4 empty stages */
-#define SIFCTR_TFWM_1		(7UL << 29)	/*  Transfer Request when 1 empty stage */
+#define SIFCTR_TFWM_64		(0 << 29)	/*  Transfer Request when 64 empty stages */
+#define SIFCTR_TFWM_32		(1 << 29)	/*  Transfer Request when 32 empty stages */
+#define SIFCTR_TFWM_24		(2 << 29)	/*  Transfer Request when 24 empty stages */
+#define SIFCTR_TFWM_16		(3 << 29)	/*  Transfer Request when 16 empty stages */
+#define SIFCTR_TFWM_12		(4 << 29)	/*  Transfer Request when 12 empty stages */
+#define SIFCTR_TFWM_8		(5 << 29)	/*  Transfer Request when 8 empty stages */
+#define SIFCTR_TFWM_4		(6 << 29)	/*  Transfer Request when 4 empty stages */
+#define SIFCTR_TFWM_1		(7 << 29)	/*  Transfer Request when 1 empty stage */
 #define SIFCTR_TFUA_MASK	GENMASK(26, 20) /* Transmit FIFO Usable Area */
 #define SIFCTR_TFUA_SHIFT	20
 #define SIFCTR_TFUA(i)		((i) << SIFCTR_TFUA_SHIFT)
@@ -262,11 +262,13 @@ static const u32 sh_msiof_spi_div_array[] = {
 };
 
 static void sh_msiof_spi_set_clk_regs(struct sh_msiof_spi_priv *p,
-				      unsigned long parent_rate, u32 spi_hz)
+				      struct spi_transfer *t)
 {
+	unsigned long parent_rate = clk_get_rate(p->clk);
+	unsigned int div_pow = p->min_div_pow;
+	u32 spi_hz = t->speed_hz;
 	unsigned long div;
 	u32 brps, scr;
-	unsigned int div_pow = p->min_div_pow;
 
 	if (!spi_hz || !parent_rate) {
 		WARN(1, "Invalid clock rate parameters %lu and %u\n",
@@ -294,6 +296,8 @@ static void sh_msiof_spi_set_clk_regs(struct sh_msiof_spi_priv *p,
 		div_pow = 5;
 		brps = 32;
 	}
+
+	t->effective_speed_hz = parent_rate / (brps << div_pow);
 
 	scr = sh_msiof_spi_div_array[div_pow] | SISCR_BRPS(brps);
 	sh_msiof_write(p, SITSCR, scr);
@@ -852,10 +856,10 @@ stop_reset:
 	sh_msiof_spi_stop(p, rx);
 stop_dma:
 	if (tx)
-		dmaengine_terminate_all(p->ctlr->dma_tx);
+		dmaengine_terminate_sync(p->ctlr->dma_tx);
 no_dma_tx:
 	if (rx)
-		dmaengine_terminate_all(p->ctlr->dma_rx);
+		dmaengine_terminate_sync(p->ctlr->dma_rx);
 	sh_msiof_write(p, SIIER, 0);
 	return ret;
 }
@@ -915,7 +919,6 @@ static int sh_msiof_transfer_one(struct spi_controller *ctlr,
 	void *rx_buf = t->rx_buf;
 	unsigned int len = t->len;
 	unsigned int bits = t->bits_per_word;
-	unsigned int max_wdlen = 256;
 	unsigned int bytes_per_word;
 	unsigned int words;
 	int n;
@@ -927,19 +930,19 @@ static int sh_msiof_transfer_one(struct spi_controller *ctlr,
 
 	/* setup clocks (clock already enabled in chipselect()) */
 	if (!spi_controller_is_slave(p->ctlr))
-		sh_msiof_spi_set_clk_regs(p, clk_get_rate(p->clk), t->speed_hz);
-
-	if (tx_buf)
-		max_wdlen = min(max_wdlen, p->tx_fifo_size);
-	if (rx_buf)
-		max_wdlen = min(max_wdlen, p->rx_fifo_size);
+		sh_msiof_spi_set_clk_regs(p, t);
 
 	while (ctlr->dma_tx && len > 15) {
 		/*
 		 *  DMA supports 32-bit words only, hence pack 8-bit and 16-bit
 		 *  words, with byte resp. word swapping.
 		 */
-		unsigned int l = min(round_down(len, 4), max_wdlen * 4);
+		unsigned int l = 0;
+
+		if (tx_buf)
+			l = min(round_down(len, 4), p->tx_fifo_size * 4);
+		if (rx_buf)
+			l = min(round_down(len, 4), p->rx_fifo_size * 4);
 
 		if (bits <= 8) {
 			copy32 = copy_bswap32;
@@ -1273,6 +1276,7 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 	const struct sh_msiof_chipdata *chipdata;
 	struct sh_msiof_spi_info *info;
 	struct sh_msiof_spi_priv *p;
+	unsigned long clksrc;
 	int i;
 	int ret;
 
@@ -1351,6 +1355,9 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 	/* init controller code */
 	ctlr->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
 	ctlr->mode_bits |= SPI_LSB_FIRST | SPI_3WIRE;
+	clksrc = clk_get_rate(p->clk);
+	ctlr->min_speed_hz = DIV_ROUND_UP(clksrc, 1024);
+	ctlr->max_speed_hz = DIV_ROUND_UP(clksrc, 1 << p->min_div_pow);
 	ctlr->flags = chipdata->ctlr_flags;
 	ctlr->bus_num = pdev->id;
 	ctlr->num_chipselect = p->info->num_chipselect;

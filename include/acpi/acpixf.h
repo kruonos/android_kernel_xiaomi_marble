@@ -3,7 +3,7 @@
  *
  * Name: acpixf.h - External interfaces to the ACPI subsystem
  *
- * Copyright (C) 2000 - 2020, Intel Corp.
+ * Copyright (C) 2000 - 2021, Intel Corp.
  *
  *****************************************************************************/
 
@@ -12,7 +12,7 @@
 
 /* Current ACPICA subsystem version in YYYYMMDD format */
 
-#define ACPI_CA_VERSION                 0x20200925
+#define ACPI_CA_VERSION                 0x20210730
 
 #include <acpi/acconfig.h>
 #include <acpi/actypes.h>
@@ -587,92 +587,82 @@ ACPI_EXTERNAL_RETURN_STATUS(acpi_status
 			    acpi_install_initialization_handler
 			    (acpi_init_handler handler, u32 function))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_install_sci_handler(acpi_sci_handler
-							 address,
-							 void *context))
+				 acpi_install_sci_handler(acpi_sci_handler
+							  address,
+							  void *context))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_remove_sci_handler(acpi_sci_handler
-							address))
+				 acpi_remove_sci_handler(acpi_sci_handler
+							 address))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_install_global_event_handler
-				(acpi_gbl_event_handler handler,
-				 void *context))
+				 acpi_install_global_event_handler
+				 (acpi_gbl_event_handler handler,
+				  void *context))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_install_fixed_event_handler(u32
-								 acpi_event,
+				 acpi_install_fixed_event_handler(u32
+								  acpi_event,
+								  acpi_event_handler
+								  handler,
+								  void
+								  *context))
+ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
+				 acpi_remove_fixed_event_handler(u32 acpi_event,
 								 acpi_event_handler
-								 handler,
-								 void
-								 *context))
+								 handler))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_remove_fixed_event_handler(u32 acpi_event,
-								acpi_event_handler
-								handler))
+				 acpi_install_gpe_handler(acpi_handle
+							  gpe_device,
+							  u32 gpe_number,
+							  u32 type,
+							  acpi_gpe_handler
+							  address,
+							  void *context))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_install_gpe_handler(acpi_handle
-							 gpe_device,
+				 acpi_install_gpe_raw_handler(acpi_handle
+							      gpe_device,
+							      u32 gpe_number,
+							      u32 type,
+							      acpi_gpe_handler
+							      address,
+							      void *context))
+ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
+				 acpi_remove_gpe_handler(acpi_handle gpe_device,
 							 u32 gpe_number,
-							 u32 type,
 							 acpi_gpe_handler
-							 address,
-							 void *context))
-ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_install_gpe_raw_handler(acpi_handle
-							     gpe_device,
-							     u32 gpe_number,
-							     u32 type,
-							     acpi_gpe_handler
-							     address,
-							     void *context))
-ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
-				acpi_remove_gpe_handler(acpi_handle gpe_device,
-							u32 gpe_number,
-							acpi_gpe_handler
-							address))
+							 address))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_install_notify_handler(acpi_handle device,
+			     acpi_install_notify_handler(acpi_handle device,
+							 u32 handler_type,
+							 acpi_notify_handler
+							 handler,
+							 void *context))
+ACPI_EXTERNAL_RETURN_STATUS(acpi_status
+			     acpi_remove_notify_handler(acpi_handle device,
 							u32 handler_type,
 							acpi_notify_handler
-							handler,
-							void *context))
+							handler))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_remove_notify_handler(acpi_handle device,
-						       u32 handler_type,
-						       acpi_notify_handler
-						       handler))
+			     acpi_install_address_space_handler(acpi_handle
+								device,
+								acpi_adr_space_type
+								space_id,
+								acpi_adr_space_handler
+								handler,
+								acpi_adr_space_setup
+								setup,
+								void *context))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_install_address_space_handler(acpi_handle
+			     acpi_remove_address_space_handler(acpi_handle
 							       device,
 							       acpi_adr_space_type
 							       space_id,
 							       acpi_adr_space_handler
-							       handler,
-							       acpi_adr_space_setup
-							       setup,
-							       void *context))
+							       handler))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_install_address_space_handler_no_reg
-			    (acpi_handle device, acpi_adr_space_type space_id,
-			     acpi_adr_space_handler handler,
-			     acpi_adr_space_setup setup,
-			     void *context))
+			     acpi_install_exception_handler
+			     (acpi_exception_handler handler))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_execute_reg_methods(acpi_handle device,
-						     acpi_adr_space_type
-						     space_id))
-ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_remove_address_space_handler(acpi_handle
-							      device,
-							      acpi_adr_space_type
-							      space_id,
-							      acpi_adr_space_handler
-							      handler))
-ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_install_exception_handler
-			    (acpi_exception_handler handler))
-ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_install_interface_handler
-			    (acpi_interface_handler handler))
+			     acpi_install_interface_handler
+			     (acpi_interface_handler handler))
 
 /*
  * Global Lock interfaces
@@ -759,6 +749,7 @@ ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
 						     acpi_event_status
 						     *event_status))
 ACPI_HW_DEPENDENT_RETURN_UINT32(u32 acpi_dispatch_gpe(acpi_handle gpe_device, u32 gpe_number))
+ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_hw_disable_all_gpes(void))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_disable_all_gpes(void))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_enable_all_runtime_gpes(void))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_enable_all_wakeup_gpes(void))

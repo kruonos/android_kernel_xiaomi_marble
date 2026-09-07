@@ -94,7 +94,7 @@ static int mv_cesa_std_process(struct mv_cesa_engine *engine, u32 status)
 
 static int mv_cesa_int_process(struct mv_cesa_engine *engine, u32 status)
 {
-	if (engine->chain_hw.first && engine->chain_hw.last)
+	if (engine->chain.first && engine->chain.last)
 		return mv_cesa_tdma_process(engine, status);
 
 	return mv_cesa_std_process(engine, status);
@@ -381,10 +381,10 @@ static int mv_cesa_get_sram(struct platform_device *pdev, int idx)
 	engine->pool = of_gen_pool_get(cesa->dev->of_node,
 				       "marvell,crypto-srams", idx);
 	if (engine->pool) {
-		engine->sram = gen_pool_dma_alloc(engine->pool,
-						  cesa->sram_size,
-						  &engine->sram_dma);
-		if (engine->sram)
+		engine->sram_pool = gen_pool_dma_alloc(engine->pool,
+						       cesa->sram_size,
+						       &engine->sram_dma);
+		if (engine->sram_pool)
 			return 0;
 
 		engine->pool = NULL;
@@ -422,7 +422,7 @@ static void mv_cesa_put_sram(struct platform_device *pdev, int idx)
 	struct mv_cesa_engine *engine = &cesa->engines[idx];
 
 	if (engine->pool)
-		gen_pool_free(engine->pool, (unsigned long)engine->sram,
+		gen_pool_free(engine->pool, (unsigned long)engine->sram_pool,
 			      cesa->sram_size);
 	else
 		dma_unmap_resource(cesa->dev, engine->sram_dma,
