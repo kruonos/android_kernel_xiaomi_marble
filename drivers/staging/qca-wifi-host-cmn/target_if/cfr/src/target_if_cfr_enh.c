@@ -30,6 +30,7 @@
 #include <target_if_direct_buf_rx_api.h>
 #include <target_if_cfr_enh.h>
 #include "cdp_txrx_ctrl.h"
+#include <linux/build_bug.h>
 
 #define CMN_NOISE_FLOOR       (-96)
 #define NUM_CHAINS_FW_TO_HOST(n) ((1 << ((n) + 1)) - 1)
@@ -1364,6 +1365,8 @@ void target_if_cfr_rx_tlv_process(struct wlan_objmgr_pdev *pdev, void *nbuf)
 	bool invalid_gain_table_idx = false;
 	struct cfr_rx_ppdu_snapshot rx_snapshot = {0};
 	uint64_t cur_tstamp;
+
+	BUILD_BUG_ON(sizeof(struct cfr_rx_ppdu_snapshot) != 40);
 
 	if (qdf_unlikely(!pdev)) {
 		cfr_err("pdev is null\n");

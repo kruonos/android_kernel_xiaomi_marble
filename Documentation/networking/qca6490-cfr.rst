@@ -78,10 +78,10 @@ Every high-rate write follows these rules:
 
 * Writers are serialized by the per-pdev CFR record lock.
 * A complete frame is assembled in a fixed 32 KiB staging buffer.
-* The ordered writer pins the current CPU for relay cursor stability but leaves
-  local interrupts enabled during the copy.
-* Hard-IRQ writers are rejected. CFR writers are supported from process,
-  softirq, and NAPI contexts under the per-pdev serializer.
+* The ordered writer disables local interrupts while selecting and filling the
+  current-CPU relay buffer; records remain bounded by 32 KiB.
+* Current CFR call sites are process, softirq, and NAPI-oriented. The BH-only
+  record serializer does not define a hard-IRQ caller contract.
 * The relay writer copies the complete frame before release-publishing the
   new relay offset.
 * The normal relay read path acquire-loads the offset before copying bytes to
@@ -306,8 +306,8 @@ The firmware capability must be checked before selecting count mode::
 
 On the tested QCA6490 firmware this value was zero. That firmware requires
 duration mode plus host recovery. ``profile_continuous`` reads the firmware
-capability and automatically selects duration mode when count mode is not
-supported.
+capability and selects duration mode/count 1 when count mode is unsupported,
+or count mode/count 256 when it is supported.
 
 Example duration-mode experiment
 --------------------------------
@@ -467,9 +467,9 @@ Known limitations
 * Optional netlink duplication performs allocation and copying in an atomic
   context and is not recommended for sustained high-rate capture.
 * All-packet capture has measurable latency and CPU impact.
-* The ordered relay copy can span up to 32 KiB with preemption disabled. Local
-  interrupts remain enabled, but scheduler latency should still be measured
-  for workloads that approach the maximum record size.
+* The ordered relay copy can span up to 32 KiB with preemption and local
+  interrupts disabled. Interrupt and scheduler latency should therefore be
+  measured for workloads that approach the maximum record size.
 * Recovery status zero means the command path succeeded. Userspace should also
   confirm that PPDU or DBR evidence resumed.
 
