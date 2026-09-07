@@ -1116,12 +1116,15 @@ static void qca_controller_memdump(struct work_struct *work)
 		qca->qca_memdump = qca_memdump;
 		kfree_skb(skb);
 		if (seq_no == QCA_LAST_SEQUENCE_NUM) {
+			struct device *dump_dev = hu->serdev ?
+				&hu->serdev->dev : &hu->hdev->dev;
+
 			bt_dev_info(hu->hdev,
 				    "QCA memdump Done, received %d, total %d",
 				    qca_memdump->received_dump,
 				    qca_memdump->ram_dump_size);
 			memdump_buf = qca_memdump->memdump_buf_head;
-			dev_coredumpv(&hu->serdev->dev, memdump_buf,
+			dev_coredumpv(dump_dev, memdump_buf,
 				      qca_memdump->received_dump, GFP_KERNEL);
 			cancel_delayed_work(&qca->ctrl_memdump_timeout);
 			kfree(qca->qca_memdump);
@@ -1484,6 +1487,28 @@ static int qca_send_crashbuffer(struct hci_uart *hu)
 	return 0;
 }
 
+static int qca_trigger_memdump(struct hci_uart *hu)
+{
+	struct qca_data *qca = hu->priv;
+	int ret;
+
+	mutex_lock(&qca->hci_memdump_lock);
+	if (qca->memdump_state != QCA_MEMDUMP_IDLE ||
+	    test_bit(QCA_MEMDUMP_COLLECTION, &qca->flags)) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+
+	set_bit(QCA_SSR_TRIGGERED, &qca->flags);
+	ret = qca_send_crashbuffer(hu);
+	if (ret)
+		clear_bit(QCA_SSR_TRIGGERED, &qca->flags);
+
+unlock:
+	mutex_unlock(&qca->hci_memdump_lock);
+	return ret;
+}
+
 static void qca_wait_for_dump_collection(struct hci_dev *hdev)
 {
 	struct hci_uart *hu = hci_get_drvdata(hdev);
@@ -1665,6 +1690,29 @@ static int qca_setup(struct hci_uart *hu)
 	int ret;
 	int soc_ver = 0;
 
+	/*
+	 * The tty line-discipline path can take over a controller that was
+	 * already powered and configured by a vendor HAL.  In that case the
+	 * non-serdev fallback would incorrectly treat the controller as ROME,
+	 * change its baud rate and attempt legacy firmware setup.
+	 *
+	 * HCI_UART_EXT_CONFIG is set explicitly by the dump collector before
+	 * selecting the QCA protocol.  Skip vendor setup, but keep the device
+	 * on the normal HCI event path so Hardware Error reaches qca_hw_error().
+	 */
+	if (!hu->serdev &&
+	    test_bit(HCI_UART_EXT_CONFIG, &hu->hdev_flags)) {
+		clear_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks);
+		set_bit(HCI_QUIRK_SIMULTANEOUS_DISCOVERY, &hdev->quirks);
+		qca->memdump_state = QCA_MEMDUMP_IDLE;
+		hdev->hw_error = qca_hw_error;
+		hdev->cmd_timeout = qca_cmd_timeout;
+		hdev->set_bdaddr = qca_set_bdaddr;
+		bt_dev_info(hdev,
+			    "using externally configured tty for memdump collection");
+		return 0;
+	}
+
 	ret = qca_check_speeds(hu);
 	if (ret)
 		return ret;
@@ -1775,6 +1823,7 @@ static const struct hci_uart_proto qca_proto = {
 	.recv		= qca_recv,
 	.enqueue	= qca_enqueue,
 	.dequeue	= qca_dequeue,
+	.trigger_dump	= qca_trigger_memdump,
 };
 
 static const struct qca_device_data qca_soc_data_wcn3990 = {

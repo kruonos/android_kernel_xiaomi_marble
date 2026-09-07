@@ -802,6 +802,17 @@ static int hci_uart_tty_ioctl(struct tty_struct *tty, struct file *file,
 		err = hu->hdev_flags;
 		break;
 
+	case HCIUARTTRIGGERDUMP:
+		percpu_down_read(&hu->proto_lock);
+		if (!test_bit(HCI_UART_PROTO_READY, &hu->flags))
+			err = -EUNATCH;
+		else if (!hu->proto->trigger_dump)
+			err = -EOPNOTSUPP;
+		else
+			err = hu->proto->trigger_dump(hu);
+		percpu_up_read(&hu->proto_lock);
+		break;
+
 	default:
 		err = n_tty_ioctl_helper(tty, file, cmd, arg);
 		break;

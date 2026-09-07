@@ -28,6 +28,8 @@ static struct drm_panel *prim_panel;
 #endif
 #define BOOST_BUFFER_SIZE 128
 #define BOARD__BUFFER_SIZE 128
+#define COOLER_CPU4_FLOOR_KHZ 1881600U
+#define COOLER_CPU7_FLOOR_KHZ 2361600U
 struct mi_thermal_device {
 	struct device *dev;
 	struct class *class;
@@ -95,9 +97,12 @@ static char board_sensor_charge_temp[128];
 #endif
 static atomic_t thermal_powersave_mode = ATOMIC_INIT(-1);
 static atomic_t thermal_power_level = ATOMIC_INIT(-1);
+static atomic_t cooler_performance_mode = ATOMIC_INIT(0);
 static LIST_HEAD(cpufreq_dev_list);
 static DEFINE_MUTEX(cpufreq_list_lock);
 static DEFINE_PER_CPU(struct freq_qos_request, qos_req);
+static unsigned int raw_cpu_limits[NR_CPUS];
+static bool raw_cpu_limits_valid[NR_CPUS];
 
 static struct workqueue_struct *screen_state_wq;
 static struct delayed_work screen_state_dw;
@@ -117,7 +122,27 @@ static int cpufreq_set_level(struct cpufreq_device *cdev, unsigned long state)
 				       cdev->freq_table[state].frequency);
 }
 
-void cpu_limits_set_level(unsigned int cpu, unsigned int max_freq)
+static unsigned int cooler_effective_limit(unsigned int cpu,
+					   unsigned int max_freq)
+{
+	/*
+	 * Floor only Xiaomi's private MGAME QoS request. A nonzero Xiaomi
+	 * emergency state disables the floor immediately; Linux thermal
+	 * cooling, DCVSH, BCL and firmware limits remain independent.
+	 */
+	if (!atomic_read(&cooler_performance_mode) ||
+	    atomic_read(&temp_state))
+		return max_freq;
+
+	if (cpu == 4)
+		return max(max_freq, COOLER_CPU4_FLOOR_KHZ);
+	if (cpu == 7)
+		return max(max_freq, COOLER_CPU7_FLOOR_KHZ);
+
+	return max_freq;
+}
+
+static void __cpu_limits_set_level(unsigned int cpu, unsigned int max_freq)
 {
 	struct cpufreq_device *cpufreq_dev;
 	unsigned int level = 0;
@@ -133,10 +158,71 @@ void cpu_limits_set_level(unsigned int cpu, unsigned int max_freq)
 					break;
 				}
 			}
+			if (level > cpufreq_dev->max_level)
+				cpufreq_set_level(cpufreq_dev,
+						  cpufreq_dev->max_level);
 			break;
 		}
 	}
 }
+
+static void reapply_cached_cpu_limits_locked(void)
+{
+	unsigned int cpu;
+
+	for_each_possible_cpu(cpu) {
+		if (!raw_cpu_limits_valid[cpu])
+			continue;
+
+		__cpu_limits_set_level(cpu,
+			cooler_effective_limit(cpu, raw_cpu_limits[cpu]));
+	}
+}
+
+void cpu_limits_set_level(unsigned int cpu, unsigned int max_freq)
+{
+	mutex_lock(&cpufreq_list_lock);
+
+	if (cpu < nr_cpu_ids) {
+		raw_cpu_limits[cpu] = max_freq;
+		raw_cpu_limits_valid[cpu] = true;
+	}
+
+	__cpu_limits_set_level(cpu, cooler_effective_limit(cpu, max_freq));
+
+	mutex_unlock(&cpufreq_list_lock);
+}
+
+static ssize_t cooler_performance_mode_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			atomic_read(&cooler_performance_mode));
+}
+
+static ssize_t cooler_performance_mode_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t len)
+{
+	int ret;
+	int val;
+
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val != 0 && val != 1)
+		return -EINVAL;
+
+	mutex_lock(&cpufreq_list_lock);
+	atomic_set(&cooler_performance_mode, val);
+	reapply_cached_cpu_limits_locked();
+	mutex_unlock(&cpufreq_list_lock);
+
+	return len;
+}
+
+static DEVICE_ATTR_RW(cooler_performance_mode);
 
 static unsigned int find_next_max(struct cpufreq_frequency_table *table,
 				  unsigned int prev_max)
@@ -242,11 +328,17 @@ static ssize_t thermal_temp_state_store(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t len)
 {
-	int val = -1;
+	int ret;
+	int val;
 
-	val = simple_strtol(buf, NULL, 10);
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
 
+	mutex_lock(&cpufreq_list_lock);
 	atomic_set(&temp_state, val);
+	reapply_cached_cpu_limits_locked();
+	mutex_unlock(&cpufreq_list_lock);
 
 	return len;
 }
@@ -777,6 +869,7 @@ static int of_parse_thermal_message(void)
 static struct attribute *mi_thermal_dev_attr_group[] = {
 	&dev_attr_temp_state.attr,
 	&dev_attr_cpu_limits.attr,
+	&dev_attr_cooler_performance_mode.attr,
 	&dev_attr_sconfig.attr,
 	&dev_attr_screen_state.attr,
 	&dev_attr_boost.attr,
