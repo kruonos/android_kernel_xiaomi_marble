@@ -1,0 +1,16 @@
+# Debug-only policy fragment. Integrate into the device policy or translate
+# these rules into the local KernelSU policy mechanism; do not ship in release
+# policy.
+allow ksu hci_attach_dev:chr_file { getattr open read write ioctl };
+allow ksu vendor_bt_device:chr_file { getattr open read write ioctl };
+allow ksu sysfs:dir { getattr open read search };
+allow ksu sysfs:file { getattr open read };
+allow ksu self:bluetooth_socket { create getattr ioctl };
+allow ksu self:capability { net_admin net_raw };
+
+allowxperm ksu hci_attach_dev:chr_file ioctl {
+  0x5401 0x5402 0x540b 0x540c 0x5423 0x5424
+  0x55c8 0x55ca 0x55cb 0x55cd
+};
+allowxperm ksu vendor_bt_device:chr_file ioctl 0xbfad;
+allowxperm ksu self:bluetooth_socket ioctl { 0x48c9 0x48ca };
