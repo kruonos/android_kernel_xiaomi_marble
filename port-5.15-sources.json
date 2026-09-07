@@ -134,6 +134,17 @@
   },
   "native_toolchain": {
     "candidate": "Ubuntu LLVM/Clang/LLD 18.1.3, native aarch64 packages already installed",
+    "project_pahole": {
+      "version": "1.25-0ubuntu3",
+      "architecture": "arm64",
+      "package": "consolidation/toolchains/pahole-1.25-arm64/pahole_1.25-0ubuntu3_arm64.deb",
+      "package_sha256": "22c679f24d391c4c68d0535c683b30421923a8925e5019d4873ed7af13b14722",
+      "path": "consolidation/toolchains/pahole-1.25-arm64/root/usr/bin/pahole",
+      "sha256": "6ad2e798fe3b6147d82f1dff13957c5998d02910b92b8fc3b3a4d9bd3653b026",
+      "installation": "Downloaded with apt-get download pahole=1.25-0ubuntu3 and extracted with dpkg-deb inside the workspace; no system package installation.",
+      "dependencies": "Existing native libbpf1, libdw1t64, libelf1t64 and zlib1g satisfy the package requirements.",
+      "flags": "Preserve target scripts/pahole-flags.sh options; use --jobs=4 for core BTF and --jobs=1 inside four parallel module jobs. Native BTF encoding preflight passed."
+    },
     "reference_equivalence_claimed": false,
     "target_llvm_suffix_selection_supported": false,
     "selection_evidence": "Target Makefile:451-480 treats any nonempty LLVM value as unversioned tool selection; use explicit command-line assignments, not LLVM=-18.",
@@ -302,6 +313,7 @@
   },
   "source_transition": {
     "status": "applied_in_place",
+    "initial_checkpoint_commit": "c8a630a72c65e5ea49dc979ae201a75357a2e664",
     "checkpoint_policy": "Commit validated source batches from this checkpoint onward; exclude generated outputs, logs, downloaded toolchains and leftover tool binaries.",
     "tool": "python3 -B tools/port_515_transition.py --apply",
     "baseline": "cd3f531d2230a22812f6c3f0ffe0148928d70d03",
@@ -384,6 +396,24 @@
       }
     },
     "limits": "Native per-module prelinks passed, but no full vmlinux link, loadable-module final link/modpost, boot Image, package or hardware test. Pahole was not found in PATH; full BTF generation remains untested. Diagnostic DTs are not flash artifacts."
+  },
+  "full_build_workflow": {
+    "status": "preflight_passed",
+    "runner": "tools/port_515_build.py",
+    "linker_wrapper": "tools/port_515_ld.sh",
+    "output": "out-5.15-probe",
+    "report": "out-5.15-probe/full-build-report.json",
+    "preflight_log": "consolidation/scratch/port-515-full-preflight.log",
+    "source_policy": "Actual full builds require a clean committed port branch; --check permits tooling preflight before the next checkpoint.",
+    "phases": ["olddefconfig", "vmlinux", "modules", "Image"],
+    "compile_jobs": 4,
+    "core_linker_threads": 4,
+    "core_pahole_jobs": 4,
+    "parallel_module_jobs": 4,
+    "module_linker_threads": 1,
+    "module_pahole_jobs": 1,
+    "limits": "Require 24 GiB free at start; 12 GiB output budget and at least 12 GiB free reserve; 4 GiB per-file limit and 18 GiB per-process address-space limit. Output-driven free-space checks and phase checks, not a filesystem quota or aggregate RAM cap.",
+    "preservation": "Reuse the isolated output, share its lock with the probe runner, never clean the old 5.10 output or baseline artifacts, and do not package or flash."
   },
   "integration_gate_open": true,
   "integration_gate_scope": "Initial source transition and bounded compile/DT probes only",

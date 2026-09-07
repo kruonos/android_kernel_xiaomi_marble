@@ -613,3 +613,38 @@ blind add-all. In particular, `fs/ext4/.kunitconfig`, `fs/fat/.kunitconfig` and
 and must be explicitly staged. The three leftover Bluetooth/NFC executables are
 preserved locally and ignored, not committed or deleted. The original unified
 branch remains the independent 5.10 reference.
+
+## Full Build Preparation
+
+The initial source checkpoint is `c8a630a72c65e5ea49dc979ae201a75357a2e664`.
+The next batch adds project-local BTF tooling and a guarded full-build runner.
+
+Native Ubuntu `pahole` 1.25 was downloaded and extracted under
+`consolidation/toolchains/pahole-1.25-arm64/`, not installed system-wide.
+Package and executable SHA-256 pins are recorded in the source inventory; the
+existing native runtime libraries satisfy its dependencies. The preflight
+successfully compiled a small native ELF and encoded a nonempty BTF section.
+
+Run the full workflow with `python3 -B tools/port_515_build.py` through a tracked
+background process. It requires committed, clean source and reuses
+`out-5.15-probe/`; no second build cache is created. It runs `olddefconfig`,
+`vmlinux`, `modules`, then `Image`, checking required config gates, core BTF,
+symbol tables, module order/vermagic and the arm64 Image header. Its report
+records source/config/tool hashes, completed phases, failures and resource data.
+
+Per the user's instruction, compilation uses all four cores (`-j4`). Core
+linking and BTF encoding use four workers. Module builds run four jobs with one
+worker per linker/BTF encoder, avoiding sixteen-worker oversubscription.
+`tools/port_515_ld.sh` preserves every architecture linker argument while adding
+the phase's worker limit. Existing version-specific pahole flags are preserved.
+
+Safety rails: 24 GiB free required initially, a 12 GiB output budget, at least
+12 GiB free reserve, a 4 GiB per-file limit and an 18 GiB per-process virtual
+address-space limit. Free space is checked on build output, with directory-size
+checks at intervals and phase boundaries. These are not a filesystem quota or
+an aggregate memory cap. Exceeding them stops the build without deleting output
+or baseline artifacts. Both probe and full runners share an output lock.
+
+Preflight log: `consolidation/scratch/port-515-full-preflight.log`.
+Full-build manifest: `out-5.15-probe/full-build-report.json`.
+Packaging and device writes remain separate, closed gates.

@@ -24,6 +24,9 @@ if (( free_blocks * block_size < 20 * 1024 * 1024 * 1024 )); then
 	exit 1
 fi
 mkdir -p "$OUT" "$TMPDIR"
+[[ ! -L "$OUT/port-build.lock" ]] || { echo 'refusing redirected build lock' >&2; exit 1; }
+exec 9>"$OUT/port-build.lock"
+flock -n 9 || { echo 'another 5.15 build owns the output directory' >&2; exit 1; }
 ulimit -f 1048576
 
 make_args=( -C "$ROOT" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1
@@ -36,7 +39,7 @@ bash "$ROOT/scripts/kconfig/merge_config.sh" -m -O "$OUT" \
 	"$ROOT/arch/arm64/configs/gki_defconfig" \
 	"$ROOT/arch/arm64/configs/vendor/waipio_GKI.config" \
 	"$ROOT/arch/arm64/configs/vendor/marble_515_bringup.config"
-make "${make_args[@]}" -j2 olddefconfig
+make "${make_args[@]}" -j4 olddefconfig
 
 targets_text="$(python3 -B - "$ROOT/port-5.15-sources.json" "$OUT/.config" <<'PY'
 import json
@@ -75,12 +78,16 @@ mapfile -t boot_targets <<< "$targets_text"
 [[ ${#boot_targets[@]} -eq 26 ]] || { echo 'invalid probe target count' >&2; exit 1; }
 echo 'Required module gates and CFI/SCS/FullLTO survived Kconfig resolution'
 
-make "${make_args[@]}" -j2 modules_prepare
-make "${make_args[@]}" -j2 "${boot_targets[@]}"
+make "${make_args[@]}" -j4 modules_prepare
+make "${make_args[@]}" -j4 "${boot_targets[@]}"
+prelinks=()
+link_limits=()
 for target in "${boot_targets[@]}"; do
 	prelink="${target%.o}.lto.o"
-	make "${make_args[@]}" -j1 "LDFLAGS_${prelink##*/}=--threads=1" "$prelink"
+	prelinks+=( "$prelink" )
+	link_limits+=( "LDFLAGS_${prelink##*/}=--threads=1" )
 done
+make "${make_args[@]}" -j4 "${link_limits[@]}" "${prelinks[@]}"
 
 python3 -B - "$OUT" "${boot_targets[@]}" <<'PY'
 import hashlib
