@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--check", action="store_true",
                         help="validate tools, config and BTF encoding without a kernel build")
     args = parser.parse_args()
+    jobs = len(os.sched_getaffinity(0))
     root = Path(__file__).resolve().parents[1]
     out = root / "out-5.15-probe"
     scratch = root / "consolidation/scratch/port-515"
@@ -93,19 +94,19 @@ def main():
     pahole_base_flags = subprocess.check_output(
         ["sh", str(root / "scripts/pahole-flags.sh")], env=env, text=True
     ).strip()
-    pahole_flags = pahole_base_flags + " --jobs=4"
+    pahole_flags = pahole_base_flags + " --jobs=" + str(jobs)
     assignments = [value for value in inventory["native_toolchain"]["make_assignments"]
                    if not value.startswith("LD=")]
     assignments += ["LD=" + str(linker), "PAHOLE=" + str(pahole),
                     "PAHOLE_FLAGS=" + pahole_flags]
-    command = ["make", "-C", str(root), "O=" + str(out), *assignments, "-j4"]
+    command = ["make", "-C", str(root), "O=" + str(out), *assignments, "-j" + str(jobs)]
     manifest = {
         "status": "running", "check_only": args.check, "source_commit": source,
         "source_clean_at_start": not dirty, "completed_phases": [], "phase": "preflight",
         "config_before_sha256": digest(out / ".config"),
-        "bounds": {"compile_jobs": 4, "core_linker_threads": 4, "core_pahole_jobs": 4,
-                   "core_lto_partitions": 4,
-                   "parallel_module_jobs": 4, "module_linker_threads": 1, "module_pahole_jobs": 1,
+        "bounds": {"compile_jobs": jobs, "core_linker_threads": jobs, "core_pahole_jobs": jobs,
+                   "core_lto_partitions": jobs,
+                   "parallel_module_jobs": jobs, "module_linker_threads": 1, "module_pahole_jobs": 1,
                    "initial_output_allowance_bytes": start_size + start_free - reserve,
                    "minimum_free_bytes": reserve, "event_free_floor_bytes": free_floor,
                    "per_file_limit": resource.getrlimit(resource.RLIMIT_FSIZE)[0],
@@ -163,7 +164,7 @@ def main():
         manifest["phase"] = phase
         record()
         print("PHASE " + phase + ": " + shlex.join(argv), flush=True)
-        phase_env = dict(env, PORT_515_LD_THREADS="1" if phase == "modules" else "4")
+        phase_env = dict(env, PORT_515_LD_THREADS="1" if phase == "modules" else str(jobs))
         process = subprocess.Popen(argv, cwd=root, env=phase_env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, process_group=0,
                                    stdin=subprocess.PIPE if input_data is not None else None)

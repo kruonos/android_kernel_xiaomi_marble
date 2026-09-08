@@ -660,3 +660,17 @@ process-group managed, and both full/probe workflows share an output lock.
 Preflight log: `consolidation/scratch/port-515-full-preflight.log`.
 Full-build manifest: `out-5.15-probe/full-build-report.json`.
 Packaging and device writes remain separate, closed gates.
+
+## Resized Host Resume
+
+On 2026-09-08 the user increased the host to 16 available CPUs and approximately
+62 GiB usable RAM (64 GiB nominal). Inspection found approximately 33 GiB free
+disk, a clean port branch at `428f29192ac5`, preserved build cache and no surviving
+compiler/linker processes. The prior run has no validated completion record and
+is treated as interrupted, not successful.
+
+Full and probe runners now discover available CPU capacity rather than hard-code
+four jobs. On this host, compilation uses 16 jobs, core linking uses 16 threads
+and FullLTO partitions, and core BTF uses 16 workers. Module builds use 16 jobs
+with one linker/BTF worker each. The 2 GiB free-space stop remains; no artificial
+memory or per-file caps are added. Existing compiled objects are reused.

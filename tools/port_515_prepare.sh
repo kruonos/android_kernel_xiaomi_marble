@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
+jobs=$(nproc)
 OUT="$ROOT/out-5.15-probe"
 export TMPDIR="$ROOT/consolidation/scratch/port-515"
 unset KBUILD_OUTPUT KBUILD_MIXED_TREE KBUILD_EXTMOD KCONFIG_CONFIG KCONFIG_ALLCONFIG
@@ -39,7 +40,7 @@ bash "$ROOT/scripts/kconfig/merge_config.sh" -m -O "$OUT" \
 	"$ROOT/arch/arm64/configs/gki_defconfig" \
 	"$ROOT/arch/arm64/configs/vendor/waipio_GKI.config" \
 	"$ROOT/arch/arm64/configs/vendor/marble_515_bringup.config"
-make "${make_args[@]}" -j4 olddefconfig
+make "${make_args[@]}" -j"$jobs" olddefconfig
 
 targets_text="$(python3 -B - "$ROOT/port-5.15-sources.json" "$OUT/.config" <<'PY'
 import json
@@ -78,8 +79,8 @@ mapfile -t boot_targets <<< "$targets_text"
 [[ ${#boot_targets[@]} -eq 26 ]] || { echo 'invalid probe target count' >&2; exit 1; }
 echo 'Required module gates and CFI/SCS/FullLTO survived Kconfig resolution'
 
-make "${make_args[@]}" -j4 modules_prepare
-make "${make_args[@]}" -j4 "${boot_targets[@]}"
+make "${make_args[@]}" -j"$jobs" modules_prepare
+make "${make_args[@]}" -j"$jobs" "${boot_targets[@]}"
 prelinks=()
 link_limits=()
 for target in "${boot_targets[@]}"; do
@@ -87,7 +88,7 @@ for target in "${boot_targets[@]}"; do
 	prelinks+=( "$prelink" )
 	link_limits+=( "LDFLAGS_${prelink##*/}=--threads=1" )
 done
-make "${make_args[@]}" -j4 "${link_limits[@]}" "${prelinks[@]}"
+make "${make_args[@]}" -j"$jobs" "${link_limits[@]}" "${prelinks[@]}"
 
 python3 -B - "$OUT" "${boot_targets[@]}" <<'PY'
 import hashlib

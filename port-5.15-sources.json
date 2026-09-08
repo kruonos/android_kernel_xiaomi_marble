@@ -143,7 +143,7 @@
       "sha256": "6ad2e798fe3b6147d82f1dff13957c5998d02910b92b8fc3b3a4d9bd3653b026",
       "installation": "Downloaded with apt-get download pahole=1.25-0ubuntu3 and extracted with dpkg-deb inside the workspace; no system package installation.",
       "dependencies": "Existing native libbpf1, libdw1t64, libelf1t64 and zlib1g satisfy the package requirements.",
-      "flags": "Preserve target scripts/pahole-flags.sh options; use --jobs=4 for core BTF and --jobs=1 inside four parallel module jobs. Native BTF encoding preflight passed."
+      "flags": "Preserve target scripts/pahole-flags.sh options; core BTF uses available CPUs and each parallel module job uses --jobs=1. Native BTF encoding preflight passed."
     },
     "reference_equivalence_claimed": false,
     "target_llvm_suffix_selection_supported": false,
@@ -398,7 +398,7 @@
     "limits": "Native per-module prelinks passed, but no full vmlinux link, loadable-module final link/modpost, boot Image, package or hardware test. Pahole was not found in PATH; full BTF generation remains untested. Diagnostic DTs are not flash artifacts."
   },
   "full_build_workflow": {
-    "status": "retrying_after_full_lto_allocation_failure",
+    "status": "resuming_after_host_resize",
     "runner": "tools/port_515_build.py",
     "linker_wrapper": "tools/port_515_ld.sh",
     "output": "out-5.15-probe",
@@ -406,14 +406,17 @@
     "preflight_log": "consolidation/scratch/port-515-full-preflight.log",
     "source_policy": "Actual full builds require a clean committed port branch; --check permits tooling preflight before the next checkpoint.",
     "phases": ["olddefconfig", "vmlinux", "modules", "Image"],
-    "compile_jobs": 4,
-    "core_linker_threads": 4,
-    "core_lto_partitions": 4,
-    "core_pahole_jobs": 4,
-    "parallel_module_jobs": 4,
+    "worker_policy": "Discover available CPU affinity at runtime; verified 16 CPUs after resize on 2026-09-08.",
+    "host_after_resize": {"available_cpus": 16, "usable_ram_gib_approx": 62, "free_disk_gib_approx": 33},
+    "compile_jobs": 16,
+    "core_linker_threads": 16,
+    "core_lto_partitions": 16,
+    "core_pahole_jobs": 16,
+    "parallel_module_jobs": 16,
     "module_linker_threads": 1,
     "module_pahole_jobs": 1,
-    "limits": "User-directed use of available host resources: retain a 2 GiB free-space stop, remove added memory/per-file/fixed-output caps, and disable core dumps. Core FullLTO uses four codegen partitions; modules use four jobs with one linker partition each.",
+    "limits": "User-directed use of available host resources: retain a 2 GiB free-space stop, no added memory/per-file/fixed-output caps, and no core dumps. Core FullLTO uses available CPUs; concurrent module jobs use one linker partition each.",
+    "interrupted_attempt": {"source_commit": "428f29192ac5", "log": "consolidation/scratch/port-515-full-build-428f2919.log", "last_recorded_phase": "vmlinux", "completion_validated": false, "surviving_build_processes_after_resize": false},
     "freshness": "Refresh only final experimental outputs before each phase and require new mtimes; preserve compiled objects. Probe compilation uses managed child-group cleanup too.",
     "failed_attempts": [
       {
