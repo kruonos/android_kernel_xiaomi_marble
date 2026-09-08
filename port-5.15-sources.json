@@ -561,7 +561,20 @@
   },
   "packaging_reference": {
     "policy": "User requires the proven Bouquet 5.10 ZIP mechanics for the picky custom ROM. Do not substitute a new image/ramdisk packaging design or silently change installer behavior.",
-    "status": "experimental_packager_preflight_passed",
+    "status": "experimental_zip_assembled_and_offline_verified_not_boot_tested",
+    "experimental_zip": {
+      "path": "consolidation/packages/Bouquet-5.15.149-marble-diagnostic-r1.zip",
+      "report": "consolidation/packages/Bouquet-5.15.149-marble-diagnostic-r1.zip.json",
+      "sha256": "8d36bcb55dbab24545ad5acf9a602cef2038885c324d8f1575328c20fa702b0a",
+      "bytes": 37077549,
+      "kernel_source_commit": "067b5fc78be8e0ad2f19fd0aa8b64b4b62b1a98d",
+      "packager_commit": "efe13f8c5aec",
+      "modules_per_location": 95,
+      "validation": "Host and original decoder archive tests, original BusyBox ash syntax, AVB hash verification, payload readback hashes, unchanged immutable ZIP entries/modes, and final 7z t passed.",
+      "hardware_validated": false,
+      "recovery_validated": false,
+      "log": "consolidation/scratch/port-515-package-r1-retry.log"
+    },
     "packager": "tools/package_port_515.py",
     "experimental_payload": "The validated 95-module diagnostic set in both original module locations; regenerated metadata; no alternate 5.10 modules.",
     "dtbo_reference": {"partition_bytes": 25165824, "page_size": 2048, "entries": 1, "entry_offset": 64, "version": 0, "avb_algorithm": "NONE", "avbtool_version": "1.3.0"},
@@ -612,7 +625,8 @@
   "integration_gate_open": true,
   "integration_gate_scope": "Initial source transition and bounded compile/DT probes only",
   "boot_gate_open": false,
-  "packaging_gate_open": false,
+  "packaging_gate_open": true,
+  "packaging_gate_scope": "Explicitly experimental diagnostic ZIP with pinned Bouquet mechanics only; no daily-driver, recovery or hardware readiness claim",
   "unresolved": [
     "Release-level coherence and KMI/symbol dependencies across candidate repositories",
     "Complete Marble peripheral/techpack DT and driver adaptation beyond the retained base/board set",

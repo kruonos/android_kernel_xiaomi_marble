@@ -15,7 +15,8 @@ The latest full ThinLTO build passed at source commit `067b5fc78be8`: native vml
 core/module BTF, modpost, 150 configured modules and the arm64 Image. CFI and SCS
 remain enabled. Artifact hashes were independently verified against the build
 manifest. This validates the current build configuration, not complete Marble
-hardware support or bootability. Packaging and device gates remain closed.
+hardware support or bootability. An experimental diagnostic ZIP is now assembled
+and verified offline; device validation remains outstanding.
 
 FullLTO was an unnecessary donor-default choice and caused resource escalation;
 ThinLTO matches the proven 5.10 baseline. Diagnostic DT composition passed and
@@ -925,3 +926,31 @@ forcing the existing incompatible-KSU cleanup branch (with init.real checked),
 and disabling unsupported 5.10 charger/DRM/GPU alternate handling. The original
 partition/vbmeta/fragment/filesystem machinery is not replaced. Packaging
 preflight passed; this does not establish on-device boot or recovery behavior.
+
+### Experimental ZIP Result
+
+Created `consolidation/packages/Bouquet-5.15.149-marble-diagnostic-r1.zip`:
+
+- Size: 37,077,549 bytes.
+- SHA-256: `8d36bcb55dbab24545ad5acf9a602cef2038885c324d8f1575328c20fa702b0a`.
+- Kernel source: `067b5fc78be8e0ad2f19fd0aa8b64b4b62b1a98d`.
+- Packager: `efe13f8c5aec`.
+- 95 rebuilt diagnostic modules in each original module location, with verified
+  metadata and no 5.10 module reuse. Recovery loading uses the diagnostic set,
+  not a validated recovery/UI driver stack.
+- All 46 ZIP entries, immutable tool/entrypoint bytes, permissions and stored ZIP
+  compression checked against the working reference.
+- Nested archives tested with host and bundled 7za; module/metadata and Image/DT
+  readback hashes matched. Original BusyBox ash syntax and fresh DTBO AVB hash
+  verification passed. Final published ZIP passed `7z t` and SHA-256 verification.
+
+The first assembly caught a host ZipInfo mutation bug before publication; copying
+ZipInfo metadata fixed it and an in-memory regression test passed. The failed
+staging directory was removed after successful verification. Reference ZIPs and
+device partitions were not modified.
+
+Report: the ZIP path plus `.json`. Log:
+`consolidation/scratch/port-515-package-r1-retry.log`.
+This is an installable diagnostic experiment, not a boot-tested or daily-driver
+release. It retains the original partition/vbmeta behavior and may require an
+external bootloader restore; no flashing or hardware test was performed.
