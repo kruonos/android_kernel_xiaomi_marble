@@ -1367,6 +1367,9 @@ static int qcom_geni_serial_probe(struct platform_device *pdev)
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,geni-debug-uart"))
 		console = true;
 
+	if (IS_ENABLED(CONFIG_SERIAL_QCOM_GENI_CONSOLE_ONLY) && !console)
+		return -ENODEV;
+
 	if (console) {
 		drv = &qcom_geni_console_driver;
 		line = of_alias_get_id(pdev->dev.of_node, "serial");
@@ -1608,7 +1611,9 @@ static const struct dev_pm_ops qcom_geni_serial_pm_ops = {
 
 static const struct of_device_id qcom_geni_serial_match_table[] = {
 	{ .compatible = "qcom,geni-debug-uart", },
+#if !IS_ENABLED(CONFIG_SERIAL_QCOM_GENI_CONSOLE_ONLY)
 	{ .compatible = "qcom,geni-uart", },
+#endif
 	{}
 };
 MODULE_DEVICE_TABLE(of, qcom_geni_serial_match_table);
@@ -1627,14 +1632,17 @@ static int __init qcom_geni_serial_init(void)
 {
 	int ret;
 
-	ret = uart_register_driver(&qcom_geni_uart_driver);
-	if (ret)
-		return ret;
+	if (!IS_ENABLED(CONFIG_SERIAL_QCOM_GENI_CONSOLE_ONLY)) {
+		ret = uart_register_driver(&qcom_geni_uart_driver);
+		if (ret)
+			return ret;
+	}
 
 	if (con_enabled) {
 		ret = console_register(&qcom_geni_console_driver);
 		if (ret) {
-			uart_unregister_driver(&qcom_geni_uart_driver);
+			if (!IS_ENABLED(CONFIG_SERIAL_QCOM_GENI_CONSOLE_ONLY))
+				uart_unregister_driver(&qcom_geni_uart_driver);
 			return ret;
 		}
 	}
@@ -1643,7 +1651,8 @@ static int __init qcom_geni_serial_init(void)
 	if (ret) {
 		if (con_enabled)
 			console_unregister(&qcom_geni_console_driver);
-		uart_unregister_driver(&qcom_geni_uart_driver);
+		if (!IS_ENABLED(CONFIG_SERIAL_QCOM_GENI_CONSOLE_ONLY))
+			uart_unregister_driver(&qcom_geni_uart_driver);
 	}
 	return ret;
 }
@@ -1654,7 +1663,8 @@ static void __exit qcom_geni_serial_exit(void)
 	platform_driver_unregister(&qcom_geni_serial_platform_driver);
 	if (con_enabled)
 		console_unregister(&qcom_geni_console_driver);
-	uart_unregister_driver(&qcom_geni_uart_driver);
+	if (!IS_ENABLED(CONFIG_SERIAL_QCOM_GENI_CONSOLE_ONLY))
+		uart_unregister_driver(&qcom_geni_uart_driver);
 }
 module_exit(qcom_geni_serial_exit);
 

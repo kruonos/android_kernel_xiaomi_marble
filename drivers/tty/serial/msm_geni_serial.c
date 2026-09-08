@@ -4444,6 +4444,7 @@ static const struct of_device_id msm_geni_device_tbl[] = {
 			.data = (void *)&msm_geni_serial_hs_driver},
 	{},
 };
+MODULE_DEVICE_TABLE(of, msm_geni_device_tbl);
 
 static void msm_geni_serial_init_gsi(struct uart_port *uport)
 {

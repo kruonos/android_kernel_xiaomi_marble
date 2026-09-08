@@ -498,7 +498,21 @@
       "initial_target_name_matches": 75,
       "limits": "Recovery backup evidence, not a live-device inventory; basename matches alone do not establish equivalent providers."
     },
-    "remaining_geni_gap": "Retained flat qcom,qupv3-geni-se/phandle layout differs from target qcom,geni-se-qup parent hierarchy and parent clocks/ICC. Enabling client modules is not proof of probe compatibility. Console symbol is absent from target Kconfig; no console claim.",
+    "remaining_geni_gap": "Source/DT parent, clock and ICC contracts are adapted; full build and hardware transfers still require validation. Reparenting changes platform sysfs paths, which must be checked against device userspace.",
+    "geni_adaptation": {
+      "status": "source_dt_and_config_validated_build_pending",
+      "engines_reparented": 46,
+      "wrappers": 3,
+      "active_engines": ["qupv3_se7_2uart", "qupv3_se4_spi", "qupv3_se5_i2c", "qupv3_se9_i2c", "qupv3_se13_spi", "qupv3_se15_i2c", "qupv3_se20_4uart"],
+      "wrapper_contract": "qcom,geni-se-qup parent, preserved MMIO/IOMMU/DMA properties, original AHB clock IDs, identity address translation",
+      "icc_contract": "Per-engine qup-core and qup-memory retain core/DDR endpoints; qup-config uses existing APPSS-to-QUP configuration route, not the legacy SNOC-to-LLCC path",
+      "uart_roles": "Upstream built-in debug console owns ttyMSM0; downstream MSM module owns ttyHS and vendor ioctls. Console-only mode prevents duplicate ttyHS registration.",
+      "invariant_tool": "tools/port_515_geni.py",
+      "reference_fixture": "tools/port_515_geni_reference.json",
+      "invariant_report": "out-5.15-probe/geni-validation.json",
+      "validation": "DTs compile/compose; all 46 engine hardware-property checks, three wrapper/GPI checks, seven active unique MMIO checks and UART/I2C aliases passed. Actual UART init/exit control flow passed isolated success/failure tests in both modes.",
+      "runtime_validated": false
+    },
     "installer_boundary": "Known-good ZIP installer was read in memory; it updates boot/vendor_boot/vendor_dlkm/dtbo and patches vbmeta, and includes legacy GPU/KSU behavior. It is not approved unchanged for 5.15."
   },
   "integration_gate_open": true,

@@ -958,6 +958,16 @@ config SERIAL_QCOM_GENI_CONSOLE
 	  Serial console driver for Qualcomm Technologies Inc's GENI based
 	  QUP hardware.
 
+config SERIAL_QCOM_GENI_CONSOLE_ONLY
+	bool "Use QCOM GENI only for the debug console"
+	depends on SERIAL_QCOM_GENI_CONSOLE && SERIAL_MSM_GENI
+	depends on !CONSOLE_POLL
+	help
+	  Reserve the upstream GENI driver for ttyMSM console service while
+	  the downstream MSM GENI driver owns ttyHS and its vendor ioctls.
+	  This avoids registering two ttyHS drivers. Non-console upstream
+	  GENI UART devices are not supported in this mode.
+
 config SERIAL_MSM_HS
 	tristate "MSM UART High Speed: Serial Driver"
 	depends on ARCH_QCOM

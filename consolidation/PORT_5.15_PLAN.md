@@ -771,3 +771,32 @@ early-boot load plan. A flash ZIP would be premature before those are resolved.
 
 Build log: `consolidation/scratch/port-515-build-providers-3252352e.log`.
 Audit report: `out-5.15-probe/boot-integration-report.json`.
+
+## GENI Interface Adaptation
+
+The retained flat GENI layout is migrated to the target parent/child model.
+All 46 engines, including disabled alternatives, now belong to their original
+wrapper. The three wrappers match `qcom,geni-se-qup`, have original AHB clock
+IDs and identity address translation, and retain their IOMMU stream IDs, DMA
+coherency/address-pool properties and MMIO resources. The three root GPI nodes
+are unchanged. Engine addresses, IRQs, pinctrl, clocks, DMA channels, rates and
+status are preserved by source and compiled-DT checks.
+
+ICC votes now live on each engine. Core and DDR endpoints are retained, including
+QUP1's aggre1 route. The configuration vote is the real existing APPSS-to-QUP
+route, not a rename of the old memory-facing SNOC-to-LLCC path. The console uses
+only the two ICC slots its upstream driver requests.
+
+The debug UART uses the upstream driver and `ttyMSM0`; downstream MSM GENI keeps
+HS UART and vendor ioctls at `ttyHS0`. New opt-in console-only mode prevents the
+upstream driver from registering a second ttyHS driver. Normal mode is unchanged;
+registration and error unwind were tested with isolated stubs across both modes,
+console states and registration failures. The downstream OF table is exported
+for module alias generation. `serial0`, `hsuart0` and I2C aliases are preserved,
+and stdout uses `serial0:115200n8` rather than the obsolete absolute node path.
+
+`tools/port_515_geni.py --build` compiles/composes diagnostic DTs and validates
+them against the small frozen hardware-metadata fixture. Source/DT/config checks
+passed before the build checkpoint. Hardware transactions, suspend/resume and
+userspace platform sysfs paths still need device validation; reparenting changes
+those platform paths even though bus aliases and device identities are retained.

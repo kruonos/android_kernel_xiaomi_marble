@@ -201,7 +201,9 @@ def main():
         for name in required | {"MSM_GPUCC_WAIPIO"}:
             if values.get("CONFIG_" + name) != "m":
                 raise RuntimeError("required module gate lost: " + name)
-        for name in ("CFI_CLANG", "SHADOW_CALL_STACK", "LTO_CLANG_THIN", "MODVERSIONS", "DEBUG_INFO_BTF"):
+        for name in ("CFI_CLANG", "SHADOW_CALL_STACK", "LTO_CLANG_THIN", "MODVERSIONS", "DEBUG_INFO_BTF",
+                     "SERIAL_QCOM_GENI", "SERIAL_QCOM_GENI_CONSOLE", "SERIAL_QCOM_GENI_CONSOLE_ONLY",
+                     "SERIAL_QCOM_GENI_CONSOLE_DEFAULT_ENABLED"):
             if values.get("CONFIG_" + name) != "y":
                 raise RuntimeError("required build/security gate lost: " + name)
         if values.get("CONFIG_CFI_PERMISSIVE") == "y":
@@ -237,6 +239,7 @@ def main():
             input_data="struct port_btf_probe { int value; }; struct port_btf_probe probe;\n")
         run("btf-tool-probe", [str(pahole), "-J", *shlex.split(pahole_flags), str(probe)])
         verify_elf(probe, {1}, btf=True)
+        run("geni-dt", [sys.executable, "-B", str(root / "tools/port_515_geni.py"), "--build"])
         if args.check:
             manifest["status"] = "preflight_passed"
             print("PREFLIGHT PASSED: native BTF encoding and build safeguards verified", flush=True)
