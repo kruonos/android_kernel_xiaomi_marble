@@ -105,7 +105,7 @@ def main():
         "source_clean_at_start": not dirty, "completed_phases": [], "phase": "preflight",
         "config_before_sha256": digest(out / ".config"),
         "bounds": {"compile_jobs": jobs, "core_linker_threads": jobs, "core_pahole_jobs": jobs,
-                   "core_lto_partitions": jobs,
+                   "core_thinlto_jobs": jobs,
                    "parallel_module_jobs": jobs, "module_linker_threads": 1, "module_pahole_jobs": 1,
                    "initial_output_allowance_bytes": start_size + start_free - reserve,
                    "minimum_free_bytes": reserve, "event_free_floor_bytes": free_floor,
@@ -159,13 +159,13 @@ def main():
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
 
-    def run(phase, argv, input_data=None):
+    def run(phase, argv, input_data=None, cwd=None):
         capacity()
         manifest["phase"] = phase
         record()
         print("PHASE " + phase + ": " + shlex.join(argv), flush=True)
         phase_env = dict(env, PORT_515_LD_THREADS="1" if phase == "modules" else str(jobs))
-        process = subprocess.Popen(argv, cwd=root, env=phase_env, stdout=subprocess.PIPE,
+        process = subprocess.Popen(argv, cwd=cwd or root, env=phase_env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, process_group=0,
                                    stdin=subprocess.PIPE if input_data is not None else None)
         try:
@@ -200,7 +200,7 @@ def main():
         for name in required | {"MSM_GPUCC_WAIPIO"}:
             if values.get("CONFIG_" + name) != "m":
                 raise RuntimeError("required module gate lost: " + name)
-        for name in ("CFI_CLANG", "SHADOW_CALL_STACK", "LTO_CLANG_FULL", "MODVERSIONS", "DEBUG_INFO_BTF"):
+        for name in ("CFI_CLANG", "SHADOW_CALL_STACK", "LTO_CLANG_THIN", "MODVERSIONS", "DEBUG_INFO_BTF"):
             if values.get("CONFIG_" + name) != "y":
                 raise RuntimeError("required build/security gate lost: " + name)
         if values.get("CONFIG_CFI_PERMISSIVE") == "y":
@@ -224,7 +224,13 @@ def main():
     started = time.time()
     record()
     try:
-        config()
+        run("merge_config", ["bash", str(root / "scripts/kconfig/merge_config.sh"), "-m", "-O", str(out),
+                             str(root / "arch/arm64/configs/gki_defconfig"),
+                             str(root / "arch/arm64/configs/vendor/waipio_GKI.config"),
+                             str(root / "arch/arm64/configs/vendor/marble_515_bringup.config")], cwd=scratch)
+        run("olddefconfig", [*command, "olddefconfig"])
+        values = config()
+        manifest["config_sha256"] = digest(out / ".config")
         probe = out / "btf-tool-probe.o"
         run("btf-compile-probe", ["clang-18", "-g", "-gdwarf-4", "-c", "-x", "c", "-", "-o", str(probe)],
             input_data="struct port_btf_probe { int value; }; struct port_btf_probe probe;\n")
@@ -234,9 +240,6 @@ def main():
             manifest["status"] = "preflight_passed"
             print("PREFLIGHT PASSED: native BTF encoding and build safeguards verified", flush=True)
             return 0
-        run("olddefconfig", [*command, "olddefconfig"])
-        values = config()
-        manifest["config_sha256"] = digest(out / ".config")
         core_stamp = refresh(["vmlinux", "vmlinux.symvers", "System.map"])
         run("vmlinux", [*command, "vmlinux"])
         fresh(out / "vmlinux", core_stamp)

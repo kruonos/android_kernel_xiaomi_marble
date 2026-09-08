@@ -56,7 +56,7 @@ if len(modules) != 25:
 required = {entry["config"] for entry in modules.values()} | {"MSM_GPUCC_WAIPIO"}
 missing = sorted(symbol for symbol in required
                  if config.get("CONFIG_" + symbol) != "m")
-for symbol in ("CFI_CLANG", "SHADOW_CALL_STACK", "LTO_CLANG_FULL"):
+for symbol in ("CFI_CLANG", "SHADOW_CALL_STACK", "LTO_CLANG_THIN"):
     if config.get("CONFIG_" + symbol) != "y":
         missing.append(symbol)
 if config.get("CONFIG_CFI_PERMISSIVE") == "y":
@@ -77,7 +77,7 @@ PY
 )"
 mapfile -t boot_targets <<< "$targets_text"
 [[ ${#boot_targets[@]} -eq 26 ]] || { echo 'invalid probe target count' >&2; exit 1; }
-echo 'Required module gates and CFI/SCS/FullLTO survived Kconfig resolution'
+echo 'Required module gates and CFI/SCS/ThinLTO survived Kconfig resolution'
 
 make "${make_args[@]}" -j"$jobs" modules_prepare
 make "${make_args[@]}" -j"$jobs" "${boot_targets[@]}"

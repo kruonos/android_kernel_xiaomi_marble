@@ -127,7 +127,8 @@
   },
   "initial_build_strategy": {
     "choice": "single Qualcomm downstream core plus modules rebuilt with the same native toolchain",
-    "status": "configured_and_26_native_module_prelinks_passed",
+    "status": "switching_to_baseline_equivalent_thinlto",
+    "active_lto_mode": "ThinLTO, matching the tested 5.10 baseline; retain CFI, SCS and BTF",
     "evidence": "Target Makefile has a normal vmlinux/modules path when KBUILD_MIXED_TREE is unset; gki_defconfig enables MODVERSIONS.",
     "reason": "Avoid a second Common source/output tree and mixed prebuilt KMI dependencies during initial bringup.",
     "constraints": "Preserve required userspace/firmware interfaces; no GKI certification or stock binary-module compatibility claim; external-module symbol/config requirements still need validation."
@@ -333,6 +334,7 @@
     ]
   },
   "compile_probe": {
+    "validation_scope": "Historical FullLTO probe results; the new ThinLTO full build requires separate validation.",
     "status": "26_boot_module_object_and_native_prelink_probes_passed",
     "command": "nice -n 10 ionice -c 2 -n 7 bash tools/port_515_prepare.sh",
     "output": "out-5.15-probe",
@@ -398,7 +400,9 @@
     "limits": "Native per-module prelinks passed, but no full vmlinux link, loadable-module final link/modpost, boot Image, package or hardware test. Pahole was not found in PATH; full BTF generation remains untested. Diagnostic DTs are not flash artifacts."
   },
   "full_build_workflow": {
-    "status": "resuming_after_host_resize",
+    "status": "starting_thinlto_build",
+    "lto_mode": "ThinLTO",
+    "mode_rationale": "Match the proven 5.10 build mode. FullLTO was an unnecessary donor-default choice, not a porting requirement.",
     "runner": "tools/port_515_build.py",
     "linker_wrapper": "tools/port_515_ld.sh",
     "output": "out-5.15-probe",
@@ -410,12 +414,12 @@
     "host_after_resize": {"available_cpus": 16, "usable_ram_gib_approx": 62, "free_disk_gib_approx": 33},
     "compile_jobs": 16,
     "core_linker_threads": 16,
-    "core_lto_partitions": 16,
+    "core_thinlto_jobs": 16,
     "core_pahole_jobs": 16,
     "parallel_module_jobs": 16,
     "module_linker_threads": 1,
     "module_pahole_jobs": 1,
-    "limits": "User-directed use of available host resources: retain a 2 GiB free-space stop, no added memory/per-file/fixed-output caps, and no core dumps. Core FullLTO uses available CPUs; concurrent module jobs use one linker partition each.",
+    "limits": "Use all available CPUs with a 2 GiB free-space stop, no added memory/per-file/fixed-output caps, and no core dumps. ThinLTO uses available CPUs; each concurrent module job uses one linker worker.",
     "interrupted_attempt": {"source_commit": "428f29192ac5", "log": "consolidation/scratch/port-515-full-build-428f2919.log", "last_recorded_phase": "vmlinux", "completion_validated": false, "surviving_build_processes_after_resize": false},
     "freshness": "Refresh only final experimental outputs before each phase and require new mtimes; preserve compiled objects. Probe compilation uses managed child-group cleanup too.",
     "failed_attempts": [

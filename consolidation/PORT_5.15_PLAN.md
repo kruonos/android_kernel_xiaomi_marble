@@ -11,11 +11,13 @@ recorded in port-branch checkpoints; the GitHub-backed unified source remains
 unchanged. The older sections below record the
 research chronology, not a claim that the checkout still contains the 5.10 core.
 
-Native LLVM 18 configuration, `modules_prepare`, all 25 mapped boot-module object
-probes plus GPUCC, and 26 native module-sized LTO prelinks passed. Diagnostic DT
-composition passed, and its 139 warnings match frozen baseline under a controlled
-same-compiler comparison. This is not a full vmlinux/modpost/final-module build
-or a bootability claim. Full-image/package and device gates remain closed.
+The previous FullLTO probe checkpoint passed compilation and 26 module-sized
+prelinks, but the full build did not complete. The active strategy is now
+ThinLTO, matching the proven 5.10 baseline, with CFI/SCS retained. FullLTO was a
+donor-default choice, not a port requirement, and caused unnecessary resource
+escalation. The new ThinLTO build must pass full linking and module validation.
+Diagnostic DT composition passed and its 139 warnings match frozen baseline.
+Packaging and device gates remain closed.
 
 ## Goal and Preservation Boundary
 
