@@ -2,6 +2,7 @@
 """Build an experimental diagnostic ZIP using the pinned Bouquet installer."""
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -324,7 +325,7 @@ def main():
         private = work / "package.zip"
         with zipfile.ZipFile(private, "w", compression=zipfile.ZIP_STORED) as output:
             for info in archive.infolist():
-                output.writestr(info, changed.get(info.filename, archive.read(info.filename)))
+                output.writestr(copy.copy(info), changed.get(info.filename, archive.read(info.filename)))
         with zipfile.ZipFile(private) as candidate:
             if candidate.testzip() is not None or candidate.namelist() != archive.namelist():
                 raise RuntimeError("ZIP integrity or entry-set mismatch")
