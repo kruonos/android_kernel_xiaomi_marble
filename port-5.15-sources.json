@@ -481,7 +481,11 @@
       {"config": "PINCTRL_QCOM_SPMI_PMIC", "path": "drivers/pinctrl/qcom/pinctrl-spmi-gpio.ko"},
       {"config": "PINCTRL_QCOM_SPMI_PMIC", "path": "drivers/pinctrl/qcom/pinctrl-spmi-mpp.ko"},
       {"config": "QCOM_SPMI_ADC5", "path": "drivers/iio/adc/qcom-spmi-adc5.ko"},
-      {"config": "QCOM_SPMI_TEMP_ALARM", "path": "drivers/thermal/qcom/qcom-spmi-temp-alarm.ko"}
+      {"config": "QCOM_SPMI_TEMP_ALARM", "path": "drivers/thermal/qcom/qcom-spmi-temp-alarm.ko"},
+      {"config": "QTI_CPU_PAUSE_COOLING_DEVICE", "path": "drivers/thermal/qcom/thermal_pause.ko"},
+      {"config": "QTI_CPU_HOTPLUG_COOLING_DEVICE", "path": "drivers/thermal/qcom/cpu_hotplug.ko"},
+      {"config": "NOP_USB_XCEIV", "path": "drivers/usb/phy/phy-generic.ko"},
+      {"config": "RTC_DRV_PM8XXX", "path": "drivers/rtc/rtc-pm8xxx.ko"}
     ],
     "preserved_boot_layout": {
       "source": "../bouquet-slot-b-backup-20260624-155601",
@@ -518,6 +522,36 @@
       "runtime_validated": false
     },
     "installer_boundary": "Known-good ZIP installer was read in memory; it updates boot/vendor_boot/vendor_dlkm/dtbo and patches vbmeta, and includes legacy GPU/KSU behavior. It is not approved unchanged for 5.15."
+  },
+  "boot_stabilization": {
+    "status": "clock_and_provider_repairs_prepared",
+    "cape_clock_source": "1efb1f3077c7dd17bb24a9397080eb3464b8f7ff",
+    "cape_clock_changes": "Restore preserved Cape OLE PLL setup, parent maps, clock definitions and dispatch. Keep unrelated video AXI ops unchanged and use of_device_is_compatible.",
+    "ufs_policy": "Both the recovery DT and retained source requested 850 MHz. Diagnostic 5.15 bring-up now caps core/ICE/UniPro maxima AND all turbo properties at the existing 300 MHz table point; no new rate is invented.",
+    "ufs_max_hz": 300000000,
+    "additional_early_roots": ["dwc3_msm"],
+    "legacy_diagnostic_dispositions": {
+      "cqhci": "defer: SD-only host is outside the initial UFS diagnostic boot; review SD host together",
+      "dispcc_diwali": "omit: no active Diwali controller; Cape display clock provider is used",
+      "gcc_diwali": "omit: no active Diwali controller; Cape GCC is used",
+      "memory_dump_v2": "defer: optional extra dump-region registration; built-in pstore and selected minidump remain",
+      "pinctrl_waipio": "omit: active physical TLMM uses the selected Cape driver",
+      "reboot_mode": "defer: no PON mode properties identified; do not confuse metadata helper with PSCI reset",
+      "phy_qcom_ufs_qmp_v4_diwali": "omit: active UFS PHY is Cape",
+      "pinctrl_diwali": "omit: active TLMM is Cape",
+      "qcom_gic_intr_routing": "omit: no matching active node; generic GICv3 remains",
+      "pmu_vendor": "omit: retained SCMI protocols do not include PMU protocol 0x86",
+      "pmu_scmi": "omit: retained SCMI protocols do not include PMU protocol 0x86",
+      "qnoc_diwali": "omit: retained providers are Waipio family",
+      "qti_regmap_debugfs": "defer: optional register debug interface, not required regmap support",
+      "stub_regulator": "omit: no matching retained regulator node; do not replace real regulators with a stub",
+      "hwid": "defer: OEM identity interface and userspace dependency remain unverified",
+      "nfc_i2c": "defer: qcom,sn-nci peripheral driver integration is not part of initial diagnostic boot",
+      "kshrink_slabd": "defer: OEM reclaim extension, not a hardware supplier",
+      "kshrink_lruvecd": "defer: OEM reclaim extension, not a hardware supplier",
+      "bootinfo": "defer: OEM boot reporting and userspace dependency remain unverified"
+    },
+    "load_plan_scope": "Diagnostic normal boot only; no recovery-load-list or complete device readiness claim. Every unmatched baseline name must have an explicit disposition."
   },
   "integration_gate_open": true,
   "integration_gate_scope": "Initial source transition and bounded compile/DT probes only",

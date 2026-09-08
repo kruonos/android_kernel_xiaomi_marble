@@ -817,3 +817,30 @@ general basename-renaming rule. Other unmatched boot entries remain separate.
 The identified GENI source-level blockers are resolved. On-device UART/I2C/SPI
 transactions, Bluetooth UART ioctls, suspend/resume and userspace sysfs paths
 still require validation; no hardware operation or flash is claimed.
+
+## Boot Stabilization Batch
+
+Active DT clock nodes request `qcom,cape-gcc` and `qcom,cape-dispcc`, while the
+initial 5.15 drivers matched only Waipio. Restore Cape-specific PLL/data/probe
+fixups from preserved baseline `1efb1f3077c7dd17bb24a9397080eb3464b8f7ff` into
+the existing drivers and GCC binding header. Use `of_device_is_compatible()`;
+leave the unrelated video AXI branch-op differences out. A raw source comparison
+against the preserved files confirms those are the only intentional differences.
+
+The preserved device DT, not merely adjacent source, requests UFS maxima of
+850 MHz. For this unbooted 5.15 stabilization profile, cap core/ICE/UniPro maxima
+and all six turbo frequency properties to the existing 300 MHz table point.
+This is an explicit temporary bring-up policy. Full Cape clock data is retained
+for correct hardware interpretation; no new rate or voltage value is invented.
+
+Enable the retained CPU pause/hotplug cooling drivers, the USB nop-PHY referenced
+by active DWC3, and the PMK8350 RTC driver. Thermal trip tables and policies are
+not changed. Other old module names are classified explicitly as alternate-SoC,
+optional or deferred peripheral/OEM interfaces rather than copied blindly.
+
+`tools/port_515_load_plan.py` generates a diagnostic normal-boot candidate from
+the matched baseline entries, selected providers and USB diagnostics. It closes
+both hard and pre/post soft dependencies, rejects missing providers/cycles,
+checks Cape clock module aliases and UFS caps, and verifies planned module hashes.
+It emits only a load list and JSON inventory. It does not copy modules, create
+images, define a recovery list or authorize flashing.
