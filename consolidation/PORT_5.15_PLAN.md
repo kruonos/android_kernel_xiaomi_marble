@@ -864,3 +864,40 @@ Artifacts: `out-5.15-probe/boot-plan/modules.load` and `boot-plan/plan.json`.
 Build log: `consolidation/scratch/port-515-stabilization-067b5fc7.log`.
 The plan is not a recovery list or a complete phone-driver payload. No ZIP or
 partition image repack was performed, and no device writes occurred.
+
+## Required Bouquet ZIP Contract
+
+The user requires the known-working Bouquet ZIP mechanics because the custom
+ROM is sensitive to packaging. This supersedes any proposed replacement image
+constructor or independent fragment-preservation scheme. Preserve proven
+installer behavior unless a specific 5.15 incompatibility requires a reviewed,
+narrow change. Merely preferring a cleaner layout is not sufficient justification.
+
+Compared the preserved local ZIP with the MGLRU v3 cooler-performance ZIP. Both
+contain the same 46 entries and use stored ZIP compression. Only five entries
+differ: the three payload archives, anykernel.sh and the local build manifest.
+Installer differences are limited to branding and three payload SHA1 values.
+All tools, recovery entrypoints and restore scripts are byte-identical. Archive,
+normalized-installer and critical-tool SHA-256 pins are in port-5.15-sources.json.
+
+Keep the original slot/ROM/firmware/snapshot handling, magiskboot toolchain,
+vendor_boot_fix, compression selection, filesystem operations, permissions and
+module paths. Preserve Image.7z, _dtb.7z and _modules_hyperos.7z interfaces rather
+than inventing a replacement payload layout.
+
+Important correction: the working v4 installer deliberately combines fragment
+contents into the main ramdisk and empties the other fragment CPIOs before
+repacking. Preserving separate contents would not reproduce that behavior. The
+recovery backup's large PLATFORM and tiny DLKM fragments are consistent with
+this mechanism. Preserve it through the original-image/tool workflow.
+
+The old installer also patches all matching vbmeta partitions at its end; do
+not silently remove that behavior, confuse it with core auto-patching, or claim
+that it leaves vbmeta untouched. Its rollback is limited to boot/vendor_dlkm,
+not a complete recovery guarantee. No device writes are authorized here.
+
+Necessary 5.15 exceptions remain: coherent new kernel/DT/modules, fresh module
+load/dependency metadata, rejection of inherited 5.10 KernelSU/module binaries,
+and verified GPU DT property handling. Keep ROM-facing paths and mechanics while
+making those payload/version changes explicit. No installer rewrite or 5.15 ZIP
+was produced as part of establishing this contract.

@@ -559,6 +559,47 @@
     },
     "load_plan_scope": "Diagnostic normal boot only; no recovery-load-list or complete device readiness claim. Every unmatched baseline name must have an explicit disposition."
   },
+  "packaging_reference": {
+    "policy": "User requires the proven Bouquet 5.10 ZIP mechanics for the picky custom ROM. Do not substitute a new image/ramdisk packaging design or silently change installer behavior.",
+    "status": "reference_contract_verified_no_515_zip_created",
+    "primary_zip": "../Bouquet-5.10.258-Bouquet-v4.9-marble-local.zip",
+    "primary_sha256": "4ca9502fd6f03fe1652fc87a1f7fd83870d5f1bfcfbc1eb67e69d922eac7f25b",
+    "comparison_zip": "../Bouquet-5.10.258-Bouquet-v4.9-marble-qca-bt-proactive-compaction-mglru-v3-cooler-performance-mode.zip",
+    "comparison_sha256": "60298af93d1b679f9ef1cf2bf82f090b22aac867412d2bcb7354aa45207c4c38",
+    "entry_count": 46,
+    "zip_compression_method": 0,
+    "changed_reference_entries": ["Image.7z", "_dtb.7z", "_modules_hyperos.7z", "anykernel.sh", "local-build-manifest.txt"],
+    "installer_difference": "Only kernel.string and SHA1_STOCK/SHA1_KSU/SHA1_SUSFS values differ; installer control flow is identical.",
+    "normalized_installer_sha256": "0d9dc96093a80f94d4b678c47647d1266a0eae99632f7770e4ffe9a1875cc9bf",
+    "normalization": "Replace kernel.string value with <payload-name> and the three SHA1 values with <payload-sha1>; preserve all other bytes.",
+    "critical_tool_sha256": {
+      "tools/ak3-core.sh": "647d2a64db8927b2e093f41905bdfcb0e81509b54afe9e8ed20723aa11a06e70",
+      "tools/magiskboot": "d7440e2cd89899426e809554bf793baef9804ccbe5a52ce34a8b6242725d3c77",
+      "tools/vendor_boot_fix": "91cb6cf3d2f5b7786efe90a6cd997fb546dfc00978af559ddd741a0736adf80c",
+      "tools/_extra/empty.cpio": "3b286cbd13e316dafdd5cc0837ba0f8274f6fe8cb69e72cef648f988a509525d",
+      "tools/mkfs.erofs": "3db3a570000214c5d42a9bdcbcb0e2adcdb2412776b2563be695a9c8a33a748b",
+      "tools/httools_static": "9f7285341423ca02e1ff54a05b757db8bb09cfa36802879db3b358ae5a6c96aa",
+      "tools/lptools_static": "da1b80e231bb7576d76e6f57bea4e27706805ec86b9b9c6524ac609c3179b969",
+      "tools/vbmeta-disable-verification": "9a64e5986d90cef450803372f234407ec7d5ce97763d6f10bfd575a484166daf"
+    },
+    "preserve": [
+      "Recovery entrypoints, installer tools/modes, ZIP stored compression and nested payload names",
+      "Device/ROM/firmware/snapshot gates and slot-aware partition selection",
+      "Original-image magiskboot workflow, vendor_boot_fix and automatic ramdisk compression",
+      "Proven v4 fragment consolidation: main CPIO first, other fragments merged, secondary fragments replaced with empty.cpio, merged content in main fragment",
+      "Module locations /lib/modules and /vendor_dlkm/lib/modules, module metadata paths and do.modules=0",
+      "Existing EROFS/ext4 handling, contexts/permissions, size and super/snapshot logic",
+      "Existing vbmeta logic as an explicit inherited behavior, not a claim of no vbmeta writes"
+    ],
+    "required_515_exceptions": [
+      "Replace kernel, DT and module payloads coherently; no 5.10 module reuse",
+      "Generate dependency/load metadata for selected 5.15 modules while preserving ROM-facing paths",
+      "Do not accept an inherited KernelSU LKM merely from its Clang version string or reactivate 5.10 binary patches",
+      "Validate or narrowly adapt legacy GPU DT property-copy operations against 5.15 bindings; do not copy rates/voltage semantics blindly"
+    ],
+    "vbmeta_scope": "The old installer finally patches all matching vbmeta* partitions; core auto patching is a separate mechanism. This is recorded, not executed or newly authorized for flashing.",
+    "rollback_limit": "Inherited rollback covers boot and vendor_dlkm only and ignores restore errors; not complete partition rollback."
+  },
   "integration_gate_open": true,
   "integration_gate_scope": "Initial source transition and bounded compile/DT probes only",
   "boot_gate_open": false,
