@@ -127,7 +127,7 @@
   },
   "initial_build_strategy": {
     "choice": "single Qualcomm downstream core plus modules rebuilt with the same native toolchain",
-    "status": "switching_to_baseline_equivalent_thinlto",
+    "status": "thinlto_full_core_and_configured_modules_validated",
     "active_lto_mode": "ThinLTO, matching the tested 5.10 baseline; retain CFI, SCS and BTF",
     "evidence": "Target Makefile has a normal vmlinux/modules path when KBUILD_MIXED_TREE is unset; gki_defconfig enables MODVERSIONS.",
     "reason": "Avoid a second Common source/output tree and mixed prebuilt KMI dependencies during initial bringup.",
@@ -400,7 +400,33 @@
     "limits": "Native per-module prelinks passed, but no full vmlinux link, loadable-module final link/modpost, boot Image, package or hardware test. Pahole was not found in PATH; full BTF generation remains untested. Diagnostic DTs are not flash artifacts."
   },
   "full_build_workflow": {
-    "status": "starting_thinlto_build",
+    "status": "passed",
+    "validated_result": {
+      "source_commit": "3b210d25e13cc8d5f6d30e0fc02e4ee03b031a19",
+      "log": "consolidation/scratch/port-515-full-build-thin-3b210d25.log",
+      "kernel_release": "5.15.149-marble-5.15-probe+",
+      "module_count": 135,
+      "core_btf": true,
+      "module_btf": true,
+      "incremental_retry_seconds": 182.7,
+      "peak_child_rss_kib": 8161872,
+      "output_bytes": 5827051520,
+      "free_bytes_after_build": 29963153408,
+      "image_bytes": 42433024,
+      "image_sha256": "aa76fe2774ff83963fd83dbaf7a0ef5cb7146a295fd214a7d5422a2a3f5f676f",
+      "vmlinux_sha256": "3034b368b4256f7e760b71615864358c19bb89748e2835b343264ec2fd24f00a",
+      "module_symvers_sha256": "2e70de00e2de72d281f41a4273540f0b5bfd4f380315be1d965e0575e72a5efe",
+      "config_sha256": "d074848d8fa23ca223d2bb796d17f9169ded05b21347eb16ac584ddf162c70bb",
+      "independent_hash_verification": "Passed for Image, vmlinux, .config, Module.symvers and all 135 modules",
+      "scope": "Full build of the current configuration, not proof of complete Marble peripheral support or bootability"
+    },
+    "llcc_repair": {
+      "commit": "3b210d25e13cc8d5f6d30e0fc02e4ee03b031a19",
+      "path": "drivers/soc/qcom/llcc-qcom.c",
+      "change": "Restore the byte-identical baseline programming routine and v31 shift; remove orphaned unused helper; add Cape match to the existing Waipio configuration.",
+      "table_verification": "All 23 target Waipio rows exactly match frozen Cape initializer values; no allocation-table values changed.",
+      "validation": "Focused review, exact baseline-function comparison, object compilation and full module build passed; runtime remains untested."
+    },
     "lto_mode": "ThinLTO",
     "mode_rationale": "Match the proven 5.10 build mode. FullLTO was an unnecessary donor-default choice, not a porting requirement.",
     "runner": "tools/port_515_build.py",

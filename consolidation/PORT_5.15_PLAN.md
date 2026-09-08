@@ -11,13 +11,15 @@ recorded in port-branch checkpoints; the GitHub-backed unified source remains
 unchanged. The older sections below record the
 research chronology, not a claim that the checkout still contains the 5.10 core.
 
-The previous FullLTO probe checkpoint passed compilation and 26 module-sized
-prelinks, but the full build did not complete. The active strategy is now
-ThinLTO, matching the proven 5.10 baseline, with CFI/SCS retained. FullLTO was a
-donor-default choice, not a port requirement, and caused unnecessary resource
-escalation. The new ThinLTO build must pass full linking and module validation.
-Diagnostic DT composition passed and its 139 warnings match frozen baseline.
-Packaging and device gates remain closed.
+The full ThinLTO build passed at source commit `3b210d25e13c`: native vmlinux,
+core/module BTF, modpost, 135 configured modules and the arm64 Image. CFI and SCS
+remain enabled. Artifact hashes were independently verified against the build
+manifest. This validates the current build configuration, not complete Marble
+hardware support or bootability. Packaging and device gates remain closed.
+
+FullLTO was an unnecessary donor-default choice and caused resource escalation;
+ThinLTO matches the proven 5.10 baseline. Diagnostic DT composition passed and
+its 139 warnings match frozen baseline under the same compiler.
 
 ## Goal and Preservation Boundary
 
@@ -676,3 +678,35 @@ four jobs. On this host, compilation uses 16 jobs, core linking uses 16 threads
 and FullLTO partitions, and core BTF uses 16 workers. Module builds use 16 jobs
 with one linker/BTF worker each. The 2 GiB free-space stop remains; no artificial
 memory or per-file caps are added. Existing compiled objects are reused.
+
+## Successful ThinLTO Full Build
+
+The ThinLTO correction was committed as `a607ebc9dff7`. Its first full run linked
+vmlinux with BTF, then exposed an inconsistent LLCC programming routine during
+module compilation. That attempt took 540.6 seconds in total; it was not a full
+success. No security feature was disabled to get past it.
+
+Commit `3b210d25e13c` restores the LLCC programming function byte-for-byte from
+the frozen working baseline, restores its v31 shift constant, removes an unused
+orphan helper, and adds the Cape compatible using the existing Waipio config.
+All 23 target Waipio rows were verified equal to the frozen Cape values, so no
+cache allocation values were changed. The object compile and full build passed.
+
+The successful cached retry completed in 182.7 seconds with all 16 CPUs available.
+It produced vmlinux, core/module BTF, fresh symbol tables, 135 final modules and
+the arm64 Image. Peak recorded child-process RSS was 8,161,872 KiB (about 7.8 GiB);
+this is not an aggregate process-memory measurement or a cold-build time claim.
+
+- Source commit: `3b210d25e13cc8d5f6d30e0fc02e4ee03b031a19`.
+- Release: `5.15.149-marble-5.15-probe+`.
+- Image: `out-5.15-probe/arch/arm64/boot/Image`, 42,433,024 bytes.
+- Report: `out-5.15-probe/full-build-report.json`.
+- Log: `consolidation/scratch/port-515-full-build-thin-3b210d25.log`.
+- Independent hash checks passed for Image, vmlinux, config, Module.symvers and
+  all 135 final modules. Module architecture, BTF and vermagic checks passed.
+- Output/cache usage was approximately 5.43 GiB; about 27.9 GiB remained free.
+
+This is the first successful full-build milestone, not a flashable release.
+Device-specific external graphics, multimedia and connectivity integration,
+complete DT supplier/module-loading coverage, boot packaging and runtime tests
+remain separate work. No ZIP was created and no device was flashed.
