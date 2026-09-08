@@ -901,3 +901,27 @@ load/dependency metadata, rejection of inherited 5.10 KernelSU/module binaries,
 and verified GPU DT property handling. Keep ROM-facing paths and mechanics while
 making those payload/version changes explicit. No installer rewrite or 5.15 ZIP
 was produced as part of establishing this contract.
+
+## Experimental ZIP Assembly
+
+`tools/package_port_515.py` implements the reviewed, narrow 5.15 adaptation of
+the pinned Bouquet ZIP. It keeps the original tools/entrypoints/modes and ZIP
+storage method, replaces only the five established mutable entries, and checks
+all immutable entry bytes. The diagnostic 95-module set is installed in both
+original locations with regenerated dependency/load metadata. Runtime/BTF/version
+sections must survive stripping unchanged; old signed or 5.10 modules are not
+reused. The recovery load file follows the diagnostic set and is explicitly not
+a tested recovery payload.
+
+An additional reference check established that dtbo.img is a 24 MiB partition
+image with an AVB hash footer, not merely a raw table. Preserve its single-entry,
+2048-byte page-field layout and regenerate the footer using the same avbtool
+1.3.0 add_hash_footer operation, partition name dtbo and 24 MiB partition size.
+Do not copy the old DTBO hash data. The Image and DT/module archives are tested
+with both the host tools and the original bundled decoder.
+
+Installer changes are limited to new payload hashes/branding, explicit warnings,
+forcing the existing incompatible-KSU cleanup branch (with init.real checked),
+and disabling unsupported 5.10 charger/DRM/GPU alternate handling. The original
+partition/vbmeta/fragment/filesystem machinery is not replaced. Packaging
+preflight passed; this does not establish on-device boot or recovery behavior.

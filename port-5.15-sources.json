@@ -561,7 +561,16 @@
   },
   "packaging_reference": {
     "policy": "User requires the proven Bouquet 5.10 ZIP mechanics for the picky custom ROM. Do not substitute a new image/ramdisk packaging design or silently change installer behavior.",
-    "status": "reference_contract_verified_no_515_zip_created",
+    "status": "experimental_packager_preflight_passed",
+    "packager": "tools/package_port_515.py",
+    "experimental_payload": "The validated 95-module diagnostic set in both original module locations; regenerated metadata; no alternate 5.10 modules.",
+    "dtbo_reference": {"partition_bytes": 25165824, "page_size": 2048, "entries": 1, "entry_offset": 64, "version": 0, "avb_algorithm": "NONE", "avbtool_version": "1.3.0"},
+    "installer_exceptions_implemented": [
+      "Force the original incompatible-KSU cleanup path and require init.real before modifying the CPIO",
+      "Disable old charger/DRM alternate copies and unavailable charger/GPU prompts",
+      "Disable GPU model changes and old GPU power-level copying",
+      "Update Image hashes/branding and print explicit diagnostic/recovery warnings"
+    ],
     "primary_zip": "../Bouquet-5.10.258-Bouquet-v4.9-marble-local.zip",
     "primary_sha256": "4ca9502fd6f03fe1652fc87a1f7fd83870d5f1bfcfbc1eb67e69d922eac7f25b",
     "comparison_zip": "../Bouquet-5.10.258-Bouquet-v4.9-marble-qca-bt-proactive-compaction-mglru-v3-cooler-performance-mode.zip",
