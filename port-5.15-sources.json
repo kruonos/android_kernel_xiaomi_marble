@@ -460,6 +460,39 @@
     ],
     "preservation": "Reuse the isolated output, share its lock with the probe runner, never clean the old 5.10 output or baseline artifacts, and do not package or flash."
   },
+  "boot_integration": {
+    "status": "provider_configuration_prepared_not_boot_ready",
+    "provider_modules": [
+      {"config": "SERIAL_MSM_GENI", "path": "drivers/tty/serial/msm_geni_serial.ko"},
+      {"config": "I2C_MSM_GENI", "path": "drivers/i2c/busses/i2c-msm-geni.ko"},
+      {"config": "SPI_MSM_GENI", "path": "drivers/spi/spi-msm-geni.ko"},
+      {"config": "MSM_GPI_DMA", "path": "drivers/dma/qcom/msm_gpi.ko"},
+      {"config": "MFD_I2C_PMIC", "path": "drivers/mfd/qcom-i2c-pmic.ko"},
+      {"config": "REGULATOR_QCOM_PM8008", "path": "drivers/regulator/qcom_pm8008-regulator.ko"},
+      {"config": "PINCTRL_QCOM_SPMI_PMIC", "path": "drivers/pinctrl/qcom/pinctrl-spmi-gpio.ko"},
+      {"config": "PINCTRL_QCOM_SPMI_PMIC", "path": "drivers/pinctrl/qcom/pinctrl-spmi-mpp.ko"},
+      {"config": "QCOM_SPMI_ADC5", "path": "drivers/iio/adc/qcom-spmi-adc5.ko"},
+      {"config": "QCOM_SPMI_TEMP_ALARM", "path": "drivers/thermal/qcom/qcom-spmi-temp-alarm.ko"}
+    ],
+    "preserved_boot_layout": {
+      "source": "../bouquet-slot-b-backup-20260624-155601",
+      "boot_header_version": 4,
+      "vendor_boot_header_version": 4,
+      "page_size": 4096,
+      "vendor_dtb_bytes": 478728,
+      "vendor_fragments": [
+        {"name": "", "type": 1, "bytes": 11388309},
+        {"name": "dlkm", "type": 3, "bytes": 104}
+      ],
+      "module_location": "PLATFORM fragment lib/modules, not the tiny named dlkm fragment",
+      "normal_load_entries": 102,
+      "normal_unique_modules": 100,
+      "initial_target_name_matches": 75,
+      "limits": "Recovery backup evidence, not a live-device inventory; basename matches alone do not establish equivalent providers."
+    },
+    "remaining_geni_gap": "Retained flat qcom,qupv3-geni-se/phandle layout differs from target qcom,geni-se-qup parent hierarchy and parent clocks/ICC. Enabling client modules is not proof of probe compatibility. Console symbol is absent from target Kconfig; no console claim.",
+    "installer_boundary": "Known-good ZIP installer was read in memory; it updates boot/vendor_boot/vendor_dlkm/dtbo and patches vbmeta, and includes legacy GPU/KSU behavior. It is not approved unchanged for 5.15."
+  },
   "integration_gate_open": true,
   "integration_gate_scope": "Initial source transition and bounded compile/DT probes only",
   "boot_gate_open": false,

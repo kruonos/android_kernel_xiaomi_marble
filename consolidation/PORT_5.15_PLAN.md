@@ -710,3 +710,41 @@ This is the first successful full-build milestone, not a flashable release.
 Device-specific external graphics, multimedia and connectivity integration,
 complete DT supplier/module-loading coverage, boot packaging and runtime tests
 remain separate work. No ZIP was created and no device was flashed.
+
+## Boot Provider Integration
+
+Read-only inspection of the recovery images established boot/vendor_boot v4 and
+4096-byte alignment. The vendor ramdisk contains a PLATFORM fragment of
+11,388,309 compressed bytes and a named DLKM fragment of only 104 bytes. The
+actual 298 module files and load metadata reside in the PLATFORM fragment.
+Its normal load list has 102 entries / 100 unique names; 75 matched the initial
+5.15 module set by normalized basename. Name matching is not proof of equivalent
+providers. Recovery loads a much wider set than normal boot.
+
+The preserved release manifest reports Clang/LLD 22.1.7, whereas the retained
+`out/.config` records Clang 18.1.3. These are distinct historical artifacts; do
+not claim they establish identical build provenance solely from kernel.release.
+
+The known-good ZIP installer was read directly in memory. It writes boot,
+vendor_boot, vendor_dlkm and DTBO, patches vbmeta, and has legacy KSU/GPU handling.
+Those behaviors are not approved unchanged for 5.15. The absent unpacked template
+does not prevent read-only inspection of its preserved ZIP, but no installer or
+partition-writing logic is changed in this batch.
+
+The current batch enables existing downstream GENI UART/I2C/SPI, MSM GPI DMA,
+I2C PMIC, PM8008 regulators, PMIC GPIO/MPP, ADC5/ADC7 and temperature-alarm modules.
+Exact retained DT strings match these provider implementations. No regulator
+voltages, cache tables or thermal policies are changed. Configuration preflight
+passed; the full runner now requires the new module gates and output paths.
+
+GENI remains an explicit runtime integration gap: the retained wrapper is flat,
+uses `qcom,qupv3-geni-se` and `qcom,wrapper-core`, while target clients expect the
+`qcom,geni-se-qup` parent hierarchy and parent clocks/interconnects. The matching
+5.15 vendor DT source migrates only part of that layout, so it is not safe to
+copy wholesale. Console support is also not inferred from SERIAL_MSM_GENI=m;
+its old console Kconfig symbol is absent. Provider compilation is a step toward
+integration, not a declaration that these buses probe successfully.
+
+`tools/port_515_boot_inventory.py` reads the v4 fragments/CPIO metadata in memory
+and compares them with a successful 5.15 build's module dependency graph. It
+writes a small audit report only, not an image, module payload or flash package.

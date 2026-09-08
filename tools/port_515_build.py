@@ -197,6 +197,7 @@ def main():
         values = dict(line.split("=", 1) for line in (out / ".config").read_text().splitlines()
                       if line.startswith("CONFIG_") and "=" in line)
         required = {item["config"] for item in inventory["target_boot_module_sources"]["modules"].values()}
+        required.update(item["config"] for item in inventory["boot_integration"]["provider_modules"])
         for name in required | {"MSM_GPUCC_WAIPIO"}:
             if values.get("CONFIG_" + name) != "m":
                 raise RuntimeError("required module gate lost: " + name)
@@ -255,6 +256,7 @@ def main():
         expected = {item["directory"] + "/" + item["object"][:-2] + ".ko"
                     for item in inventory["target_boot_module_sources"]["modules"].values()}
         expected.add("drivers/clk/qcom/gpucc-waipio.ko")
+        expected.update(item["path"] for item in inventory["boot_integration"]["provider_modules"])
         if not expected.issubset(order):
             raise RuntimeError("required modules missing from modules.order: " + repr(expected - set(order)))
         if (out / "Module.symvers").stat().st_size == 0:
