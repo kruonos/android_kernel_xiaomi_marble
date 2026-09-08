@@ -11,8 +11,8 @@ recorded in port-branch checkpoints; the GitHub-backed unified source remains
 unchanged. The older sections below record the
 research chronology, not a claim that the checkout still contains the 5.10 core.
 
-The latest full ThinLTO build passed at source commit `df49dd0418b9`: native vmlinux,
-core/module BTF, modpost, 146 configured modules and the arm64 Image. CFI and SCS
+The latest full ThinLTO build passed at source commit `067b5fc78be8`: native vmlinux,
+core/module BTF, modpost, 150 configured modules and the arm64 Image. CFI and SCS
 remain enabled. Artifact hashes were independently verified against the build
 manifest. This validates the current build configuration, not complete Marble
 hardware support or bootability. Packaging and device gates remain closed.
@@ -844,3 +844,23 @@ both hard and pre/post soft dependencies, rejects missing providers/cycles,
 checks Cape clock module aliases and UFS caps, and verifies planned module hashes.
 It emits only a load list and JSON inventory. It does not copy modules, create
 images, define a recovery list or authorize flashing.
+
+### Stabilization Validation Result
+
+The full build at `067b5fc78be8` passed in 191.7 seconds with 150 modules. Image,
+vmlinux, configuration, symbol-table and all module hashes were independently
+verified. GENI invariants still pass. The Cape GCC/DISPCC modules now advertise
+the actual active DT compatibles, and compiled UFS maxima/turbo properties all
+resolve to 300 MHz.
+
+The generated diagnostic list has 95 modules with a checked topological order
+covering hard and pre/post soft dependencies. Nineteen old baseline names have
+explicit alternate-platform/optional/deferred dispositions. The basic matched
+root/provider hard closure is 91 modules; USB and ordering requirements extend
+the diagnostic plan to 95. Missing-provider, missing-softdep and cycle-injection
+tests all failed closed as intended.
+
+Artifacts: `out-5.15-probe/boot-plan/modules.load` and `boot-plan/plan.json`.
+Build log: `consolidation/scratch/port-515-stabilization-067b5fc7.log`.
+The plan is not a recovery list or a complete phone-driver payload. No ZIP or
+partition image repack was performed, and no device writes occurred.
