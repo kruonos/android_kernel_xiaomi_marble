@@ -11,8 +11,8 @@ recorded in port-branch checkpoints; the GitHub-backed unified source remains
 unchanged. The older sections below record the
 research chronology, not a claim that the checkout still contains the 5.10 core.
 
-The full ThinLTO build passed at source commit `3b210d25e13c`: native vmlinux,
-core/module BTF, modpost, 135 configured modules and the arm64 Image. CFI and SCS
+The latest full ThinLTO build passed at source commit `3252352eda8f`: native vmlinux,
+core/module BTF, modpost, 146 configured modules and the arm64 Image. CFI and SCS
 remain enabled. Artifact hashes were independently verified against the build
 manifest. This validates the current build configuration, not complete Marble
 hardware support or bootability. Packaging and device gates remain closed.
@@ -748,3 +748,26 @@ integration, not a declaration that these buses probe successfully.
 `tools/port_515_boot_inventory.py` reads the v4 fragments/CPIO metadata in memory
 and compares them with a successful 5.15 build's module dependency graph. It
 writes a small audit report only, not an image, module payload or flash package.
+
+### Provider Milestone Result
+
+The full build at `3252352eda8f` passed in 176.9 seconds and produced 146 modules,
+up from 135. All ten explicitly required provider module paths, their selected
+dependencies, core/module BTF, vermagic and final Image checks passed. Independent
+hash verification also passed for every module and the core artifacts.
+
+The boot inventory tool ran successfully against both preserved vendor fragments.
+It confirmed 298 modules in PLATFORM and none in the 104-byte DLKM fragment.
+Of 100 unique normal-load names, 76 now match by normalized basename. Starting
+from those matches and the newly selected providers yields an 87-module hard
+dependency closure with no unresolved hard imports. The 24 unmatched load names,
+soft dependencies, DT supplier relationships and runtime bindings are explicitly
+outside that closure claim. It is not a final early-boot load list.
+
+The built MSM UART module exposes a tty alias but no OF modalias; neither UART
+autoload nor console readiness is claimed. The next concrete source task is the
+GENI wrapper/engine layout and clock/interconnect contract, followed by a revised
+early-boot load plan. A flash ZIP would be premature before those are resolved.
+
+Build log: `consolidation/scratch/port-515-build-providers-3252352e.log`.
+Audit report: `out-5.15-probe/boot-integration-report.json`.
