@@ -398,7 +398,7 @@
     "limits": "Native per-module prelinks passed, but no full vmlinux link, loadable-module final link/modpost, boot Image, package or hardware test. Pahole was not found in PATH; full BTF generation remains untested. Diagnostic DTs are not flash artifacts."
   },
   "full_build_workflow": {
-    "status": "preflight_passed",
+    "status": "retrying_after_full_lto_allocation_failure",
     "runner": "tools/port_515_build.py",
     "linker_wrapper": "tools/port_515_ld.sh",
     "output": "out-5.15-probe",
@@ -408,11 +408,23 @@
     "phases": ["olddefconfig", "vmlinux", "modules", "Image"],
     "compile_jobs": 4,
     "core_linker_threads": 4,
+    "core_lto_partitions": 4,
     "core_pahole_jobs": 4,
     "parallel_module_jobs": 4,
     "module_linker_threads": 1,
     "module_pahole_jobs": 1,
-    "limits": "Require 24 GiB free at start; 12 GiB output budget and at least 12 GiB free reserve; 4 GiB per-file limit and 18 GiB per-process address-space limit. Output-driven free-space checks and phase checks, not a filesystem quota or aggregate RAM cap.",
+    "limits": "User-directed use of available host resources: retain a 2 GiB free-space stop, remove added memory/per-file/fixed-output caps, and disable core dumps. Core FullLTO uses four codegen partitions; modules use four jobs with one linker partition each.",
+    "freshness": "Refresh only final experimental outputs before each phase and require new mtimes; preserve compiled objects. Probe compilation uses managed child-group cleanup too.",
+    "failed_attempts": [
+      {
+        "source_commit": "a37b8cfa273815d4a5cb8e07de5f1248c74a73ee",
+        "log": "consolidation/scratch/port-515-full-build-a37b8cfa.log",
+        "phase": "vmlinux FullLTO code generation",
+        "error": "LLVM ERROR: out of memory under the runner's 18 GiB address-space cap",
+        "elapsed_seconds": 2028.1,
+        "result": "C compilation completed; no full core/module/Image success. Compiled objects preserved for retry."
+      }
+    ],
     "preservation": "Reuse the isolated output, share its lock with the probe runner, never clean the old 5.10 output or baseline artifacts, and do not package or flash."
   },
   "integration_gate_open": true,

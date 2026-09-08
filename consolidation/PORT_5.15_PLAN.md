@@ -638,12 +638,24 @@ worker per linker/BTF encoder, avoiding sixteen-worker oversubscription.
 `tools/port_515_ld.sh` preserves every architecture linker argument while adding
 the phase's worker limit. Existing version-specific pahole flags are preserved.
 
-Safety rails: 24 GiB free required initially, a 12 GiB output budget, at least
-12 GiB free reserve, a 4 GiB per-file limit and an 18 GiB per-process virtual
-address-space limit. Free space is checked on build output, with directory-size
-checks at intervals and phase boundaries. These are not a filesystem quota or
-an aggregate memory cap. Exceeding them stops the build without deleting output
-or baseline artifacts. Both probe and full runners share an output lock.
+The first full attempt completed C compilation but failed in FullLTO code
+generation with `LLVM ERROR: out of memory` under the initial 18 GiB address-space
+cap. Its source was commit `a37b8cfa273815d4a5cb8e07de5f1248c74a73ee`; the log is
+`consolidation/scratch/port-515-full-build-a37b8cfa.log`. Compiled objects remain
+available, so the retry need not repeat the full source compilation.
+
+Per the user's updated resource instruction, use available host RAM/swap and
+disk rather than the initial arbitrary caps. The runner now keeps only a 2 GiB
+free-space stop, removes added memory/per-file/fixed-output caps, and disables
+core dumps. Four FullLTO code-generation partitions are requested for core
+linking; the module phase retains four parallel jobs with one partition each.
+CFI, SCS and FullLTO stay enabled. Free-space checks are output-driven and at
+phase boundaries, not a filesystem quota. No baseline artifact cleanup is used.
+
+Final experimental outputs are explicitly refreshed before their build phases
+and checked for new mtimes, preventing stale final artifacts from passing as a
+new build. Compiled objects are retained. The small BTF compiler probe is also
+process-group managed, and both full/probe workflows share an output lock.
 
 Preflight log: `consolidation/scratch/port-515-full-preflight.log`.
 Full-build manifest: `out-5.15-probe/full-build-report.json`.
