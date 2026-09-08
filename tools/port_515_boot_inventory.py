@@ -115,6 +115,9 @@ def main():
         raise RuntimeError("normal load-list location is ambiguous")
     lines = normal[0]["metadata"]["lib/modules/modules.load"].splitlines()
     names = list(dict.fromkeys(normalize(x.strip()) for x in lines if x.strip() and not x.startswith("#")))
+    builtin_replacements = {}
+    if "geni-dt" in build["completed_phases"] and "qcom_geni_se" in builtins:
+        builtin_replacements["msm_geni_se"] = "qcom_geni_se"
     roots = [name for name in names if name in modules]
     inventory = json.loads((root / "port-5.15-sources.json").read_text())
     roots += [normalize(item["path"]) for item in inventory["boot_integration"]["provider_modules"]]
@@ -145,7 +148,8 @@ def main():
         "dtb_bytes": dtb_size, "bootconfig": bootconfig, "fragments": fragments},
         "normal_load_entries": len(lines), "normal_unique_names": len(names),
         "matched_load_names": [name for name in names if name in modules],
-        "unmatched_load_names": [name for name in names if name not in modules and name not in builtins],
+        "resolved_builtin_replacements": builtin_replacements,
+        "unmatched_load_names": [name for name in names if name not in modules and name not in builtins and name not in builtin_replacements],
         "hard_closure_order": order, "unresolved_hard_dependencies": sorted(set(unresolved)),
         "target_modules": modules,
         "limits": "Name matching and hard-dependency ordering are not a final modules.load plan. Renames, soft dependencies, DT suppliers, console layout, userspace and recovery requirements still need reconciliation. No image/package is written.",

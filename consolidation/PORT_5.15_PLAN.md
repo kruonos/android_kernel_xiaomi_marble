@@ -11,7 +11,7 @@ recorded in port-branch checkpoints; the GitHub-backed unified source remains
 unchanged. The older sections below record the
 research chronology, not a claim that the checkout still contains the 5.10 core.
 
-The latest full ThinLTO build passed at source commit `3252352eda8f`: native vmlinux,
+The latest full ThinLTO build passed at source commit `df49dd0418b9`: native vmlinux,
 core/module BTF, modpost, 146 configured modules and the arm64 Image. CFI and SCS
 remain enabled. Artifact hashes were independently verified against the build
 manifest. This validates the current build configuration, not complete Marble
@@ -800,3 +800,20 @@ them against the small frozen hardware-metadata fixture. Source/DT/config checks
 passed before the build checkpoint. Hardware transactions, suspend/resume and
 userspace platform sysfs paths still need device validation; reparenting changes
 those platform paths even though bus aliases and device identities are retained.
+
+### GENI Validation Result
+
+The full build at `df49dd0418b9` passed in 178.5 seconds: vmlinux, core/module BTF,
+146 modules and Image. All artifact hashes were independently checked. The new
+HS UART OF aliases are present. The source/compiled-DT invariants and aliases
+also passed as a required build phase, and injected register, IOMMU and wrapper
+clock corruption was rejected by the checker.
+
+The old normal-load name `msm_geni_se` is now accounted for by the built-in
+`qcom_geni_se` provider after successful GENI DT adaptation. It does not require
+a replacement `.ko` load entry. This is an explicit integration mapping, not a
+general basename-renaming rule. Other unmatched boot entries remain separate.
+
+The identified GENI source-level blockers are resolved. On-device UART/I2C/SPI
+transactions, Bluetooth UART ioctls, suspend/resume and userspace sysfs paths
+still require validation; no hardware operation or flash is claimed.
